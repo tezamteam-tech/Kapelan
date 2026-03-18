@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { useCurrency } from "./CurrencyContext";
 import { SignatureCanvas, SignatureCanvasHandle } from "./SignatureCanvas";
 import { MaterialsPanel, MaterialsJson } from "./MaterialsPanel";
 
@@ -86,6 +87,7 @@ function StatusBadge({ status }: { status: string }) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export function InstallerView() {
+  const { fmtShort, currency } = useCurrency();
   const [screen, setScreen] = useState<"list" | "form">("list");
   const [leads, setLeads] = useState<Lead[]>([]);
   const [clients, setClients] = useState<Record<string, Client>>({});
@@ -499,7 +501,7 @@ export function InstallerView() {
 
             {/* ─── Стоимость работ ─── */}
             <Section icon="💰" title="Стоимость работ">
-              <Field label="Сумма" unit="₴">
+              <Field label="Сумма" unit={currency.symbol}>
                 <input
                   type="number"
                   inputMode="numeric"
@@ -653,7 +655,7 @@ export function InstallerView() {
                   {req.area && <Chip>📐 {req.area} м²</Chip>}
                   {req.roomType && <Chip>🏠 {req.roomType}</Chip>}
                   {req.roomsCount && <Chip>🚪 {req.roomsCount} комн.</Chip>}
-                  {req.budget && <Chip>💰 {req.budget.toLocaleString()} ₴</Chip>}
+                  {req.budget && <Chip>💰 {fmtShort(req.budget)}</Chip>}
                   <Chip>📅 {date}</Chip>
                 </div>
                 <div className="flex items-center justify-end mt-3 text-blue-500 text-sm font-semibold">

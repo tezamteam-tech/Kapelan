@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, DragEvent } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { useCurrency } from "./CurrencyContext";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -44,7 +45,6 @@ type Step = "idle" | "uploading" | "analyzing" | "done" | "error";
 type ResTab = "overview" | "ducts" | "nodes" | "estimate" | "json";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-const fmt = (n: number) => n.toLocaleString("ru-RU");
 const fmtDate = (s: string) => new Date(s).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
 const SECTION_CFG: Record<string, { label: string; color: string }> = {
@@ -85,6 +85,8 @@ const STEPS = [
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export function VentilationAnalyzer() {
+  const { fmtShort } = useCurrency();
+  const fmt = fmtShort;
   const [step, setStep]             = useState<Step>("idle");
   const [progress, setProgress]     = useState(0); // 0-3
   const [analysis, setAnalysis]     = useState<VentAnalysis | null>(null);
@@ -248,7 +250,7 @@ export function VentilationAnalyzer() {
             {[
               { l: "Воздуховоды", v: `${analysis.summary.totalDuctLength.toFixed(1)} м` },
               { l: "Узлов",       v: String(analysis.summary.totalNodes) },
-              { l: "Смета",       v: `${fmt(analysis.grandTotal)} ₴` },
+              { l: "Смета",       v: fmt(analysis.grandTotal) },
             ].map(s => (
               <div key={s.l} className="bg-teal-800/50 rounded-xl px-2 py-2 text-center">
                 <p className="text-white font-black text-sm leading-none">{s.v}</p>
@@ -476,7 +478,7 @@ export function VentilationAnalyzer() {
                     <MetricCard icon="📏" label="Длина воздуховодов" value={`${analysis.summary.totalDuctLength.toFixed(1)} м`} />
                     <MetricCard icon="🔩" label="Узлов и фасонных" value={String(analysis.summary.totalNodes)} />
                     <MetricCard icon="🌀" label="Участков воздуховодов" value={String(analysis.ducts.length)} />
-                    <MetricCard icon="💰" label="Смета материалов" value={`${fmt(analysis.totalMaterials)} ₴`} accent />
+                    <MetricCard icon="💰" label="Смета материалов" value={fmt(analysis.totalMaterials)} accent />
                   </div>
 
                   {/* By diameter */}
@@ -565,16 +567,16 @@ export function VentilationAnalyzer() {
                   {/* Totals */}
                   <div className="bg-gradient-to-r from-teal-700 to-cyan-700 rounded-2xl p-4 text-white">
                     <p className="text-teal-200 text-xs font-semibold mb-2">Общая смета</p>
-                    <p className="text-3xl font-black">{fmt(totalEstimate)} ₴</p>
+                    <p className="text-3xl font-black">{fmt(totalEstimate)}</p>
                     <div className="flex items-center gap-4 mt-2 text-sm">
-                      <span className="text-teal-200">Материалы: <b className="text-white">{fmt(editedMats.reduce((s, m) => s + Math.round(m.qty * m.pricePerUnit), 0))} ₴</b></span>
-                      <span className="text-teal-200">Монтаж: <b className="text-white">{fmt(workCost)} ₴</b></span>
+                      <span className="text-teal-200">Материалы: <b className="text-white">{fmt(editedMats.reduce((s, m) => s + Math.round(m.qty * m.pricePerUnit), 0))}</b></span>
+                      <span className="text-teal-200">Монтаж: <b className="text-white">{fmt(workCost)}</b></span>
                     </div>
                   </div>
 
                   {/* Work cost */}
                   <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4">
-                    <label className="text-xs font-bold text-slate-500 block mb-2">💼 Стоимость монтажа (₴)</label>
+                    <label className="text-xs font-bold text-slate-500 block mb-2">💼 Стоимость монтажа</label>
                     <input type="number" value={workCost} min={0}
                       onChange={e => setWorkCost(Number(e.target.value))}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-base font-black focus:outline-none focus:ring-2 focus:ring-teal-400" />
@@ -602,7 +604,7 @@ export function VentilationAnalyzer() {
                                   className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-center focus:outline-none focus:ring-1 focus:ring-teal-400" />
                               </div>
                               <div className="flex-1">
-                                <p className="text-[10px] text-slate-400 mb-0.5">Цена (₴/{m.unit})</p>
+                                <p className="text-[10px] text-slate-400 mb-0.5">Цена/{m.unit}</p>
                                 <input type="number" value={m.pricePerUnit} min={0}
                                   onChange={e => {
                                     const pricePerUnit = parseFloat(e.target.value) || 0;
@@ -612,7 +614,7 @@ export function VentilationAnalyzer() {
                               </div>
                               <div className="text-right min-w-[70px]">
                                 <p className="text-[10px] text-slate-400 mb-0.5">Сумма</p>
-                                <p className="text-sm font-black text-teal-700">{fmt(Math.round(m.qty * m.pricePerUnit))} ₴</p>
+                                <p className="text-sm font-black text-teal-700">{fmt(Math.round(m.qty * m.pricePerUnit))}</p>
                               </div>
                             </div>
                           </div>
@@ -620,7 +622,7 @@ export function VentilationAnalyzer() {
                         <div className="bg-slate-50 px-4 py-2 flex justify-between">
                           <p className="text-xs text-slate-500">Итог по разделу</p>
                           <p className="text-xs font-black text-slate-700">
-                            {fmt(editedMats.filter(m => m.category === cat).reduce((s, m) => s + Math.round(m.qty * m.pricePerUnit), 0))} ₴
+                            {fmt(editedMats.filter(m => m.category === cat).reduce((s, m) => s + Math.round(m.qty * m.pricePerUnit), 0))}
                           </p>
                         </div>
                       </div>
@@ -769,6 +771,7 @@ function NodeCard({ node: n, index }: { node: VentNode; index: number }) {
 }
 
 function HistoryCard({ item: h, onOpen, onDelete }: { item: ListItem; onOpen: () => void; onDelete: () => void }) {
+  const { fmtShort } = useCurrency();
   const [confirmDel, setConfirmDel] = useState(false);
   const conf = CONF_CFG[h.confidence as "high" | "medium" | "low"] ?? CONF_CFG.medium;
   return (
@@ -783,7 +786,7 @@ function HistoryCard({ item: h, onOpen, onDelete }: { item: ListItem; onOpen: ()
             <p className="text-xs text-slate-400">{fmtDate(h.analyzedAt)}</p>
           </div>
           <div className="text-right flex-shrink-0">
-            <p className="text-sm font-black text-teal-700">{fmt(h.grandTotal)} ₴</p>
+            <p className="text-sm font-black text-teal-700">{fmtShort(h.grandTotal)}</p>
             <div className="flex items-center gap-1 justify-end mt-0.5">
               <span className={`w-1.5 h-1.5 rounded-full ${conf.dot}`} />
               <span className="text-[10px] text-slate-400">{h.ductsCount} сек. · {h.nodesCount} узлов</span>

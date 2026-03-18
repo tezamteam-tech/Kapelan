@@ -12,6 +12,8 @@ import { registerVentilationRoutes } from "./ventilation.tsx";
 import { registerTrainingRoutes } from "./training.tsx";
 import { registerInstallOrderRoutes, AC_CATALOG } from "./orders.tsx";
 import { registerEquipmentRoutes } from "./equipment.tsx";
+import { registerAiImportRoutes } from "./ai_import.tsx";
+import { registerMeasurementOrderRoutes } from "./measurement_orders.tsx";
 
 const app = new Hono();
 
@@ -201,7 +203,7 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "create_client_lead",
-      description: "Создать заявку (лид) клиента в CRM без создания ордера монтажа. Используй, если клиент ещё не готов к монтажу.",
+      description: "Создать заявку (лид) клиента в CRM без создания ордера монтажа. Используй, если клиент ещё не готов к мо��тажу.",
       parameters: {
         type: "object",
         properties: {
@@ -269,7 +271,7 @@ async function getInstallers() {
 // ─── Tool execution ────────────────────────────────────────────────────────────
 async function executeAgentTool(name: string, args: any): Promise<{ result: string; action: any }> {
   try {
-    // ── 1. Search warehouse for AC equipment ──────────────────────────────────
+    // ── 1. Search warehouse for AC equipment ──────────────���───────────────────
     if (name === "search_warehouse_ac") {
       const { area, budget, tier, equipmentType } = args;
       const allItems = await getAllWarehouseItems();
@@ -2026,6 +2028,7 @@ async function generateContractPDF(d: {
   companyName: string; companyCode: string; companyDirector: string; companyPhone: string;
   client: { name: string; phone: string; email?: string | null };
   variant: OfferVariant; materialsItems: MaterialItem[];
+  currencySymbol?: string;
   advancePct: number; advanceAmount: number; balanceAmount: number; totalAmount: number; notes: string;
 }): Promise<Uint8Array> {
   const fonts = await loadFonts();
@@ -2035,7 +2038,8 @@ async function generateContractPDF(d: {
   const fontB = await pdfDoc.embedFont(fonts.b);
   const ctx: PdfCtx = { doc: pdfDoc, page: pdfDoc.addPage([PW, PH]), y: 0, fontR, fontB };
   const v = d.variant;
-  const fN = (n: number) => n.toLocaleString('uk-UA');
+  const cur = d.currencySymbol ?? 'Br';
+  const fN = (n: number) => n.toLocaleString('ru-RU');
 
   // Header bar
   fillRect(ctx, 0, PW, 52, C.navy);
@@ -2074,14 +2078,14 @@ async function generateContractPDF(d: {
   ];
   drawTable(ctx,
     [{ label: '№', w: 24, align: 'center' }, { label: 'Наименование', w: 165 }, { label: 'Модель / Количество', w: 130 },
-     { label: 'Кол-во', w: 40, align: 'center' }, { label: 'Цена, ₴', w: 66, align: 'right' }, { label: 'Сумма, ₴', w: 70, align: 'right' }],
+     { label: 'Кол-во', w: 40, align: 'center' }, { label: `Цена, ${cur}`, w: 66, align: 'right' }, { label: `Сумма, ${cur}`, w: 70, align: 'right' }],
     eqRows
   );
 
   // Article 3: Works
   sectionHeader(ctx, '3. МОНТАЖНЫЕ РАБОТЫ', C.blue);
   drawTable(ctx,
-    [{ label: '№', w: 24, align: 'center' }, { label: 'Вид работ', w: 350 }, { label: 'Сумма, ₴', w: 121, align: 'right' }],
+    [{ label: '№', w: 24, align: 'center' }, { label: 'Вид работ', w: 350 }, { label: `Сумма, ${cur}`, w: 121, align: 'right' }],
     [
       ['1', 'Монтаж внутреннего и наружного блоков', fN(Math.round(v.workCost * 0.4))],
       ['2', 'Прокладка медной фреоновой трассы и дренажа', fN(Math.round(v.workCost * 0.3))],
@@ -2094,22 +2098,22 @@ async function generateContractPDF(d: {
   sectionHeader(ctx, '4. СТОИМОСТЬ И УСЛОВИЯ ОПЛАТЫ', C.teal);
   ensureSpace(ctx, 100);
   for (const [lbl, val] of [
-    ['Стоимость оборудования:', fN(v.acTotal) + ' ₴'],
-    ['Стоимость материалов:', fN(v.materialsTotal) + ' ₴'],
-    ['Стоимость монтажных работ:', fN(v.workCost) + ' ₴'],
-    ...(v.discount > 0 ? [['Скидка:', '– ' + fN(v.discount) + ' ₴']] : []),
+    ['Стоимость оборудования:', fN(v.acTotal) + ' ' + cur],
+    ['Стоимость материалов:', fN(v.materialsTotal) + ' ' + cur],
+    ['Стоимость монтажных работ:', fN(v.workCost) + ' ' + cur],
+    ...(v.discount > 0 ? [['Скидка:', '– ' + fN(v.discount) + ' ' + cur]] : []),
   ] as [string,string][]) {
     ctx.page.drawText(lbl, { x: ML + 4, y: pdfY(ctx.y, 8), font: fontR, size: 9.5, color: C.text });
     ctx.page.drawText(val, { x: ML + CW - txtW(fontB, val, 9.5), y: pdfY(ctx.y, 8), font: fontB, size: 9.5, color: C.text });
     ctx.y += 15;
   }
   gap(ctx, 4); hRule(ctx, C.border, 0.8); gap(ctx, 8);
-  amountBox(ctx, 'ИТОГОВАЯ СТОИМОСТЬ (с НДС):', fN(d.totalAmount) + ' ₴', C.navy); gap(ctx, 5);
-  amountBox(ctx, `АВАНС (${d.advancePct}%) — до начала монтажа:`, fN(d.advanceAmount) + ' ₴', C.teal); gap(ctx, 5);
+  amountBox(ctx, 'ИТОГОВАЯ СТОИМОСТЬ (с НДС):', fN(d.totalAmount) + ' ' + cur, C.navy); gap(ctx, 5);
+  amountBox(ctx, `АВАНС (${d.advancePct}%) — до начала монтажа:`, fN(d.advanceAmount) + ' ' + cur, C.teal); gap(ctx, 5);
   ensureSpace(ctx, 22); fillRect(ctx, ML, CW, 20, rgb(0.94, 0.98, 0.95)); borderRect(ctx, ML, CW, 20, C.teal, 0.6);
   ctx.page.drawText('Остаток — в день завершения работ:', { x: ML + 8, y: pdfY(ctx.y, 13), font: fontR, size: 9.5, color: C.text });
-  const bw2 = txtW(fontB, fN(d.balanceAmount) + ' ₴', 11);
-  ctx.page.drawText(fN(d.balanceAmount) + ' ₴', { x: ML + CW - bw2 - 8, y: pdfY(ctx.y, 14), font: fontB, size: 11, color: C.teal });
+  const bw2 = txtW(fontB, fN(d.balanceAmount) + ' ' + cur, 11);
+  ctx.page.drawText(fN(d.balanceAmount) + ' ' + cur, { x: ML + CW - bw2 - 8, y: pdfY(ctx.y, 14), font: fontB, size: 11, color: C.teal });
   ctx.y += 20; gap(ctx, 8);
 
   // Article 5: Guarantees
@@ -2132,6 +2136,7 @@ async function generateSpecificationPDF(d: {
   companyName: string; companyPhone: string;
   client: { name: string; phone: string };
   variant: OfferVariant; materialsItems: MaterialItem[]; totalAmount: number;
+  currencySymbol?: string;
 }): Promise<Uint8Array> {
   const fonts = await loadFonts();
   const pdfDoc = await PDFDocument.create();
@@ -2139,7 +2144,9 @@ async function generateSpecificationPDF(d: {
   const fontR = await pdfDoc.embedFont(fonts.r);
   const fontB = await pdfDoc.embedFont(fonts.b);
   const ctx: PdfCtx = { doc: pdfDoc, page: pdfDoc.addPage([PW, PH]), y: 0, fontR, fontB };
-  const v = d.variant; const fN = (n: number) => n.toLocaleString('uk-UA');
+  const v = d.variant;
+  const cur = d.currencySymbol ?? 'Br';
+  const fN = (n: number) => n.toLocaleString('ru-RU');
 
   // Header bar
   fillRect(ctx, 0, PW, 52, C.teal);
@@ -2161,7 +2168,7 @@ async function generateSpecificationPDF(d: {
   drawTable(ctx,
     [{ label: '№', w: 22, align: 'center' }, { label: 'Бренд', w: 72 }, { label: 'Модель', w: 128 },
      { label: 'Характеристики', w: 115 }, { label: 'Кол-во', w: 38, align: 'center' },
-     { label: 'Цена, ₴', w: 58, align: 'right' }, { label: 'Сумма, ₴', w: 62, align: 'right' }],
+     { label: `Цена, ${cur}`, w: 58, align: 'right' }, { label: `Сумма, ${cur}`, w: 62, align: 'right' }],
     [['1', v.ac.brand, v.ac.model, `${v.ac.kw}кВт/${(v.ac.btu/1000).toFixed(0)}BTU`, String(v.acCount), fN(v.ac.price), fN(v.acTotal)]]
   );
   drawText(ctx, `Гарантия: ${v.ac.warranty} год(а). Функции: ${feats}.`, { size: 8.5, color: C.muted, maxW: CW }); gap(ctx, 4);
@@ -2173,7 +2180,7 @@ async function generateSpecificationPDF(d: {
     drawTable(ctx,
       [{ label: '№', w: 22, align: 'center' }, { label: 'Наименование', w: 152 }, { label: 'Категория', w: 78 },
        { label: 'Ед.', w: 28, align: 'center' }, { label: 'Кол-во', w: 38, align: 'center' },
-       { label: 'Цена, ₴', w: 58, align: 'right' }, { label: 'Сумма, ₴', w: 119, align: 'right' }],
+       { label: `Цена, ${cur}`, w: 58, align: 'right' }, { label: `Сумма, ${cur}`, w: 119, align: 'right' }],
       matRows
     );
     gap(ctx, 2);
@@ -2183,7 +2190,7 @@ async function generateSpecificationPDF(d: {
   sectionHeader(ctx, '3. МОНТАЖНЫЕ РАБОТЫ', C.teal);
   drawTable(ctx,
     [{ label: '№', w: 22, align: 'center' }, { label: 'Вид работ', w: 313 },
-     { label: 'Ед.', w: 30, align: 'center' }, { label: 'Кол-во', w: 40, align: 'center' }, { label: 'Сумма, ₴', w: 90, align: 'right' }],
+     { label: 'Ед.', w: 30, align: 'center' }, { label: 'Кол-во', w: 40, align: 'center' }, { label: `Сумма, ${cur}`, w: 90, align: 'right' }],
     [
       ['1', 'Монтаж внутреннего и наружного блоков', 'компл', '1', fN(Math.round(v.workCost * 0.4))],
       ['2', 'Прокладка медной фреоновой трассы и дренажа', 'компл', '1', fN(Math.round(v.workCost * 0.3))],
@@ -2196,16 +2203,16 @@ async function generateSpecificationPDF(d: {
   sectionHeader(ctx, '4. ИТОГ', C.navy);
   ensureSpace(ctx, 80);
   for (const [lbl, val] of [
-    ['Оборудование:', fN(v.acTotal) + ' ₴'],
-    ['Монтажные материалы:', fN(v.materialsTotal) + ' ₴'],
-    ['Монтажные работы:', fN(v.workCost) + ' ₴'],
-    ...(v.discount > 0 ? [['Скидка:', '– ' + fN(v.discount) + ' ₴']] : []),
+    ['Оборудование:', fN(v.acTotal) + ' ' + cur],
+    ['Монтажные материалы:', fN(v.materialsTotal) + ' ' + cur],
+    ['Монтажные работы:', fN(v.workCost) + ' ' + cur],
+    ...(v.discount > 0 ? [['Скидка:', '– ' + fN(v.discount) + ' ' + cur]] : []),
   ] as [string,string][]) {
     ctx.page.drawText(lbl, { x: ML + 4, y: pdfY(ctx.y, 8), font: fontR, size: 9.5, color: C.text });
     ctx.page.drawText(val, { x: ML + CW - txtW(fontR, val, 9.5), y: pdfY(ctx.y, 8), font: fontR, size: 9.5, color: C.text });
     ctx.y += 14;
   }
-  gap(ctx, 6); amountBox(ctx, 'ИТОГОВАЯ СТОИМОСТЬ:', fN(d.totalAmount) + ' ₴', C.navy); gap(ctx, 6);
+  gap(ctx, 6); amountBox(ctx, 'ИТОГОВАЯ СТОИМОСТЬ:', fN(d.totalAmount) + ' ' + cur, C.navy); gap(ctx, 6);
   drawText(ctx, `Настоящая спецификация является неотъемлемой частью Договора № ${d.contractNumber} от ${d.contractDate}.`, { size: 9, color: C.muted, maxW: CW });
   signatureBlock(ctx);
   return pdfDoc.save();
@@ -2232,7 +2239,8 @@ app.post('/make-server-1df47c03/documents/generate', async (c) => {
       leadId, offerId, selectedTier = 'standard', advancePct = 50,
       contractNumber, notes = '',
       companyName = 'ООО "КЛИМАТ СЕРВИС"', companyCode = '12345678',
-      companyDirector = 'Директор', companyPhone = '+380 44 000-00-00', city = 'Киев',
+      companyDirector = 'Директор', companyPhone = '+375 44 000-00-00', city = 'Минск',
+      currencySymbol = 'Br',
     } = body;
 
     if (!leadId || !offerId) return c.json({ error: 'leadId and offerId are required' }, 400);
@@ -2259,9 +2267,9 @@ app.post('/make-server-1df47c03/documents/generate', async (c) => {
     const contractDate = new Date().toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' });
     const docNum = contractNumber || `${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
 
-    const pdfData = { contractNumber: docNum, contractDate, city, companyName, companyCode, companyDirector, companyPhone, client, variant, materialsItems, advancePct, advanceAmount, balanceAmount, totalAmount, notes };
+    const pdfData = { contractNumber: docNum, contractDate, city, companyName, companyCode, companyDirector, companyPhone, client, variant, materialsItems, advancePct, advanceAmount, balanceAmount, totalAmount, notes, currencySymbol };
 
-    console.log('Generating PDFs for lead:', leadId, 'tier:', selectedTier);
+    console.log('Generating PDFs for lead:', leadId, 'tier:', selectedTier, 'currency:', currencySymbol);
     const [contractBytes, specBytes] = await Promise.all([generateContractPDF(pdfData), generateSpecificationPDF(pdfData)]);
 
     const prefix = `${leadId}/${docNum}`;
@@ -2360,6 +2368,12 @@ registerInstallOrderRoutes(app);
 
 // Register equipment catalog routes
 registerEquipmentRoutes(app);
+
+// Register AI-powered warehouse import routes
+registerAiImportRoutes(app);
+
+// Register measurement orders routes
+registerMeasurementOrderRoutes(app);
 
 // ─── MANUAL LEAD CREATION ─────────────────────────────────────────────────────
 app.post('/make-server-1df47c03/leads/create', async (c) => {
@@ -2790,6 +2804,503 @@ app.patch('/make-server-1df47c03/assignments/:id', async (c) => {
   } catch (error: any) {
     return c.json({ error: `Failed: ${error.message}` }, 500);
   }
+});
+
+// ─── EVERIS TEMPLATE DOCUMENT PACKAGE ────────────────────────────────────────
+
+function numToWordsBYN(amount: number): string {
+  const rounded = Math.round(amount * 100);
+  const whole = Math.floor(rounded / 100);
+  const kop = rounded % 100;
+  const onesM  = ['','один','два','три','четыре','пять','шесть','семь','восемь','девять'];
+  const onesF  = ['','одна','две','три','четыре','пять','шесть','семь','восемь','девять'];
+  const teens  = ['десять','одиннадцать','двенадцать','тринадцать','четырнадцать','пятнадцать','шестнадцать','семнадцать','восемнадцать','девятнадцать'];
+  const tenths = ['','','двадцать','тридцать','сорок','пятьдесят','шестьдесят','семьдесят','восемьдесят','девяносто'];
+  const hunds  = ['','сто','двести','триста','четыреста','пятьсот','шестьсот','семьсот','восемьсот','девятьсот'];
+  const w3 = (n: number, fem = false): string => {
+    const h=Math.floor(n/100),rest=n%100,t=Math.floor(rest/10),o=rest%10;
+    let r=''; if(h) r+=hunds[h]+' '; if(t===1) r+=teens[o]+' ';
+    else { if(t) r+=tenths[t]+' '; if(o) r+=(fem?onesF:onesM)[o]+' '; } return r.trim();
+  };
+  const rubleF=(n:number)=>{const o=n%10,t=n%100;return t>=11&&t<=14?'белорусских рублей':o===1?'белорусский рубль':o>=2&&o<=4?'белорусских рубля':'белорусских рублей';};
+  const thF=(n:number)=>{const o=n%10,t=n%100;return t>=11&&t<=14?'тысяч':o===1?'тысяча':o>=2&&o<=4?'тысячи':'тысяч';};
+  const kopF=(n:number)=>{const o=n%10,t=n%100;return t>=11&&t<=14?'копеек':o===1?'копейка':o>=2&&o<=4?'копейки':'копеек';};
+  let res='';
+  const th=Math.floor(whole/1000),rem=whole%1000;
+  if(th>0) res+=w3(th,true)+' '+thF(th)+' ';
+  if(rem>0||whole===0) res+=(w3(rem)||'ноль');
+  res=res.trim()||'ноль'; res=res.charAt(0).toUpperCase()+res.slice(1);
+  return `${res} ${rubleF(whole)} ${String(kop).padStart(2,'0')} ${kopF(kop)}`;
+}
+
+function numToWordsOnly(whole: number): string {
+  const onesM  = ['','один','два','три','четыре','пять','шесть','семь','восемь','девять'];
+  const onesF  = ['','одна','две','три','четыре','пять','шесть','семь','восемь','девять'];
+  const teens  = ['десять','одиннадцать','двенадцать','тринадцать','четырнадцать','пятнадцать','шестнадцать','семнадцать','восемнадцать','девятнадцать'];
+  const tenths = ['','','двадцать','тридцать','сорок','пятьдесят','шестьдесят','семьдесят','восемьдесят','девяносто'];
+  const hunds  = ['','сто','двести','триста','четыреста','пятьсот','шестьсот','семьсот','восемьсот','девятьсот'];
+  const w3 = (n: number, fem = false): string => {
+    const h=Math.floor(n/100),rest=n%100,t=Math.floor(rest/10),o=rest%10;
+    let r=''; if(h) r+=hunds[h]+' '; if(t===1) r+=teens[o]+' ';
+    else { if(t) r+=tenths[t]+' '; if(o) r+=(fem?onesF:onesM)[o]+' '; } return r.trim();
+  };
+  const thF=(n:number)=>{const o=n%10,t=n%100;return t>=11&&t<=14?'тысяч':o===1?'тысяча':o>=2&&o<=4?'тысячи':'тысяч';};
+  let res='';
+  const th=Math.floor(whole/1000),rem=whole%1000;
+  if(th>0) res+=w3(th,true)+' '+thF(th)+' ';
+  if(rem>0||whole===0) res+=(w3(rem)||'ноль');
+  return res.trim()||'ноль';
+}
+
+function amountFull(amount: number, withVat: boolean): string {
+  const rounded = Math.round(amount * 100);
+  const whole = Math.floor(rounded / 100);
+  const kop = rounded % 100;
+  const rubleF=(n:number)=>{const o=n%10,t=n%100;return t>=11&&t<=14?'белорусских рублей':o===1?'белорусский рубль':o>=2&&o<=4?'белорусских рубля':'белорусских рублей';};
+  const kopF=(n:number)=>{const o=n%10,t=n%100;return t>=11&&t<=14?'копеек':o===1?'копейка':o>=2&&o<=4?'копейки':'копеек';};
+  const words = numToWordsOnly(whole);
+  const kapStr = ` ${kop} ${kopF(kop)}`;
+  const tax = withVat ? '' : ', без НДС (УСН согласно ст. 289 главы 34 Налогового кодекса Республики Беларусь)';
+  return `${whole} (${words}) ${rubleF(whole)}${kapStr}${tax}`;
+}
+
+function toInitials(fullName: string): string {
+  const p = fullName.trim().split(/\s+/);
+  if(p.length<2) return fullName;
+  const last=p[0],first=p[1],mid=p[2];
+  return mid ? `${first[0]}.${mid[0]}. ${last}` : `${first[0]}. ${last}`;
+}
+
+interface EverisMatItem { name:string; unit:string; qty:number; price:number; vat:number; }
+interface EverisPackageData {
+  contractType:'invoice'|'full';
+  contractNumber:string; contractDate:string; city:string;
+  co:{ name:string; unp:string; dirFull:string; dirShort:string; legalAddr:string; postalAddr:string; account:string; bank:string; bik:string; email:string; phone:string; };
+  clientType:'individual'|'org';
+  ind:{ name:string; address:string; idCard:string; phone:string; email:string; };
+  org:{ name:string; unp:string; dirFull:string; dirShort:string; dirBasis:string; legalAddr:string; postalAddr:string; account:string; bank:string; bik:string; email:string; };
+  objectDesc:string; objectAddr:string;
+  acModel:string; acUnit:string; acQty:number; acPrice:number; acVat:number;
+  materials:EverisMatItem[];
+  worksDesc:string; worksUnit:string; worksQty:number; worksPrice:number; worksVat:number;
+  withVat:boolean;
+  advanceAmt:number; stage1Amt:number; stage2Amt:number;
+}
+
+function drawTwoColBlock(ctx: PdfCtx, leftLines:[boolean,string][], rightLines:[boolean,string][], colW: number, xRight: number) {
+  const sz=8.5, lh=sz*1.4;
+  const totalRows=Math.max(leftLines.length, rightLines.length);
+  ensureSpace(ctx, totalRows*lh+20);
+  const startY=ctx.y;
+  let ly=startY;
+  for(const [bold,text] of leftLines) {
+    const font=bold?ctx.fontB:ctx.fontR;
+    const lines=wrapText(font,text,sz,colW);
+    for(const line of lines) { ctx.page.drawText(line,{x:ML,y:pdfY(ly,sz*0.2),font,size:sz,color:C.text}); ly+=lh; }
+  }
+  let ry=startY;
+  for(const [bold,text] of rightLines) {
+    const font=bold?ctx.fontB:ctx.fontR;
+    const lines=wrapText(font,text,sz,colW);
+    for(const line of lines) { ctx.page.drawText(line,{x:xRight,y:pdfY(ry,sz*0.2),font,size:sz,color:C.text}); ry+=lh; }
+  }
+  ctx.y=Math.max(ly,ry);
+}
+
+async function genEverisInvoicePDF(d: EverisPackageData): Promise<Uint8Array> {
+  const fonts=await loadFonts();
+  const pdfDoc=await PDFDocument.create(); pdfDoc.registerFontkit(fontkit);
+  const fontR=await pdfDoc.embedFont(fonts.r), fontB=await pdfDoc.embedFont(fonts.b);
+  const ctx:PdfCtx={doc:pdfDoc,page:pdfDoc.addPage([PW,PH]),y:0,fontR,fontB};
+  const fC=(n:number)=>n.toFixed(2);
+
+  const acTotal=+(d.acPrice*d.acQty).toFixed(2);
+  const matTotal=+d.materials.reduce((s,m)=>s+m.price*m.qty,0).toFixed(2);
+  const worksTotal=+(d.worksPrice*d.worksQty).toFixed(2);
+  const grandTotal=+(acTotal+matTotal+worksTotal).toFixed(2);
+
+  ctx.y=30;
+  drawText(ctx,`ДОГОВОР-СЧЕТ № ${d.contractNumber}`,{bold:true,size:15,align:'center',maxW:CW});
+  gap(ctx,4);
+  drawText(ctx,'на поставку и монтаж',{size:11,align:'center',maxW:CW});
+  gap(ctx,18);
+
+  ctx.page.drawText(`г. ${d.city}`,{x:ML,y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
+  const ds=`«${d.contractDate}»`;
+  ctx.page.drawText(ds,{x:ML+CW-txtW(fontR,ds,9),y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
+  ctx.y+=18; hRule(ctx,C.border,0.5); gap(ctx,10);
+
+  const idPart=d.ind.idCard?`, ID-карта: ${d.ind.idCard}`:'';
+  const addrPart=d.ind.address?`, зарегистрирован(а) по адресу: ${d.ind.address}`:'';
+  drawText(ctx,`Исполнитель: ООО «Эвериз Сервис», в лице директора ${d.co.dirFull}, действующего на основании Устава, и Заказчик: ${d.ind.name}${addrPart}${idPart}, в дальнейшем совместно именуемые «Стороны», заключили настоящий договор-счет о нижеследующем:`,{size:9.5,maxW:CW});
+  gap(ctx,10);
+
+  drawText(ctx,'1. Исполнитель принимает на себя обязанности выполнить, а Заказчик принять и оплатить следующие работы (далее – Работы):',{size:9.5,maxW:CW});
+  gap(ctx,6);
+
+  const rows:string[][]=[];
+  rows.push(['1',`Сплит-система ${d.acModel}`,d.acUnit||'комплект',String(d.acQty),fC(d.acPrice),fC(acTotal)]);
+  if(matTotal>0) rows.push([String(rows.length+1),'Материалы','комплект','1',fC(matTotal),fC(matTotal)]);
+  rows.push([String(rows.length+1),d.worksDesc||'Монтажные работы',d.worksUnit||'комплект',String(d.worksQty),fC(d.worksPrice),fC(worksTotal)]);
+
+  drawTable(ctx,[
+    {label:'№',w:22,align:'center'},{label:'Наименование, оборудования, материалов, работ',w:222},
+    {label:'Ед. изм.',w:52,align:'center'},{label:'Кол-во',w:40,align:'center'},
+    {label:'Цена, BYN',w:65,align:'right'},{label:'Всего, BYN',w:94,align:'right'}],rows);
+
+  ensureSpace(ctx,22);
+  ctx.page.drawText('ИТОГО:',{x:ML+4,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
+  const gtStr=fC(grandTotal);
+  ctx.page.drawText(gtStr,{x:ML+CW-txtW(fontB,gtStr,10)-4,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
+  ctx.y+=20; gap(ctx,4);
+
+  drawText(ctx,`Общая стоимость оборудования, материалов и работ: ${amountFull(grandTotal,d.withVat)}.`,{size:9.5,maxW:CW});
+  gap(ctx,8);
+
+  let payText=`2. Оплата оборудования и материалов осуществляется в белорусских рублях путем перечисления аванса в размере ${amountFull(d.advanceAmt,d.withVat)}, на расчетный счет Исполнителя в течение 3 (трех) рабочих дней со дня подписания договора.`;
+  if(d.stage1Amt>0||d.stage2Amt>0) payText+=` Оплата работ осуществляется в 2 этапа: 1. Этап после монтажа инженерных коммуникаций в размере ${amountFull(d.stage1Amt,d.withVat)}; 2 Этап после монтажа оборудования в размере ${amountFull(d.stage2Amt,d.withVat)}.`;
+  payText+=' Окончательный расчет осуществляется в течение 3 (трех) банковских дней со дня подписания акта выполненных работ.';
+  drawText(ctx,payText,{size:9.5,maxW:CW}); gap(ctx,8);
+
+  for(const cl of [
+    '3. Исполнитель вправе выполнять Работы как своими силами, так и с привлечением третьих лиц.',
+    '4. Срок выполнения работ – по согласованию с заказчиком.',
+    '5. При завершении работ Исполнитель представляет акт сдачи-приемки выполненных работ. Заказчик в течение 5-ти дней со дня получения акта сдачи-приемки выполненных работ обязан передать Исполнителю подписанный акт или мотивированный отказ от приемки работ в письменной форме. В случае просрочки Заказчиком сроков подписания акта или не предоставления претензий со стороны Заказчика к качеству выполненных Исполнителем работ, Работы считаются выполненными надлежащим образом и принятыми Заказчиком в полном объеме.',
+    '6. В случае нарушения сроков оплаты Заказчик выплачивает Исполнителю пеню в размере 0,15% от суммы просроченного платежа за каждый день просрочки.',
+    '7. Все споры при не достижении между сторонами согласия подлежат рассмотрению в Экономическом суде по месту нахождения Исполнителя. До обращения в суд предъявление письменной претензии является обязательным. Срок рассмотрения претензии – 5 календарных дней с момента ее получения.',
+    '8. Переданные по факсимильной связи или посредством электронной почты настоящий договор-счет и иные документы имеют юридическую силу, с последующим предоставлением подлинников в течение 30 (тридцати) дней.',
+    '9. Во всем остальном стороны руководствуются законодательством Республики Беларусь.',
+    '10. Настоящий договор-счет вступает в силу с момента его подписания и действует до окончания исполнения Сторонами обязательств по настоящему договору.',
+    '11. Настоящий договор-счет составлен на 1 (одном листе).',
+  ]) { drawText(ctx,cl,{size:9.5,maxW:CW}); gap(ctx,5); }
+  gap(ctx,12);
+
+  hRule(ctx,C.border,0.5); gap(ctx,10);
+  const half=(CW-20)/2;
+  const indInitials=toInitials(d.ind.name);
+  const leftSig:[boolean,string][]=[
+    [true,'Исполнитель:'],[true,d.co.name],
+    [false,`УНП ${d.co.unp}`],
+    [false,`Юр. адрес: ${d.co.legalAddr}`],
+    [false,`Почт. адрес: ${d.co.postalAddr}`],
+    [false,`р/с ${d.co.account}`],
+    [false,`в ${d.co.bank}, БИК ${d.co.bik}`],
+    [false,`E-mail: ${d.co.email}`],
+    [false,`Тел. ${d.co.phone}`],
+    [false,`Директор _________________ /${d.co.dirShort}/`],
+  ];
+  const rightSig:[boolean,string][]=[
+    [true,'Заказчик:'],[true,d.ind.name],
+    ...(d.ind.address?[[false,d.ind.address]]as[boolean,string][]:[] as[boolean,string][]),
+    ...(d.ind.idCard?[[false,`ID-карта ${d.ind.idCard}`]]as[boolean,string][]:[] as[boolean,string][]),
+    ...(d.ind.phone?[[false,`Тел. ${d.ind.phone}`]]as[boolean,string][]:[] as[boolean,string][]),
+    ...(d.ind.email?[[false,`e-mail: ${d.ind.email}`]]as[boolean,string][]:[] as[boolean,string][]),
+    [false,''],
+    [false,`_________________ /${indInitials}/`],
+  ];
+  drawTwoColBlock(ctx,leftSig,rightSig,half,ML+half+20);
+  return pdfDoc.save();
+}
+
+async function genEverisFullContractPDF(d: EverisPackageData): Promise<Uint8Array> {
+  const fonts=await loadFonts();
+  const pdfDoc=await PDFDocument.create(); pdfDoc.registerFontkit(fontkit);
+  const fontR=await pdfDoc.embedFont(fonts.r), fontB=await pdfDoc.embedFont(fonts.b);
+  const ctx:PdfCtx={doc:pdfDoc,page:pdfDoc.addPage([PW,PH]),y:0,fontR,fontB};
+
+  const acTotal=+(d.acPrice*d.acQty).toFixed(2);
+  const matTotal=+d.materials.reduce((s,m)=>s+m.price*m.qty,0).toFixed(2);
+  const worksTotal=+(d.worksPrice*d.worksQty).toFixed(2);
+  const grandTotal=+(acTotal+matTotal+worksTotal).toFixed(2);
+
+  ctx.y=30;
+  drawText(ctx,`ДОГОВОР № ${d.contractNumber}`,{bold:true,size:15,align:'center',maxW:CW});
+  gap(ctx,4);
+  drawText(ctx,'на монтаж систем кондиционирования',{size:11,align:'center',maxW:CW});
+  gap(ctx,18);
+  ctx.page.drawText(`г. ${d.city}`,{x:ML,y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
+  const ds=`«${d.contractDate}»`;
+  ctx.page.drawText(ds,{x:ML+CW-txtW(fontR,ds,9),y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
+  ctx.y+=18; hRule(ctx,C.border,0.5); gap(ctx,10);
+
+  drawText(ctx,`${d.co.name} (аттестат соответствия № 0019478-СТ), именуемое в дальнейшем Исполнитель, в лице директора ${d.co.dirFull}, действующего на основании Устава, с одной стороны, и ${d.org.name}, именуемый в дальнейшем Заказчик, в лице директора ${d.org.dirFull}, действующего на основании ${d.org.dirBasis||'Устава'}, с другой стороны, а вместе именуемые Стороны, заключили настоящий договор о нижеследующем:`,{size:9.5,maxW:CW});
+  gap(ctx,10);
+
+  sectionHeader(ctx,'1. ПРЕДМЕТ ДОГОВОРА',C.navy);
+  drawText(ctx,`1.1. ИСПОЛНИТЕЛЬ обязуется осуществить поставку оборудования, материалов и выполнить комплекс работ по монтажу системы кондиционирования (далее – «Работы») на объекте: ${d.objectDesc}, расположенный по адресу: ${d.objectAddr} (далее – Объект) и передать результат работ ЗАКАЗЧИКУ, а ЗАКАЗЧИК обязуется принять и оплатить оборудование, материалы и работы по ценам и на условиях настоящего договора.`,{size:9.5,maxW:CW});
+
+  sectionHeader(ctx,'2. СРОКИ И ПОРЯДОК ПОСТАВКИ И ВЫПОЛНЕНИЯ РАБОТ',C.navy);
+  for(const t of [
+    '2.1. Сроки поставки и выполнения работ:',
+    '2.1.1. ИСПОЛНИТЕЛЬ приступает к работе в течение 3 дней после поставки материалов и оборудования на объект или в сроки, согласованные с ЗАКАЗЧИКОМ дополнительно.',
+    '2.1.2. Срок поставки оборудования и материалов – до 5 рабочих дней с момента поступления предварительной оплаты.',
+    '2.2. Поставка оборудования осуществляется транспортом ИСПОЛНИТЕЛЯ по адресу согласно п. 1.1 настоящего договора.',
+    '2.3. По окончании выполнения Работ ИСПОЛНИТЕЛЬ предоставляет ЗАКАЗЧИКУ акт сдачи-приемки выполненных работ (далее – «Акт»). В течение 5 (пяти) рабочих дней с момента получения Акта ЗАКАЗЧИК принимает работы и направляет ИСПОЛНИТЕЛЮ подписанный Акт или мотивированный отказ. Неполучение ИСПОЛНИТЕЛЕМ подписанного Акта в указанный срок означает принятие работ ЗАКАЗЧИКОМ.',
+    '2.4. В случае выявления недостатков по качеству и (или) комплектности оборудования, ИСПОЛНИТЕЛЬ осуществляет замену в течение 30 (тридцати) календарных дней с момента получения письменного уведомления.',
+    '2.5. Сроки продлеваются в случаях: несвоевременной передачи помещения; выявления дополнительных объемов работ; неблагоприятных погодных условий; несвоевременного перечисления аванса.',
+  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
+
+  sectionHeader(ctx,'3. СТОИМОСТЬ РАБОТ И ПОРЯДОК РАСЧЕТОВ',C.navy);
+  drawText(ctx,`3.1. Стоимость оборудования, материалов и работ по договору определена протоколом согласования договорной цены (Приложение №1) и составляет ${amountFull(grandTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
+  drawText(ctx,`3.2. Стоимость оборудования составляет ${amountFull(acTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
+  drawText(ctx,`3.3. Стоимость материалов составляет ${amountFull(matTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
+  drawText(ctx,`3.4. Стоимость работ составляет ${amountFull(worksTotal,d.withVat)}.`,{size:9.5,maxW:CW});
+
+  sectionHeader(ctx,'4. ПОРЯДОК РАСЧЕТОВ',C.navy);
+  for(const t of [
+    '4.1. ЗАКАЗЧИК производит оплату оборудования, материалов и работ в следующем порядке:',
+    '4.1.1. Стоимость оборудования и материалов ЗАКАЗЧИК оплачивает в качестве предварительной оплаты в течение 5 (пяти) календарных дней со дня заключения настоящего Договора.',
+    '4.1.2. Стоимость работ по монтажу систем кондиционирования в течение 3 (трех) банковских дней с момента подписания Акта выполненных работ.',
+    '4.2. Расчеты производятся в безналичном порядке платежными поручениями путем перечисления ЗАКАЗЧИКОМ денежных средств на текущий (расчетный) счет ИСПОЛНИТЕЛЯ.',
+    '4.3. Датой оплаты считается день поступления средств на текущий (расчетный) счет ИСПОЛНИТЕЛЯ.',
+    '4.4. Сумма предварительной оплаты не является коммерческим займом. Проценты за пользование коммерческим займом не начисляются.',
+  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
+
+  sectionHeader(ctx,'5. ПРАВА И ОБЯЗАННОСТИ СТОРОН',C.navy);
+  for(const t of [
+    '5.1. ЗАКАЗЧИК обязуется: своевременно принять и оплатить работы; остановить выполнение работ в случае нарушения технологии; осуществить приемку выполненных работ по комплектности и качеству. Претензии по комплектности после подписания Акта не принимаются.',
+    '5.2. ИСПОЛНИТЕЛЬ обязуется: выполнить и сдать ЗАКАЗЧИКУ все обусловленные договором работы; обеспечить качество работ и оформление необходимой документации; своевременно и за свой счет устранять выявленные недоделки и дефекты; предоставить акт сдачи-приемки выполненных работ.',
+    '5.3. Гарантийное обслуживание оборудования осуществляется при наличии руководства по эксплуатации и гарантийного талона. Гарантийные обязательства не распространяются на механические повреждения, самостоятельный ремонт и повреждения от стихийных бедствий.',
+  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
+
+  sectionHeader(ctx,'6. ОТВЕТСТВЕННОСТЬ СТОРОН',C.navy);
+  for(const t of [
+    '6.1. ЗАКАЗЧИК несет ответственность: за необоснованное уклонение от приемки – 0,01% стоимости непринятых работ за каждый день просрочки; за несвоевременные расчеты – 0,01% не перечисленной суммы за каждый день; за уклонение от подписания акта сверки – штраф 10 базовых величин.',
+    '6.2. ИСПОЛНИТЕЛЬ несет ответственность: за нарушение сроков выполнения работ – 0,01% стоимости работ за каждый день просрочки, но не более их стоимости.',
+    '6.3. Уплата штрафных санкций не освобождает стороны от исполнения обязательств по договору.',
+  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
+
+  sectionHeader(ctx,'7. ФОРС-МАЖОР',C.navy);
+  for(const t of [
+    '7.1. Стороны освобождаются от ответственности за неисполнение обязательств вследствие обстоятельств непреодолимой силы: наводнение, пожар, землетрясение, ураган; война, военные действия, террористический акт; нормативный правовой акт, препятствующий исполнению обязательств.',
+    '7.2. Сторона, для которой возникла невозможность исполнения обязательств, должна уведомить другую Сторону в письменной форме не позднее 7 (семи) рабочих дней с момента наступления таких обстоятельств. Факты подтверждаются Белорусской торгово-промышленной палатой.',
+  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
+
+  sectionHeader(ctx,'8. ПОРЯДОК РАЗРЕШЕНИЯ СПОРОВ',C.navy);
+  for(const t of [
+    '8.1. Все споры и разногласия по настоящему договору решаются путем переговоров.',
+    '8.2. До обращения в суд предъявление письменной претензии является обязательным. Срок рассмотрения – 5 (пять) календарных дней. Споры рассматриваются в Экономическом суде по месту нахождения Исполнителя.',
+  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
+
+  sectionHeader(ctx,'9. ДОПОЛНИТЕЛЬНЫЕ УСЛОВИЯ',C.navy);
+  for(const t of [
+    '9.1. Настоящий договор вступает в силу с момента его подписания и действует до момента выполнения Сторонами всех обязательств.',
+    '9.2. Изменение условий договора возможно только по соглашению сторон в письменной форме.',
+    '9.3. Переданные по электронной почте договор и документы имеют юридическую силу с последующим предоставлением подлинников в течение 30 (тридцати) календарных дней.',
+    '9.4. Во всём остальном стороны руководствуются нормами действующего законодательства Республики Беларусь.',
+    '9.5. Настоящий договор составлен в двух экземплярах, имеющих равную юридическую силу.',
+  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
+
+  sectionHeader(ctx,'10. ПРИЛОЖЕНИЯ',C.navy);
+  drawText(ctx,'Приложение № 1 – Спецификация-протокол согласования договорной цены.',{size:9.5,maxW:CW}); gap(ctx,4);
+
+  sectionHeader(ctx,'11. РЕКВИЗИТЫ И ПОДПИСИ СТОРОН',C.navy);
+  gap(ctx,4);
+  const half=(CW-20)/2;
+  const orgInitials=toInitials(d.org.dirFull);
+  const leftSig:[boolean,string][]=[
+    [true,'ИСПОЛНИТЕЛЬ:'],[true,d.co.name],
+    [false,`УНП ${d.co.unp}`],
+    [false,`Юридический адрес: ${d.co.legalAddr}`],
+    [false,`Почтовый адрес: ${d.co.postalAddr}`],
+    [false,`р/с ${d.co.account}`],
+    [false,`в ${d.co.bank}, БИК ${d.co.bik}`],
+    [false,`E-mail: ${d.co.email}`],
+    [false,''],
+    [false,`Директор _________________ /${d.co.dirShort}/`],
+  ];
+  const rightSig:[boolean,string][]=[
+    [true,'ЗАКАЗЧИК:'],[true,d.org.name],
+    [false,`УНП ${d.org.unp}`],
+    [false,`Юридический адрес: ${d.org.legalAddr}`],
+    ...(d.org.postalAddr?[[false,`Почтовый адрес: ${d.org.postalAddr}`]]as[boolean,string][]:[] as[boolean,string][]),
+    [false,`р/с ${d.org.account}`],
+    [false,`в ${d.org.bank}, БИК ${d.org.bik}`],
+    [false,`E-mail: ${d.org.email}`],
+    [false,''],
+    [false,`Директор _________________ /${orgInitials}/`],
+  ];
+  drawTwoColBlock(ctx,leftSig,rightSig,half,ML+half+20);
+  return pdfDoc.save();
+}
+
+async function genEverisSpecPDF(d: EverisPackageData): Promise<Uint8Array> {
+  const fonts=await loadFonts();
+  const pdfDoc=await PDFDocument.create(); pdfDoc.registerFontkit(fontkit);
+  const fontR=await pdfDoc.embedFont(fonts.r), fontB=await pdfDoc.embedFont(fonts.b);
+  const ctx:PdfCtx={doc:pdfDoc,page:pdfDoc.addPage([PW,PH]),y:0,fontR,fontB};
+  const fC=(n:number)=>n.toFixed(2);
+
+  const acTotal=+(d.acPrice*d.acQty).toFixed(2);
+  const acVatSum=d.withVat?+(acTotal*d.acVat/100).toFixed(2):0;
+  const acWithVat=+(acTotal+acVatSum).toFixed(2);
+  let matTotal=0,matVatTotal=0;
+  for(const m of d.materials){
+    const s=+(m.price*m.qty).toFixed(2);
+    const v=d.withVat?+(s*m.vat/100).toFixed(2):0;
+    matTotal=+(matTotal+s).toFixed(2);
+    matVatTotal=+(matVatTotal+v).toFixed(2);
+  }
+  const matWithVat=+(matTotal+matVatTotal).toFixed(2);
+  const wTotal=+(d.worksPrice*d.worksQty).toFixed(2);
+  const wVat=d.withVat?+(wTotal*d.worksVat/100).toFixed(2):0;
+  const wWithVat=+(wTotal+wVat).toFixed(2);
+  const grandTotal=+(acTotal+matTotal+wTotal).toFixed(2);
+  const grandVat=+(acVatSum+matVatTotal+wVat).toFixed(2);
+  const grandWithVat=+(grandTotal+grandVat).toFixed(2);
+
+  ctx.y=28;
+  drawText(ctx,'Приложение №1',{size:11,align:'center',maxW:CW});
+  gap(ctx,3);
+  drawText(ctx,`к договору №${d.contractNumber} от ${d.contractDate}`,{size:9.5,align:'center',maxW:CW});
+  gap(ctx,12);
+  drawText(ctx,'Спецификация-протокол согласования договорной цены',{bold:true,size:13,align:'center',maxW:CW});
+  gap(ctx,14); hRule(ctx,C.border,0.5); gap(ctx,10);
+
+  const cName=d.clientType==='org'?d.org.name:d.ind.name;
+  const cDir=d.clientType==='org'?d.org.dirFull:d.ind.name;
+  const cBasis=d.clientType==='org'?(d.org.dirBasis||'Устава'):'';
+  const cSuffix=cBasis?`, действующей на основании ${cBasis}`:'';
+  drawText(ctx,`${d.co.name}, именуемое в дальнейшем «ИСПОЛНИТЕЛЬ», в лице директора ${d.co.dirFull}, действующего на основании Устава, с одной стороны, и ${cName}, именуемое в дальнейшем «ЗАКАЗЧИК» в лице ${cDir}${cSuffix}, достигли соглашения о составе и величине договорной цены поставляемого Товара и Услуг, в соответствие с п.п. 1.1. настоящего Договора:`,{size:9.5,maxW:CW});
+  gap(ctx,10);
+
+  const specRows:string[][]=[];
+  const vatLabel=(v:number)=>d.withVat?String(v):'—';
+  specRows.push(['1',`Сплит-система ${d.acModel}`,d.acUnit||'компл.',String(d.acQty),fC(d.acPrice),fC(acTotal),vatLabel(d.acVat),fC(acVatSum),fC(acWithVat)]);
+  let rowIdx=2;
+  for(const m of d.materials){
+    const s=+(m.price*m.qty).toFixed(2);
+    const v=d.withVat?+(s*m.vat/100).toFixed(2):0;
+    specRows.push([String(rowIdx++),m.name,m.unit,String(m.qty),fC(m.price),fC(s),vatLabel(m.vat),fC(v),fC(+(s+v).toFixed(2))]);
+  }
+  specRows.push([String(rowIdx),d.worksDesc||'Работы',d.worksUnit||'компл.',String(d.worksQty),fC(d.worksPrice),fC(wTotal),vatLabel(d.worksVat),fC(wVat),fC(wWithVat)]);
+
+  drawTable(ctx,[
+    {label:'№',w:20,align:'center'},{label:'Наименование товара (услуги, работы)',w:155},
+    {label:'Ед.',w:28,align:'center'},{label:'Кол-во',w:34,align:'center'},
+    {label:'Цена, руб',w:53,align:'right'},{label:'Сумма, руб',w:57,align:'right'},
+    {label:'НДС %',w:34,align:'center'},{label:'Сумма НДС',w:54,align:'right'},
+    {label:'С НДС, руб',w:60,align:'right'},
+  ],specRows);
+
+  ensureSpace(ctx,22);
+  ctx.page.drawText('Итого',{x:ML+4,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
+  const w495=ML+20+155+28+34+53; // sum col x
+  ctx.page.drawText(fC(grandTotal),{x:w495,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
+  ctx.page.drawText(fC(grandVat),{x:w495+57+34,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
+  ctx.page.drawText(fC(grandWithVat),{x:w495+57+34+54,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
+  ctx.y+=20; gap(ctx,10);
+
+  drawText(ctx,`Общая стоимость оборудования – ${amountFull(d.withVat?acWithVat:acTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
+  drawText(ctx,`Общая стоимость материалов – ${amountFull(d.withVat?matWithVat:matTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
+  drawText(ctx,`Стоимость работ составляет ${amountFull(d.withVat?wWithVat:wTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,12);
+
+  hRule(ctx,C.border,0.5); gap(ctx,10);
+  const half=(CW-20)/2;
+  const cInitials=d.clientType==='org'?toInitials(d.org.dirFull):toInitials(d.ind.name);
+  const monthYear=d.contractDate.split(' ').slice(-2).join(' ');
+  drawTwoColBlock(ctx,[
+    [true,'ИСПОЛНИТЕЛЬ:'],[false,''],[false,`_________________ /${d.co.dirShort}/`],[false,'м.п.'],[false,`«___» ${monthYear} г.`],
+  ],[
+    [true,'ЗАКАЗЧИК:'],[false,''],[false,`_________________ /${cInitials}/`],[false,'м.п.'],[false,`«___» ${monthYear} г.`],
+  ],half,ML+half+20);
+
+  return pdfDoc.save();
+}
+
+app.post('/make-server-1df47c03/documents/generate-package', async (c) => {
+  try {
+    const body = await c.req.json() as EverisPackageData;
+    if(!body.contractNumber) return c.json({error:'contractNumber обязателен'},400);
+    if(!body.acModel) return c.json({error:'acModel обязателен'},400);
+    console.log('[generate-package] type:', body.contractType, 'num:', body.contractNumber);
+
+    const pdfs: Array<{name:string; bytes:Uint8Array}> = [];
+    if(body.contractType==='invoice'){
+      pdfs.push({name:'contract', bytes: await genEverisInvoicePDF(body)});
+    } else {
+      pdfs.push({name:'contract', bytes: await genEverisFullContractPDF(body)});
+      pdfs.push({name:'spec', bytes: await genEverisSpecPDF(body)});
+    }
+
+    const pkgId = `pkg_${Date.now()}_${Math.random().toString(36).substr(2,9)}`;
+    const savedPaths: Record<string,string> = {};
+    const savedUrls:  Record<string,string> = {};
+    for(const pdf of pdfs){
+      const path = `packages/${pkgId}_${pdf.name}.pdf`;
+      const {error:ue} = await supabase.storage.from(DOC_BUCKET).upload(path, pdf.bytes, {contentType:'application/pdf',upsert:true});
+      if(ue) throw new Error(`Upload ${pdf.name}: ${ue.message}`);
+      savedPaths[`${pdf.name}Path`] = path;
+      const {data:sd} = await supabase.storage.from(DOC_BUCKET).createSignedUrl(path,60*60*24*30);
+      savedUrls[`${pdf.name}Url`] = sd?.signedUrl ?? '';
+    }
+
+    const grandTotal=+(body.acPrice*body.acQty + body.materials.reduce((s,m)=>s+m.price*m.qty,0) + body.worksPrice*body.worksQty).toFixed(2);
+    const pkg = {
+      id: pkgId, contractType: body.contractType,
+      contractNumber: body.contractNumber, contractDate: body.contractDate,
+      clientName: body.clientType==='individual' ? body.ind.name : body.org.name,
+      clientType: body.clientType, grandTotal,
+      ...savedPaths, ...savedUrls,
+      createdAt: new Date().toISOString(),
+    };
+    await kv.set(`docpkg:${pkgId}`, JSON.stringify(pkg));
+    const listRaw = await kv.get('docpkg:list');
+    const list: string[] = listRaw ? JSON.parse(listRaw) : [];
+    list.unshift(pkgId); if(list.length>100) list.splice(100);
+    await kv.set('docpkg:list', JSON.stringify(list));
+    console.log('[generate-package] saved:', pkgId);
+    return c.json({package: pkg});
+  } catch(err:any){
+    console.error('[generate-package] error:', err);
+    return c.json({error:`Ошибка генерации: ${err.message}`},500);
+  }
+});
+
+app.get('/make-server-1df47c03/documents/packages', async (c) => {
+  try {
+    const listRaw = await kv.get('docpkg:list');
+    if(!listRaw) return c.json({packages:[]});
+    const ids: string[] = JSON.parse(listRaw);
+    const packages = [];
+    for(const id of ids.slice(0,50)){
+      const raw = await kv.get(`docpkg:${id}`); if(!raw) continue;
+      const pkg = JSON.parse(raw);
+      const newUrls: Record<string,string> = {};
+      for(const key of ['contractPath','specPath']){
+        if(pkg[key]){
+          const {data:sd} = await supabase.storage.from(DOC_BUCKET).createSignedUrl(pkg[key],60*60*24*30);
+          newUrls[key.replace('Path','Url')] = sd?.signedUrl ?? '';
+        }
+      }
+      packages.push({...pkg,...newUrls});
+    }
+    return c.json({packages});
+  } catch(err:any){ return c.json({error:err.message},500); }
+});
+
+app.get('/make-server-1df47c03/company-everis', async (c) => {
+  const def = {
+    name:'ООО «Эвериз Сервис»', unp:'192812488',
+    dirFull:'Бурак Борис Михайлович', dirShort:'Б.М. Бурак',
+    legalAddr:'220053, г. Минск, ул. Орловская, д. 40а, пом. 6',
+    postalAddr:'220125, г. Минск, ул. Ложинская, д. 4, пом. 36',
+    account:'BY29 MTBK 3012 0001 0933 0013 0402',
+    bank:'ЗАО «МТБанк»', bik:'MTBKBY22',
+    email:'info@everis.by', phone:'+375 44 573 22 22',
+  };
+  try {
+    const raw = await kv.get('config:company-everis');
+    return c.json({company: raw ? {...def,...JSON.parse(raw)} : def});
+  } catch { return c.json({company:def}); }
+});
+
+app.post('/make-server-1df47c03/company-everis', async (c) => {
+  try {
+    const body = await c.req.json();
+    await kv.set('config:company-everis', JSON.stringify(body));
+    return c.json({success:true, company:body});
+  } catch(err:any) { return c.json({error:err.message},500); }
 });
 
 Deno.serve(app.fetch);

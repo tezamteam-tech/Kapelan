@@ -5,7 +5,7 @@ import {
   LayoutDashboard, MessageSquare, ClipboardList, Wrench, Package,
   Bell, Wind, GraduationCap, ShoppingCart, FileText, Settings,
   Users, ChevronLeft, ChevronRight, LogOut, Snowflake, Menu, X,
-  CalendarDays, ClipboardCheck
+  CalendarDays, ClipboardCheck, Ruler
 } from "lucide-react";
 
 interface NavItem {
@@ -20,6 +20,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/dashboard",      label: "Дашборд",         icon: <LayoutDashboard size={20} />, roles: ["admin"] },
   { path: "/ai-chat",        label: "AI Менеджер",     icon: <MessageSquare size={20} />,   roles: ["admin", "manager"] },
   { path: "/leads",          label: "Заявки",          icon: <ClipboardList size={20} />,    roles: ["admin", "manager"] },
+  { path: "/measurements",   label: "Замеры",           icon: <Ruler size={20} />,            roles: ["admin", "manager", "installer"] },
   { path: "/install-orders", label: "Ордера монтажа",  icon: <ClipboardCheck size={20} />,  roles: ["admin", "manager", "installer"] },
   { path: "/tasks",          label: "Мои задачи",      icon: <Wrench size={20} />,           roles: ["admin", "installer"] },
   { path: "/calendar",       label: "Календарь",       icon: <CalendarDays size={20} />,     roles: ["admin", "manager"] },

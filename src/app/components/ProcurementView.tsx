@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { useCurrency } from "./CurrencyContext";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };
@@ -72,6 +73,8 @@ const fmt = (n: number) => n.toLocaleString("ru-RU");
 
 // ─── ProcurementView ──────────────────────────────────────────────────────────
 export function ProcurementView() {
+  const { fmtShort } = useCurrency();
+  const fmt = fmtShort;
   const [tab, setTab] = useState<ProcTab>("orders");
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [pendingPOs, setPendingPOs] = useState<PurchaseOrder[]>([]);
@@ -426,6 +429,7 @@ function PendingGroup({ group, pendingPOs, supplier, onBuild }: {
   supplier?: Supplier;
   onBuild: (supId: string, poIds: string[]) => void;
 }) {
+  const { fmtShort } = useCurrency();
   // We can't filter by category here (POs don't carry category directly — they come from warehouse items)
   // Show group as informational card for this supplier's categories
   if (!supplier) return null;
@@ -445,7 +449,7 @@ function PendingGroup({ group, pendingPOs, supplier, onBuild }: {
         </div>
         <div className="text-right">
           <p className="text-xs text-slate-400">Доставка ~{supplier.terms.deliveryDays} дн.</p>
-          <p className="text-xs text-slate-400">Мин. {fmt(supplier.terms.minOrderAmount)} ₴</p>
+          <p className="text-xs text-slate-400">Мин. {fmtShort(supplier.terms.minOrderAmount)}</p>
         </div>
       </div>
 
@@ -488,6 +492,7 @@ function ProcOrderCard({ order, sending, onSend, onDetail, onCancel }: {
   order: ProcurementOrder; sending: boolean;
   onSend: () => void; onDetail: () => void; onCancel: () => void;
 }) {
+  const { fmtShort } = useCurrency();
   const s = PROC_STATUS[order.status];
   const dt = new Date(order.createdAt).toLocaleDateString("uk-UA", { day: "2-digit", month: "2-digit", year: "2-digit" });
 
@@ -517,7 +522,7 @@ function ProcOrderCard({ order, sending, onSend, onDetail, onCancel }: {
             )}
           </div>
           <div className="text-right flex-shrink-0">
-            <p className="text-base font-black text-slate-800">{fmt(order.totalCost)} ₴</p>
+            <p className="text-base font-black text-slate-800">{fmtShort(order.totalCost)}</p>
             {order.mockApiResponse?.confirmationNumber && (
               <p className="text-[10px] text-green-700 font-mono font-bold">{order.mockApiResponse.confirmationNumber}</p>
             )}
@@ -547,6 +552,7 @@ function OrderDetailModal({ order, sending, onClose, onSend }: {
   order: ProcurementOrder; sending: boolean;
   onClose: () => void; onSend: () => void;
 }) {
+  const { fmtShort } = useCurrency();
   const s = PROC_STATUS[order.status];
   const r = order.mockApiResponse;
 
@@ -565,7 +571,7 @@ function OrderDetailModal({ order, sending, onClose, onSend }: {
               <p className="text-sm text-slate-400">📧 {order.supplierEmail}</p>
             </div>
             <div className="text-right">
-              <p className="text-xl font-black text-indigo-700">{fmt(order.totalCost)} ₴</p>
+              <p className="text-xl font-black text-indigo-700">{fmtShort(order.totalCost)}</p>
               <p className="text-xs text-slate-400">{order.lines.length} позиций</p>
             </div>
           </div>
@@ -638,7 +644,7 @@ function OrderDetailModal({ order, sending, onClose, onSend }: {
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="text-xs font-bold text-slate-700">{line.qty} {line.unit}</p>
-                    <p className="text-[10px] text-indigo-700 font-semibold">{fmt(line.totalCost)} ₴</p>
+                    <p className="text-[10px] text-indigo-700 font-semibold">{fmtShort(line.totalCost)}</p>
                   </div>
                 </div>
               ))}
@@ -673,6 +679,7 @@ function BuildOrderModal({ suppliers, pendingPOs, onClose, onBuild }: {
   onClose: () => void;
   onBuild: (supId: string, poIds?: string[]) => Promise<void>;
 }) {
+  const { fmtShort } = useCurrency();
   const [supId, setSupId] = useState(suppliers[0]?.id ?? "");
   const [building, setBuilding] = useState(false);
 
@@ -697,7 +704,7 @@ function BuildOrderModal({ suppliers, pendingPOs, onClose, onBuild }: {
           <div className="bg-indigo-50 rounded-2xl p-4 border border-indigo-100 space-y-1.5 text-sm">
             <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-2">Инфо о поставщике</p>
             <div className="flex justify-between"><span className="text-slate-600">Доставка</span><span className="font-bold">{sel.terms.deliveryDays} дн.</span></div>
-            <div className="flex justify-between"><span className="text-slate-600">Мин. заказ</span><span className="font-bold">{fmt(sel.terms.minOrderAmount)} ₴</span></div>
+            <div className="flex justify-between"><span className="text-slate-600">Мин. заказ</span><span className="font-bold">{fmtShort(sel.terms.minOrderAmount)}</span></div>
             <div className="flex justify-between"><span className="text-slate-600">Оплата</span><span className="font-bold">Net {sel.terms.paymentDays}</span></div>
             <div className="flex justify-between"><span className="text-slate-600">API эндпоинт</span><span className="font-mono text-xs text-indigo-700 truncate max-w-[180px]">{sel.apiEndpoint.replace("https://", "")}</span></div>
             <div className="pt-1 flex flex-wrap gap-1">
@@ -728,6 +735,7 @@ function BuildOrderModal({ suppliers, pendingPOs, onClose, onBuild }: {
 function SupplierCard({ supplier, onEdit, onDelete }: {
   supplier: Supplier; onEdit: () => void; onDelete: () => void;
 }) {
+  const { fmtShort } = useCurrency();
   const [expanded, setExpanded] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
 
@@ -762,7 +770,7 @@ function SupplierCard({ supplier, onEdit, onDelete }: {
             {[
               { l: "Доставка", v: `${supplier.terms.deliveryDays} дн.` },
               { l: "Оплата", v: `Net ${supplier.terms.paymentDays}` },
-              { l: "Мин. сумма", v: `${fmt(supplier.terms.minOrderAmount)} ₴` },
+              { l: "Мин. сумма", v: fmtShort(supplier.terms.minOrderAmount) },
             ].map(s => (
               <div key={s.l} className="bg-slate-50 rounded-xl p-2 text-center">
                 <p className="text-[9px] text-slate-400">{s.l}</p>
@@ -802,6 +810,7 @@ function SupplierFormModal({ supplier, onClose, onSave }: {
   onClose: () => void;
   onSave: (body: any) => Promise<void>;
 }) {
+  const { currency } = useCurrency();
   const [form, setForm] = useState({
     name: supplier?.name ?? "",
     categories: supplier?.categories ?? [],
@@ -876,7 +885,7 @@ function SupplierFormModal({ supplier, onClose, onSave }: {
               {[
                 { l: "Дни доставки", k: "deliveryDays" },
                 { l: "Оплата (дни)", k: "paymentDays" },
-                { l: "Мин. сумма ₴", k: "minOrderAmount" },
+                { l: `Мин. сумма ${currency.symbol}`, k: "minOrderAmount" },
               ].map(({ l, k }) => (
                 <div key={k}>
                   <p className="text-[10px] text-slate-400 mb-1">{l}</p>

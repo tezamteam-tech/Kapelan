@@ -3,6 +3,7 @@ import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { MaterialsPanel, MaterialsJson, TemplateEditor } from "./MaterialsPanel";
 import { OfferGeneratorView, OffersList } from "./OfferGeneratorView";
 import { AssignInstallerModal } from "./InstallerAssignment";
+import { useCurrency } from "./CurrencyContext";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AUTH_HEADERS = { Authorization: `Bearer ${publicAnonKey}` };
@@ -170,6 +171,7 @@ function PhotoGrid({ photos, cols = 3, maxVisible = 9 }: { photos: string[]; col
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export function AdminView() {
+  const { fmtShort } = useCurrency();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [clients, setClients] = useState<Record<string, Client>>({});
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
@@ -452,9 +454,9 @@ export function AdminView() {
                           {req.area && <Chip>📐 {req.area} м²</Chip>}
                           {req.roomType && <Chip>🏠 {req.roomType}</Chip>}
                           {req.roomsCount && <Chip>🚪 {req.roomsCount} комн.</Chip>}
-                          {req.budget && <Chip>💰 {req.budget.toLocaleString()} ₴</Chip>}
+                          {req.budget && <Chip>💰 {fmtShort(req.budget)}</Chip>}
                           {meas
-                            ? <Chip>📏 {meas.traceLength} м · {meas.workCost.toLocaleString()} ₴</Chip>
+                            ? <Chip>📏 {meas.traceLength} м · {fmtShort(meas.workCost)}</Chip>
                             : <Chip>⏳ Замер не выполнен</Chip>
                           }
                         </div>
@@ -484,7 +486,7 @@ export function AdminView() {
                                 {req.area && <p>📐 Площадь: <b>{req.area} м²</b></p>}
                                 {req.roomType && <p>🏠 Тип: <b>{req.roomType}</b></p>}
                                 {req.roomsCount && <p>🚪 Комнат: <b>{req.roomsCount}</b></p>}
-                                {req.budget && <p>💰 Бюджет: <b>{req.budget.toLocaleString()} ₴</b></p>}
+                                {req.budget && <p>💰 Бюджет: <b>{fmtShort(req.budget)}</b></p>}
                                 {req.preferences?.length > 0 && (
                                   <p>✨ Пожелания: <b>{req.preferences.join(", ")}</b></p>
                                 )}
@@ -503,7 +505,7 @@ export function AdminView() {
                                 <p>📏 Трасса: <b>{meas.traceLength} м</b></p>
                                 <p>🔌 Кабель: <b>{meas.cable}</b></p>
                                 <p>💧 Дренаж: <b>{meas.drainage}</b></p>
-                                <p>💰 Стоимость работ: <b>{meas.workCost.toLocaleString()} ₴</b></p>
+                                <p>💰 Стоимость работ: <b>{fmtShort(meas.workCost)}</b></p>
                                 {meas.notes && <p>📝 Примечания: <b>{meas.notes}</b></p>}
                               </div>
                               <div className="flex gap-3 mt-2">
@@ -622,10 +624,10 @@ export function AdminView() {
                         <Chip>📏 {meas.traceLength} м</Chip>
                         <Chip>🔌 {meas.cable}</Chip>
                         <Chip>💧 {meas.drainage}</Chip>
-                        <Chip>💰 {meas.workCost.toLocaleString()} ₴</Chip>
+                        <Chip>💰 {fmtShort(meas.workCost)}</Chip>
                         {meas.photos?.length > 0 && <Chip>📸 {meas.photos.length}</Chip>}
                         {meas.signature && <Chip>✍️</Chip>}
-                        {meas.materials_json && <Chip>📦 {meas.materials_json.totalMaterials.toLocaleString()} ₴</Chip>}
+                        {meas.materials_json && <Chip>📦 {fmtShort(meas.materials_json.totalMaterials)}</Chip>}
                       </div>
 
                       <div className="flex justify-between items-center">
@@ -640,7 +642,7 @@ export function AdminView() {
                           <p>📏 Трасса: <b>{meas.traceLength} м</b></p>
                           <p>🔌 Кабель: <b>{meas.cable}</b></p>
                           <p>💧 Дренаж: <b>{meas.drainage}</b></p>
-                          <p>💰 Стоимость: <b>{meas.workCost.toLocaleString()} ₴</b></p>
+                          <p>💰 Стоимость: <b>{fmtShort(meas.workCost)}</b></p>
                         </div>
                         {meas.notes && (
                           <p className="text-sm text-slate-700">📝 <b>{meas.notes}</b></p>

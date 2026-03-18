@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { useRole } from "./RoleContext";
+import { useCurrency } from "./CurrencyContext";
 import {
   Plus, Search, ArrowLeft, Package, User, MapPin, Thermometer,
   Calendar, ClipboardCheck, Zap, CheckCircle2, AlertCircle, Clock,
@@ -78,6 +79,7 @@ function useToast() {
 // ─── Main component ───────────────────────────────────────────────────────────
 export function InstallOrdersView() {
   const { role, userName } = useRole();
+  const { fmtShort } = useCurrency();
   const [searchParams, setSearchParams] = useSearchParams();
   const [orders, setOrders] = useState<InstallOrder[]>([]);
   const [selected, setSelected] = useState<InstallOrder | null>(null);
@@ -692,7 +694,7 @@ function InfoTab({ order: o, showAssign, setShowAssign, editInstaller, setEditIn
         <InfoRow label="Производитель" value={o.acBrand} />
         <InfoRow label="Модель" value={o.acModelName} />
         <InfoRow label="Мощность" value={`${o.acBtu} BTU / ${o.acKw} кВт`} />
-        <InfoRow label="Количество" value={`${o.acCount} шт. × ${fmt(o.acPrice)} ₴`} />
+        <InfoRow label="Количество" value={`${o.acCount} шт. × ${fmtShort(o.acPrice)}`} />
       </InfoCard>
 
       {/* Assignment */}
@@ -1356,7 +1358,7 @@ function AcSelectorGrid({ catalog, selected, onSelect, filterArea, suggestedId }
                     <div className="flex gap-3 mt-1 text-[10px] text-slate-400">
                       <span>{m.btu} BTU</span>
                       <span>{m.areaMin}–{m.areaMax} м²</span>
-                      <span className="text-teal-600 font-semibold">{fmt(m.price)} ₴</span>
+                      <span className="text-teal-600 font-semibold">{fmtShort(m.price)}</span>
                     </div>
                   </div>
                   {isSel && <CheckCircle2 size={18} className="text-teal-600 flex-shrink-0 mt-0.5" />}

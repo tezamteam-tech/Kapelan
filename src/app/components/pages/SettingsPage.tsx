@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
-import { Save, Send, CheckCircle, AlertCircle } from "lucide-react";
+import { Save, Send, CheckCircle, AlertCircle, Coins, Globe, Check } from "lucide-react";
+import { useCurrency, type CurrencyConfig } from "../CurrencyContext";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const HEADERS = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -10,6 +11,8 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const { currency, setCurrency, fmtShort, CURRENCIES } = useCurrency();
 
   const loadConfig = async () => {
     try {
@@ -56,7 +59,56 @@ export function SettingsPage() {
         <p className="text-sm text-slate-500 mt-0.5">Конфигурация системы</p>
       </div>
 
-      {/* Telegram */}
+      {/* ── Currency ──────────────────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-100 p-6 space-y-4">
+        <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+          <Coins size={18} className="text-amber-500" /> Валюта компании
+        </h3>
+        <p className="text-sm text-slate-500">
+          Выберите рабочую валюту. Все цены, КП и ордера будут отображаться в выбранной валюте.
+        </p>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {CURRENCIES.map(c => {
+            const isActive = c.name === currency.name;
+            return (
+              <button key={c.name} onClick={() => setCurrency(c)}
+                className={`flex flex-col items-center gap-2 p-4 rounded-2xl border-2 transition-all font-semibold ${
+                  isActive
+                    ? "border-blue-500 bg-blue-50 text-blue-700"
+                    : "border-slate-200 hover:border-slate-300 bg-white text-slate-600"
+                }`}>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-2xl font-black">{c.symbol}</span>
+                  {isActive && <Check size={14} className="text-blue-600" />}
+                </div>
+                <div className="text-center">
+                  <p className="font-bold text-sm">{c.name}</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">
+                    {c.position === "prefix" ? `${c.symbol}1 000` : `1 000 ${c.symbol}`}
+                  </p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="bg-slate-50 rounded-xl p-4 text-sm text-slate-600">
+          <p className="font-semibold text-slate-700 mb-1">Предпросмотр:</p>
+          <div className="flex flex-wrap gap-4 text-slate-800">
+            <span>Стоимость монтажа: <strong className="text-teal-700">{fmtShort(250)}</strong></span>
+            <span>Кондиционер: <strong className="text-teal-700">{fmtShort(1890)}</strong></span>
+            <span>Итого КП: <strong className="text-teal-700">{fmtShort(2450)}</strong></span>
+          </div>
+        </div>
+
+        <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 flex items-start gap-2">
+          <Globe size={13} className="flex-shrink-0 mt-0.5" />
+          Настройка сохраняется локально в браузере. Для команды — каждый пользователь устанавливает своё значение, либо синхронизируйте через единый профиль.
+        </div>
+      </div>
+
+      {/* ── Telegram ──────────────────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-slate-100 p-6 space-y-4">
         <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
           <span className="text-xl">📱</span> Telegram уведомления
@@ -100,7 +152,34 @@ export function SettingsPage() {
         )}
       </div>
 
-      {/* System info */}
+      {/* ── Workflow info ─────────────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-100 p-6 space-y-4">
+        <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+          <span className="text-xl">🔄</span> Процесс работы с клиентом
+        </h3>
+        <div className="space-y-3">
+          {[
+            { step: "1", icon: "📋", title: "Заявка поступает", desc: "Менеджер создаёт заявку в разделе «Заявки» или через AI-чат" },
+            { step: "2", icon: "📐", title: "Ордер на замер", desc: "Создаётся ордер на выезд → монтажник едет, делает замеры, вносит метраж трассы и расходники" },
+            { step: "3", icon: "📄", title: "КП для клиента", desc: "На основе замеров менеджер формирует финальное коммерческое предложение с ценой" },
+            { step: "4", icon: "📅", title: "Назначение монтажа", desc: "Клиент соглашается → планируется дата → создаётся ордер на монтаж" },
+            { step: "5", icon: "🏗️", title: "Ордер на монтаж", desc: "Монтажники получают задание с адресом и списком материалов со склада" },
+            { step: "6", icon: "✅", title: "Завершение", desc: "Монтаж выполнен → система создаёт напоминание о ТО через год" },
+          ].map(({ step, icon, title, desc }) => (
+            <div key={step} className="flex gap-3">
+              <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 text-xs font-black flex items-center justify-center flex-shrink-0">
+                {step}
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">{icon} {title}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── System info ──────────────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-slate-100 p-6 space-y-3">
         <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
           <span className="text-xl">ℹ️</span> Информация о системе
@@ -108,15 +187,21 @@ export function SettingsPage() {
         <div className="grid gap-2 text-sm">
           <div className="flex justify-between py-2 border-b border-slate-50">
             <span className="text-slate-500">Версия</span>
-            <span className="font-semibold text-slate-800">2.0.0</span>
+            <span className="font-semibold text-slate-800">2.1.0</span>
           </div>
           <div className="flex justify-between py-2 border-b border-slate-50">
             <span className="text-slate-500">Project ID</span>
             <span className="font-mono text-xs text-slate-600">{projectId}</span>
           </div>
+          <div className="flex justify-between py-2 border-b border-slate-50">
+            <span className="text-slate-500">Валюта</span>
+            <span className="font-semibold text-slate-800">{currency.name} ({currency.symbol})</span>
+          </div>
           <div className="flex justify-between py-2">
             <span className="text-slate-500">Модули</span>
-            <span className="text-slate-800 font-semibold">AI Chat, CRM, Склад, Закупки, ТО, Вентиляция, Обучение</span>
+            <span className="text-slate-800 font-semibold text-right text-xs">
+              AI Chat, CRM, Замеры, Склад, Закупки, ТО, Вентиляция, Обучение
+            </span>
           </div>
         </div>
       </div>

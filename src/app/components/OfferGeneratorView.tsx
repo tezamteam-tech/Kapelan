@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 import { DocumentsPanel } from "./DocumentsPanel";
+import { useCurrency } from "./CurrencyContext";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -91,6 +92,7 @@ interface OfferGeneratorProps {
 }
 
 export function OfferGeneratorView({ lead, client, measurement, onBack }: OfferGeneratorProps) {
+  const { fmtShort } = useCurrency();
   const [offers, setOffers] = useState<Offer[]>([]);
   const [generating, setGenerating] = useState(false);
   const [selectedOffer, setSelectedOffer] = useState<Offer | null>(null);
@@ -188,7 +190,7 @@ export function OfferGeneratorView({ lead, client, measurement, onBack }: OfferG
           {req.area && <Tag>📐 {req.area} м²</Tag>}
           {req.roomsCount && <Tag>🚪 {req.roomsCount} комн.</Tag>}
           {req.roomType && <Tag>🏠 {req.roomType}</Tag>}
-          {req.budget && <Tag>💰 до {fmt(req.budget)} ₴</Tag>}
+          {req.budget && <Tag>💰 до {fmtShort(req.budget)}</Tag>}
           {measurement && <Tag>📏 трасса {measurement.traceLength} м</Tag>}
         </div>
       </div>
@@ -202,8 +204,8 @@ export function OfferGeneratorView({ lead, client, measurement, onBack }: OfferG
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Данные замера</p>
             <div className="grid grid-cols-3 gap-3 text-center">
               <MiniStat label="Трасса" value={`${measurement.traceLength} м`} />
-              <MiniStat label="Работа" value={`${fmt(measurement.workCost)} ₴`} />
-              <MiniStat label="Материалы" value={`${fmt(measurement.materials_json?.totalMaterials ?? 0)} ₴`} />
+              <MiniStat label="Работа" value={fmtShort(measurement.workCost)} />
+              <MiniStat label="Материалы" value={fmtShort(measurement.materials_json?.totalMaterials ?? 0)} />
             </div>
           </div>
         )}
@@ -377,7 +379,7 @@ function OfferDetail({
                   </div>
                 )}
                 <p className="text-[10px] font-bold text-slate-500 mt-1">{v.label}</p>
-                <p className="text-sm font-bold text-slate-800 mt-0.5">{fmt(v.total)} ₴</p>
+                <p className="text-sm font-bold text-slate-800 mt-0.5">{fmtShort(v.total)}</p>
               </button>
             );
           })}
@@ -454,9 +456,9 @@ function VariantCard({ variant: v, isExpanded, onToggle }: {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-2xl font-black">{fmt(v.total)} ₴</p>
+          <p className="text-2xl font-black">{fmtShort(v.total)}</p>
           {v.discount > 0 && (
-            <p className="text-white/70 text-xs line-through">{fmt(v.subtotal)} ₴</p>
+            <p className="text-white/70 text-xs line-through">{fmtShort(v.subtotal)}</p>
           )}
         </div>
       </button>
@@ -489,9 +491,9 @@ function VariantCard({ variant: v, isExpanded, onToggle }: {
             <div className="flex justify-between items-center">
               <div>
                 <p className="text-sm font-bold text-slate-800">{v.ac.brand} {v.ac.model}</p>
-                <p className="text-xs text-slate-500">{v.acCount} шт × {fmt(v.ac.price)} ₴</p>
+                <p className="text-xs text-slate-500">{v.acCount} шт × {fmtShort(v.ac.price)}</p>
               </div>
-              <p className="text-base font-black text-slate-800">{fmt(v.acTotal)} ₴</p>
+              <p className="text-base font-black text-slate-800">{fmtShort(v.acTotal)}</p>
             </div>
           </div>
 
@@ -503,7 +505,7 @@ function VariantCard({ variant: v, isExpanded, onToggle }: {
             <div className="border-t border-slate-200 pt-2 mt-2">
               <div className="flex justify-between items-center">
                 <p className="text-sm font-black text-slate-800">ИТОГО</p>
-                <p className="text-xl font-black text-slate-900">{fmt(v.total)} ₴</p>
+                <p className="text-xl font-black text-slate-900">{fmtShort(v.total)}</p>
               </div>
             </div>
           </div>
@@ -519,8 +521,8 @@ function VariantCard({ variant: v, isExpanded, onToggle }: {
       {!isExpanded && (
         <div className="px-4 py-2.5 flex items-center justify-between">
           <div className="flex gap-3 text-xs text-slate-500">
-            <span>🔩 {fmt(v.materialsTotal)} ₴</span>
-            <span>🔧 {fmt(v.workCost)} ₴</span>
+            <span>🔩 {fmtShort(v.materialsTotal)}</span>
+            <span>🔧 {fmtShort(v.workCost)}</span>
           </div>
           <span className="text-xs text-slate-400">▼ Подробнее</span>
         </div>
@@ -558,7 +560,7 @@ function PriceLine({ label, value, isDiscount }: { label: string; value: number;
     <div className="flex justify-between items-center">
       <p className="text-xs text-slate-500">{label}</p>
       <p className={`text-sm font-semibold ${isDiscount ? "text-green-600" : "text-slate-700"}`}>
-        {isDiscount && value < 0 ? "−" : ""}{fmt(Math.abs(value))} ₴
+        {isDiscount && value < 0 ? "−" : ""}{fmtShort(Math.abs(value))}
       </p>
     </div>
   );
@@ -573,6 +575,7 @@ interface OffersListProps {
 }
 
 export function OffersList({ leads, clients, onOpenOffer }: OffersListProps) {
+  const { fmtShort } = useCurrency();
   const [offers, setOffers] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -632,7 +635,7 @@ export function OffersList({ leads, clients, onOpenOffer }: OffersListProps) {
               {offer.variants.map(v => (
                 <div key={v.tier} className={`flex-1 rounded-xl py-1.5 text-center ${TIER_CFG[v.tier].bg}`}>
                   <p className="text-[10px] text-slate-500">{v.label}</p>
-                  <p className="text-xs font-bold text-slate-800">{fmt(v.total)} ₴</p>
+                  <p className="text-xs font-bold text-slate-800">{fmtShort(v.total)}</p>
                 </div>
               ))}
             </div>

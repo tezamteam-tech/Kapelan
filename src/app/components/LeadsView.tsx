@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { useCurrency } from "./CurrencyContext";
 import { useNavigate } from "react-router";
 import {
   Plus, Search, RefreshCw, User, Phone, MapPin, Building2,
@@ -52,6 +53,7 @@ const SOURCE_LABELS: Record<string, string> = {
 // ─── Main Component ───────────────────────────────────────────────────────────
 export function LeadsView() {
   const navigate = useNavigate();
+  const { fmtShort } = useCurrency();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [clients, setClients] = useState<Record<string, Client>>({});
   const [loading, setLoading] = useState(false);
@@ -257,6 +259,7 @@ function LeadCard({ lead, client, req, cfg, isExpanded: isExp, isChanging, onTog
   onToggle: () => void; onStatusChange: (id: string, s: LeadStatus) => void;
   onDelete: (id: string) => void; onCreateOrder: () => void; showToast: (m: string, ok?: boolean) => void;
 }) {
+  const { fmtShort } = useCurrency();
   const fmtDate = (s: string) => new Date(s).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "2-digit" });
 
   return (
@@ -283,7 +286,7 @@ function LeadCard({ lead, client, req, cfg, isExpanded: isExp, isChanging, onTog
           {req.area && <Chip>📐 {req.area} м²</Chip>}
           {req.roomType && <Chip>🏠 {req.roomType}</Chip>}
           {req.roomsCount && <Chip>🚪 {req.roomsCount} ком.</Chip>}
-          {req.budget && <Chip>💰 {Number(req.budget).toLocaleString()} ₴</Chip>}
+          {req.budget && <Chip>💰 {fmtShort(Number(req.budget))}</Chip>}
           {lead.source && <Chip>{SOURCE_LABELS[lead.source] || lead.source}</Chip>}
         </div>
       </button>
@@ -475,7 +478,7 @@ function CreateLeadModal({ onClose, onCreated }: {
           {/* Client */}
           <section>
             <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-              <User size={11} /> Клиент
+              <User size={11} /> ��лиент
             </p>
             <div className="space-y-2">
               <FormRow label="Имя *" value={form.clientName} onChange={f("clientName")} placeholder="Иванов Иван Иванович" />
@@ -500,7 +503,7 @@ function CreateLeadModal({ onClose, onCreated }: {
               </div>
               <FormRow label="Площадь (м²)" value={form.area} onChange={f("area")} placeholder="45" type="number" />
               <FormRow label="Кол-во комнат" value={form.roomsCount} onChange={f("roomsCount")} placeholder="2" type="number" />
-              <FormRow label="Бюджет (₴)" value={form.budget} onChange={f("budget")} placeholder="30000" type="number" />
+              <FormRow label="Бюджет" value={form.budget} onChange={f("budget")} placeholder="30000" type="number" />
             </div>
           </section>
 

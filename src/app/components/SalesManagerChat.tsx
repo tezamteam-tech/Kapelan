@@ -12,6 +12,7 @@ import {
   XCircle, CheckSquare
 } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { useCurrency } from "./CurrencyContext";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -85,6 +86,7 @@ const TIER_CFG: Record<string, { label: string; bg: string; text: string; border
 // ─── Action Cards ──────────────────────────────────────────────────────────────
 function AcWarehouseCard({ data }: { data: any[] }) {
   const [expanded, setExpanded] = useState(false);
+  const { fmtShort } = useCurrency();
   const models = Array.isArray(data) ? data : [];
   if (!models.length) return null;
   const first = models[0];
@@ -126,7 +128,7 @@ function AcWarehouseCard({ data }: { data: any[] }) {
               {m.btu && <p className="text-[10px] text-slate-500">{m.btu} BTU · {m.kw} кВт · {m.areaMin}–{m.areaMax} м² · гар. {m.warranty} л.</p>}
             </div>
             <div className="text-right flex-shrink-0">
-              <p className="text-sm font-black text-slate-800">{m.price?.toLocaleString()} ₴</p>
+              <p className="text-sm font-black text-slate-800">{m.price > 0 ? fmtShort(m.price) : "—"}</p>
               <p className="text-[10px] text-green-600 font-bold">остаток: {m.stock} шт</p>
             </div>
           </div>
@@ -151,6 +153,7 @@ function AcWarehouseCard({ data }: { data: any[] }) {
 
 function ConsumablesCard({ data }: { data: any }) {
   const [expanded, setExpanded] = useState(false);
+  const { fmtShort } = useCurrency();
   const { items = [], allInStock, traceLength, acName } = data;
   const shortage = items.filter((i: any) => !i.inStock);
   const totalCost = items.reduce((s: number, i: any) => s + (i.price * i.qty), 0);
@@ -186,7 +189,7 @@ function ConsumablesCard({ data }: { data: any }) {
       )}
       <div className="mt-2 pt-2 border-t border-slate-200 flex justify-between items-center">
         <span className="text-[10px] text-slate-500">{items.length} позиций</span>
-        <span className="text-xs font-bold text-slate-700">~{totalCost.toLocaleString()} ₴</span>
+        <span className="text-xs font-bold text-slate-700">~{fmtShort(totalCost)}</span>
       </div>
     </div>
   );
@@ -464,10 +467,11 @@ function WorkflowPanel({ actions, onNavigate, onGeneratePdf, onAssignInstaller }
   );
 }
 
-// ─── Main export ───────────────────────────────────────────────────────────────
+// ─── Main export ──────��────────────────────────────────────────────────────────
 type ChatMode = "dialog" | "paste";
 
 export function SalesManagerChat() {
+  const { fmtShort, currency } = useCurrency();
   const [mode, setMode] = useState<ChatMode>("dialog");
   return (
     <div className="w-full max-w-[1400px] mx-auto flex flex-col gap-3 h-full">
@@ -641,9 +645,9 @@ function DialogMode() {
   };
 
   const quickPrompts = [
-    { label: "Квартира 45 м², бюджет до 35 000 ₴", value: "Клиент: Елена, +380991234567. Квартира 45 м², бюджет 35000 грн" },
-    { label: "Офис 70 м², средний сегмент",         value: "Офис 70 м², нужен кондиционер среднего сегмента" },
-    { label: "Фанкойл для комнаты 35 м²",            value: "Подбери фанкойл для комнаты 35 м² (есть чиллер)" },
+    { label: "Квартира 45 м², эконом-сегмент",  value: "Клиент: Елена, +375291234567. Квартира 45 м², бюджет 1200 Br" },
+    { label: "Офис 70 м², средний сегмент",      value: "Офис 70 м², нужен кондиционер среднего сегмента" },
+    { label: "Фанкойл для комнаты 35 м²",        value: "Подбери фанкойл для комнаты 35 м² (есть чиллер)" },
   ];
 
   return (
@@ -899,6 +903,7 @@ function DialogMode() {
 
 // ─── Paste Mode ───────────────────────────────────────────────────────────────
 function PasteMode() {
+  const { currency } = useCurrency();
   const [conversation, setConversation] = useState("");
   const [parsing, setParsing] = useState(false);
   const [parsed, setParsed] = useState<any | null>(null);
@@ -1036,7 +1041,7 @@ function PasteMode() {
                 <Field label="Телефон" value={editPhone} onChange={setEditPhone} />
                 <div className="grid grid-cols-2 gap-2">
                   <Field label="Площадь, м²" value={editArea} onChange={setEditArea} type="number" />
-                  <Field label="Бюджет, ₴" value={editBudget} onChange={setEditBudget} type="number" />
+                  <Field label={`Бюджет, ${currency.symbol}`} value={editBudget} onChange={setEditBudget} type="number" />
                 </div>
                 <Field label="Дополнительно" value={editNotes} onChange={setEditNotes} multiline />
                 <Button onClick={handleCreateLead} disabled={creating}

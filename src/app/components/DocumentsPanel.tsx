@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { useCurrency } from "./CurrencyContext";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -45,6 +46,8 @@ interface Props {
 }
 
 export function DocumentsPanel({ leadId, offers }: Props) {
+  const { fmtShort, currency } = useCurrency();
+  const fmt = fmtShort;
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -110,6 +113,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
           leadId, offerId: selectedOfferId,
           selectedTier, advancePct, contractNumber: contractNumber || undefined,
           notes: docNotes, ...company,
+          currencySymbol: currency.symbol,
         }),
       });
       const data = await res.json();
@@ -244,7 +248,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
                     >
                       <p className="text-lg">{cfg.emoji}</p>
                       <p className={`text-[10px] font-bold mt-0.5 ${active ? cfg.color : "text-slate-500"}`}>{v.label}</p>
-                      <p className={`text-xs font-black mt-0.5 ${active ? cfg.color : "text-slate-700"}`}>{fmt(v.total)} ₴</p>
+                      <p className={`text-xs font-black mt-0.5 ${active ? cfg.color : "text-slate-700"}`}>{fmt(v.total)}</p>
                     </button>
                   );
                 })}
@@ -258,7 +262,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
               <label className="text-xs text-slate-500 font-semibold">Аванс: {advancePct}%</label>
               {selectedVariant && (
                 <span className="text-xs font-bold text-indigo-700">
-                  {fmt(Math.round(selectedVariant.total * advancePct / 100))} ₴
+                  {fmt(Math.round(selectedVariant.total * advancePct / 100))}
                 </span>
               )}
             </div>
@@ -275,24 +279,24 @@ export function DocumentsPanel({ leadId, offers }: Props) {
             <div className="bg-slate-50 rounded-xl p-3 space-y-1.5">
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Сводка оплаты</p>
               <div className="flex justify-between text-xs text-slate-600">
-                <span>💻 Оборудование</span><span className="font-semibold">{fmt(selectedVariant.acTotal)} ₴</span>
+                <span>💻 Оборудование</span><span className="font-semibold">{fmt(selectedVariant.acTotal)}</span>
               </div>
               <div className="flex justify-between text-xs text-slate-600">
-                <span>🔩 Материалы</span><span className="font-semibold">{fmt(selectedVariant.materialsTotal)} ₴</span>
+                <span>🔩 Материалы</span><span className="font-semibold">{fmt(selectedVariant.materialsTotal)}</span>
               </div>
               <div className="flex justify-between text-xs text-slate-600">
-                <span>🔧 Работы</span><span className="font-semibold">{fmt(selectedVariant.workCost)} ₴</span>
+                <span>🔧 Работы</span><span className="font-semibold">{fmt(selectedVariant.workCost)}</span>
               </div>
               <div className="border-t border-slate-200 pt-1.5 flex justify-between text-sm font-bold text-slate-800">
-                <span>Итого</span><span>{fmt(selectedVariant.total)} ₴</span>
+                <span>Итого</span><span>{fmt(selectedVariant.total)}</span>
               </div>
               <div className="flex justify-between text-sm font-bold text-emerald-700">
                 <span>Аванс ({advancePct}%)</span>
-                <span>{fmt(Math.round(selectedVariant.total * advancePct / 100))} ₴</span>
+                <span>{fmt(Math.round(selectedVariant.total * advancePct / 100))}</span>
               </div>
               <div className="flex justify-between text-sm font-bold text-blue-700">
                 <span>Остаток</span>
-                <span>{fmt(selectedVariant.total - Math.round(selectedVariant.total * advancePct / 100))} ₴</span>
+                <span>{fmt(selectedVariant.total - Math.round(selectedVariant.total * advancePct / 100))}</span>
               </div>
             </div>
           )}
@@ -366,6 +370,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
 
 // ─── Document Card ────────────────────────────────────────────────────────────
 function DocumentCard({ doc, num }: { doc: DocumentRecord; num: number }) {
+  const { fmtShort } = useCurrency();
   const [expanded, setExpanded] = useState(num === 1);
   const tier = TIER_CFG[doc.selectedTier as keyof typeof TIER_CFG] ?? TIER_CFG.standard;
 
@@ -392,7 +397,7 @@ function DocumentCard({ doc, num }: { doc: DocumentRecord; num: number }) {
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            {doc.contractDate} · Аванс {doc.advancePct}% · {doc.totalAmount.toLocaleString("ru-RU")} ₴
+            {doc.contractDate} · Аванс {doc.advancePct}% · {fmtShort(doc.totalAmount)}
           </p>
         </div>
         <span className="text-slate-300 text-sm flex-shrink-0">{expanded ? "▲" : "▼"}</span>
@@ -439,10 +444,11 @@ function DocumentCard({ doc, num }: { doc: DocumentRecord; num: number }) {
 }
 
 function AmountCell({ label, value, color }: { label: string; value: number; color: string }) {
+  const { fmtShort } = useCurrency();
   return (
     <div className="bg-slate-50 rounded-xl p-2 text-center">
       <p className="text-[9px] text-slate-400 font-medium">{label}</p>
-      <p className={`text-sm font-black mt-0.5 ${color}`}>{value.toLocaleString("ru-RU")} ₴</p>
+      <p className={`text-sm font-black mt-0.5 ${color}`}>{fmtShort(value)}</p>
     </div>
   );
 }

@@ -6,9 +6,12 @@ import {
   Wrench, ChevronDown, ChevronUp, Edit3, Trash2, X, Loader2,
   Eye, BarChart3, TrendingDown, ShoppingCart, ClipboardList,
   Zap, Droplets, Cable, Hammer, Wind, Gauge, Info, ImageIcon,
-  Check, Save
+  Check, Save, Sparkles
 } from "lucide-react";
 import { ImageUpload } from "./ui/ImageUpload";
+import { AiImportModal } from "./AiImportModal";
+import { AiEquipmentImportModal } from "./AiEquipmentImportModal";
+import { useCurrency } from "./CurrencyContext";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -112,6 +115,7 @@ function stockLevel(item: WarehouseItem) {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export function WarehouseView() {
+  const { fmtShort, currency } = useCurrency();
   const [tab, setTab] = useState<WHTab>("stock");
   const [items, setItems] = useState<WarehouseItem[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
@@ -132,6 +136,9 @@ export function WarehouseView() {
   const [eqTab, setEqTab] = useState<"all" | "split_ac" | "chiller" | "fan_coil">("all");
   const [editEq, setEditEq] = useState<Partial<EquipmentModel> | null>(null);
   const [isNewEq, setIsNewEq] = useState(false);
+  const [showAiImport, setShowAiImport] = useState(false);
+  const [showAiEquipImport, setShowAiEquipImport] = useState(false);
+  const [eqSearch, setEqSearch] = useState("");
 
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
   const showToast = useCallback((text: string, ok = true) => {
@@ -217,11 +224,19 @@ export function WarehouseView() {
   }
 
   async function deleteItem(id: string) {
-    if (!confirm("Удалить позицию?")) return;
-    await fetch(`${API}/warehouse/${id}`, { method: "DELETE", headers: AH });
-    setItems(prev => prev.filter(i => i.id !== id));
-    setDetailItem(null);
-    showToast("🗑️ Удалено");
+    const item = items.find(i => i.id === id);
+    const name = item?.name ?? "позицию";
+    if (!confirm(`Удалить «${name}» со склада?\n\nЭто действие нельзя отменить.`)) return;
+    try {
+      const res = await fetch(`${API}/warehouse/${id}`, { method: "DELETE", headers: AH });
+      const data = await res.json();
+      if (data.error) { showToast(`Ошибка: ${data.error}`, false); return; }
+      setItems(prev => prev.filter(i => i.id !== id));
+      setDetailItem(null);
+      showToast(`🗑️ «${name}» удалена со склада`);
+    } catch (e: any) {
+      showToast(`Ошибка удаления: ${e.message}`, false);
+    }
   }
 
   async function loadItemMovements(itemId: string) {
@@ -246,7 +261,13 @@ export function WarehouseView() {
     return acc;
   }, {} as Record<string, WarehouseItem[]>);
 
-  const filteredEq = eqTab === "all" ? equipment : equipment.filter(e => e.type === eqTab);
+  const filteredEq = equipment.filter(e => {
+    const matchType = eqTab === "all" || e.type === eqTab;
+    const q = eqSearch.toLowerCase();
+    const matchSearch = !q || e.brand.toLowerCase().includes(q) || e.model.toLowerCase().includes(q)
+      || String(e.btu || "").includes(q) || String(e.price || "").includes(q);
+    return matchType && matchSearch;
+  });
 
   const TABS = [
     { key: "stock" as WHTab,     icon: <Package size={15} />,    label: "Склад",       badge: stats.low || undefined },
@@ -262,16 +283,45 @@ export function WarehouseView() {
         <div className="px-5 py-3 flex items-center justify-between">
           <div>
             <h1 className="text-base font-bold text-slate-800">Склад и оборудование</h1>
-            <p className="text-xs text-slate-400 mt-0.5">{items.length} позиций · {fmt(stats.value)} ₴ на складе</p>
+            <p className="text-xs text-slate-400 mt-0.5">{items.length} позиций · {fmtShort(stats.value)} на складе</p>
           </div>
           <div className="flex gap-2">
-            <button onClick={fetchAll} disabled={loading} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all">
+            <button onClick={fetchAll} disabled={loading} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all" title="Обновить">
               <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
             </button>
+            {tab === "stock" && (
+              <button
+                onClick={async () => {
+                  if (!confirm("Переинициализировать склад из каталога? Все позиции будут обновлены реальными данными по кондиционерам и расходникам.")) return;
+                  try {
+                    const r = await fetch(`${API}/warehouse/reseed`, { method: "POST", headers: AH });
+                    const d = await r.json();
+                    if (d.success) { showToast(`✅ ${d.message}`); fetchAll(); }
+                    else showToast(d.error || "Ошибка", false);
+                  } catch (e: any) { showToast(`Ошибка: ${e.message}`, false); }
+                }}
+                className="flex items-center gap-1.5 bg-amber-500 text-white text-xs font-semibold px-3 py-2 rounded-xl hover:bg-amber-600 active:scale-95 transition-all"
+                title="Заменить данные склада реальным каталогом кондиционеров"
+              >
+                <RefreshCw size={13} /> Обновить каталог
+              </button>
+            )}
+            {tab === "stock" && (
+              <button onClick={() => setShowAiImport(true)}
+                className="flex items-center gap-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-xs font-semibold px-3 py-2 rounded-xl hover:opacity-90 active:scale-95 transition-all shadow-sm shadow-violet-200">
+                <Sparkles size={13} /> AI-импорт
+              </button>
+            )}
             {tab === "stock" && (
               <button onClick={() => { setIsNewItem(true); setEditItem({}); }}
                 className="flex items-center gap-1.5 bg-teal-600 text-white text-sm font-semibold px-3 py-2 rounded-xl hover:bg-teal-700 active:scale-95 transition-all shadow-sm">
                 <Plus size={15} /> Добавить позицию
+              </button>
+            )}
+            {tab === "equipment" && (
+              <button onClick={() => setShowAiEquipImport(true)}
+                className="flex items-center gap-1.5 bg-gradient-to-r from-blue-600 to-teal-600 text-white text-xs font-semibold px-3 py-2 rounded-xl hover:opacity-90 active:scale-95 transition-all shadow-sm shadow-blue-200">
+                <Sparkles size={13} /> AI-импорт
               </button>
             )}
             {tab === "equipment" && (
@@ -288,7 +338,7 @@ export function WarehouseView() {
           {[
             { label: "Позиций", value: stats.total, color: "text-slate-700" },
             { label: "Мало/нет", value: stats.low, color: stats.low > 0 ? "text-red-600" : "text-slate-400" },
-            { label: "На складе", value: `${fmt(stats.value)} ₴`, color: "text-teal-700", small: true },
+            { label: "На складе", value: fmtShort(stats.value), color: "text-teal-700", small: true },
             { label: "Закупки", value: stats.pendingPO, color: stats.pendingPO > 0 ? "text-orange-600" : "text-slate-400" },
           ].map(s => (
             <div key={s.label} className="text-center py-2 border-r border-slate-100 last:border-0">
@@ -380,6 +430,7 @@ export function WarehouseView() {
                           onStockIn={() => setMovModal({ item, dir: "in" })}
                           onStockOut={() => setMovModal({ item, dir: "out" })}
                           onEdit={() => { setEditItem({ ...item }); setIsNewItem(false); }}
+                          onDelete={() => deleteItem(item.id)}
                         />
                       ))}
                     </div>
@@ -393,26 +444,46 @@ export function WarehouseView() {
         {/* ══ EQUIPMENT TAB ════════════════════════════════════════════════════ */}
         {tab === "equipment" && (
           <div>
-            {/* Equipment type filter */}
-            <div className="bg-white border-b border-slate-200 px-4 py-2 flex gap-2 overflow-x-auto">
-              {(["all", "split_ac", "chiller", "fan_coil"] as const).map(t => {
-                const cfg = t === "all" ? null : EQ_TYPE_CFG[t];
-                return (
-                  <button key={t} onClick={() => setEqTab(t)}
+            {/* Search + type filter */}
+            <div className="bg-white border-b border-slate-200 px-4 pt-2 pb-2 flex flex-col gap-2">
+              <div className="flex items-center gap-1.5 bg-slate-100 rounded-xl px-3 py-1.5">
+                <Search size={13} className="text-slate-400 flex-shrink-0" />
+                <input
+                  value={eqSearch}
+                  onChange={e => setEqSearch(e.target.value)}
+                  placeholder="Поиск по бренду, модели, BTU, цене…"
+                  className="bg-transparent text-sm flex-1 outline-none text-slate-700 placeholder-slate-400"
+                />
+                {eqSearch && (
+                  <button onClick={() => setEqSearch("")} className="text-slate-400 hover:text-slate-600 transition-all">
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+                {([["all","Всё оборудование"], ["split_ac","Сплит"], ["chiller","Чиллер"], ["fan_coil","Фанкойл"], ["vrv","VRV/VRF"]] as [string,string][]).map(([t, label]) => (
+                  <button key={t} onClick={() => setEqTab(t as any)}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
                       eqTab === t ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"
                     }`}>
-                    {cfg?.icon}{cfg ? cfg.label : "Всё оборудование"}
-                    <span className="opacity-60">({t === "all" ? equipment.length : equipment.filter(e => e.type === t).length})</span>
+                    {label}
+                    <span className="opacity-60">
+                      ({t === "all" ? equipment.length : equipment.filter(e => e.type === t).length})
+                    </span>
                   </button>
-                );
-              })}
+                ))}
+              </div>
             </div>
 
             {/* Hint bar */}
-            <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 flex items-center gap-2">
-              <Info size={13} className="text-blue-500 flex-shrink-0" />
-              <p className="text-xs text-blue-600">Нажмите на карточку — просмотр параметров. Кнопки ✏️ / 🗑️ — редактировать и архивировать.</p>
+            <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Info size={13} className="text-blue-500 flex-shrink-0" />
+                <p className="text-xs text-blue-600">Нажмите на карточку — просмотр параметров. Кнопки ✏️ / 🗑️ — редактировать и архивировать.</p>
+              </div>
+              {eqSearch && (
+                <p className="text-xs text-slate-500 flex-shrink-0">Найдено: {filteredEq.length}</p>
+              )}
             </div>
 
             <div className="p-4 pb-8">
@@ -564,6 +635,30 @@ export function WarehouseView() {
           {toast.text}
         </div>
       )}
+
+      {/* ── AI Import Modal (склад) ───────────────────────────────────────────── */}
+      {showAiImport && (
+        <AiImportModal
+          onClose={() => setShowAiImport(false)}
+          onImported={(count) => {
+            setShowAiImport(false);
+            showToast(`✅ Импортировано ${count} позиций на склад`);
+            fetchAll();
+          }}
+        />
+      )}
+
+      {/* ── AI Equipment Import Modal (оборудование) ─────────────────────────── */}
+      {showAiEquipImport && (
+        <AiEquipmentImportModal
+          onClose={() => setShowAiEquipImport(false)}
+          onImported={(count) => {
+            setShowAiEquipImport(false);
+            showToast(`✅ Импортировано ${count} моделей оборудования`);
+            fetchAll();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -571,9 +666,10 @@ export function WarehouseView() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // WAREHOUSE ITEM CARD
 // ═══════════════════════════════════════════════════════════════════════════════
-function WarehouseItemCard({ item, onDetail, onStockIn, onStockOut, onEdit }: {
-  item: WarehouseItem; onDetail: () => void; onStockIn: () => void; onStockOut: () => void; onEdit: () => void;
+function WarehouseItemCard({ item, onDetail, onStockIn, onStockOut, onEdit, onDelete }: {
+  item: WarehouseItem; onDetail: () => void; onStockIn: () => void; onStockOut: () => void; onEdit: () => void; onDelete: () => void;
 }) {
+  const { fmtShort } = useCurrency();
   const level = stockLevel(item);
   const img = item.imageUrl || DEFAULT_IMG[item.category] || DEFAULT_IMG["Про��ее"];
   const typeTag = ITEM_TYPES.find(t => t.key === item.itemType);
@@ -605,7 +701,7 @@ function WarehouseItemCard({ item, onDetail, onStockIn, onStockOut, onEdit }: {
                 <span className="text-[9px] text-orange-600 font-bold">мин {item.minStock}</span>
               )}
             </div>
-            <span className="text-[10px] font-semibold text-slate-500">{fmt(item.price)} ₴/{item.unit}</span>
+            <span className="text-[10px] font-semibold text-slate-500">{fmtShort(item.price)}/{item.unit}</span>
           </div>
 
           {/* Actions */}
@@ -625,6 +721,10 @@ function WarehouseItemCard({ item, onDetail, onStockIn, onStockOut, onEdit }: {
             <button onClick={onEdit} title="Редактировать"
               className="px-2 bg-slate-100 hover:bg-slate-200 text-slate-500 rounded-lg py-1 text-[10px] transition-all active:scale-95">
               <Edit3 size={10} />
+            </button>
+            <button onClick={onDelete} title="Удалить позицию"
+              className="px-2 bg-red-50 hover:bg-red-100 text-red-400 hover:text-red-600 rounded-lg py-1 text-[10px] transition-all active:scale-95">
+              <Trash2 size={10} />
             </button>
           </div>
         </div>
@@ -686,9 +786,19 @@ function EquipmentCard({ eq, warehouseItems, onClick, isSelected, onEdit, onDele
           <InfoBadge>{eq.installParams?.powerSupply}</InfoBadge>
         </div>
 
-        <div className="flex items-center justify-between mt-2.5">
-          <p className="font-black text-teal-700 text-sm">{fmt(eq.price)} ₴</p>
-          <p className="text-[10px] text-slate-400">{eq.bom?.length ?? 0} позиций BOM</p>
+        <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100">
+          <div>
+            {eq.price > 0 ? (
+              <p className="font-black text-teal-700 text-base leading-none">{fmt(eq.price)} <span className="text-xs font-semibold">BYN</span></p>
+            ) : (
+              <p className="text-xs font-semibold text-orange-400 italic">Цена не указана</p>
+            )}
+            <p className="text-[9px] text-slate-400 mt-0.5">гарантия {eq.warranty} лет</p>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] text-slate-400">{eq.bom?.length ?? 0} поз. BOM</p>
+            <p className="text-[10px] text-slate-400">{eq.installParams?.maxPipeLength}м трасса</p>
+          </div>
         </div>
       </div>
     </div>
@@ -705,6 +815,7 @@ function InfoBadge({ children }: { children: React.ReactNode }) {
 function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
   eq: EquipmentModel; warehouseItems: WarehouseItem[]; onClose: () => void; onEdit?: () => void;
 }) {
+  const { fmtShort } = useCurrency();
   const [detailTab, setDetailTab] = useState<"params" | "bom" | "notes">("params");
   const cfg = EQ_TYPE_CFG[eq.type] || EQ_TYPE_CFG.split_ac;
 
@@ -740,7 +851,7 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
             <p className="text-xl font-black leading-tight">{eq.model}</p>
           </div>
           <div className="absolute bottom-3 right-3 text-right text-white">
-            <p className="font-black text-lg">{fmt(eq.price)} ₴</p>
+            <p className="font-black text-lg">{fmtShort(eq.price)}</p>
             <p className="text-[10px] opacity-70">гарантия {eq.warranty} лет</p>
           </div>
         </div>
@@ -1076,7 +1187,7 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
                 <input type="number" value={areaMax || ""} onChange={e => setAreaMax(+e.target.value)} min={0} placeholder="45" className={INP} />
               </div>
               <div>
-                <label className={LBL}>Цена (₴) *</label>
+                <label className={LBL}>Цена *</label>
                 <input type="number" value={price || ""} onChange={e => setPrice(+e.target.value)} min={0} placeholder="25000" className={INP} />
               </div>
               <div>
@@ -1394,6 +1505,7 @@ function ItemDetailModal({ item, movements, onClose, onEdit, onStockIn, onStockO
   item: WarehouseItem; movements: StockMovement[];
   onClose: () => void; onEdit: () => void; onStockIn: () => void; onStockOut: () => void; onDelete: () => void;
 }) {
+  const { fmtShort } = useCurrency();
   const level = stockLevel(item);
   const img = item.imageUrl || DEFAULT_IMG[item.category] || DEFAULT_IMG["Прочее"];
   return (
@@ -1423,8 +1535,8 @@ function ItemDetailModal({ item, movements, onClose, onEdit, onStockIn, onStockO
               </div>
               <div className="text-right">
                 <p className="text-xs text-slate-400">Цена</p>
-                <p className="font-black text-lg text-slate-700">{fmt(item.price)} ₴/{item.unit}</p>
-                <p className="text-xs text-slate-400">Итого: {fmt(item.stock * item.price)} ₴</p>
+                <p className="font-black text-lg text-slate-700">{fmtShort(item.price)}/{item.unit}</p>
+                <p className="text-xs text-slate-400">Итого: {fmtShort(item.stock * item.price)}</p>
               </div>
             </div>
           </div>
@@ -1643,7 +1755,7 @@ function ItemEditModal({ item, isNew, onClose, onSave }: {
             </div>
             <FormNum label="Нач. остаток" value={form.stock} onChange={v => setForm(p => ({ ...p, stock: +v }))} />
             <FormNum label="Минимум (алерт)" value={form.minStock} onChange={v => setForm(p => ({ ...p, minStock: +v }))} />
-            <FormNum label="Цена за ед. (₴)" value={form.price} onChange={v => setForm(p => ({ ...p, price: +v }))} />
+            <FormNum label="Цена за ед." value={form.price} onChange={v => setForm(p => ({ ...p, price: +v }))} />
             <div>
               <label className="text-xs font-bold text-slate-500 block mb-1">Артикул / SKU</label>
               <input value={form.sku || ""} onChange={f("sku")} placeholder="PIPE-14" className={INPUT} />
@@ -1682,6 +1794,7 @@ function FormNum({ label, value, onChange }: { label: string; value?: number; on
 // PURCHASE ORDER CARD
 // ═══════════════════════════════════════════════════════════════════════════════
 function PurchaseOrderCard({ po, onReceive }: { po: PurchaseOrder; onReceive: (qty: number) => Promise<void> }) {
+  const { fmtShort } = useCurrency();
   const [receiveQty, setReceiveQty] = useState(po.qtyOrdered - po.qtyReceived);
   const [receiving, setReceiving] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
@@ -1698,8 +1811,8 @@ function PurchaseOrderCard({ po, onReceive }: { po: PurchaseOrder; onReceive: (q
         </div>
         <div className="flex gap-3 text-sm">
           <span className="text-slate-600">Заказано: <b>{po.qtyOrdered} {po.itemUnit}</b></span>
-          <span className="text-slate-600">По {<b>{fmt(po.pricePerUnit)} ₴</b>}</span>
-          <span className="font-bold text-teal-700">{fmt(po.totalCost)} ₴</span>
+          <span className="text-slate-600">По {<b>{fmtShort(po.pricePerUnit)}</b>}</span>
+          <span className="font-bold text-teal-700">{fmtShort(po.totalCost)}</span>
         </div>
         {po.note && <p className="text-xs text-slate-400 mt-1 italic">{po.note}</p>}
 

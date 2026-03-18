@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { useCurrency } from "./CurrencyContext";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AUTH_HEADERS = { Authorization: `Bearer ${publicAnonKey}` };
@@ -46,6 +47,7 @@ interface Props {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export function MaterialsPanel({ materials, measurementId, compact = false, onRecalculated }: Props) {
+  const { fmtShort } = useCurrency();
   const [expanded, setExpanded] = useState(!compact);
   const [recalculating, setRecalculating] = useState(false);
   const [localMaterials, setLocalMaterials] = useState<MaterialsJson>(materials);
@@ -82,7 +84,7 @@ export function MaterialsPanel({ materials, measurementId, compact = false, onRe
     }
   }
 
-  const fmt = (n: number) => n.toLocaleString("ru-RU");
+  const fmt = fmtShort;
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
@@ -101,7 +103,7 @@ export function MaterialsPanel({ materials, measurementId, compact = false, onRe
         <div className="flex items-center gap-3">
           <div className="text-right">
             <p className="text-xs text-slate-500">Итого</p>
-            <p className="text-sm font-bold text-emerald-700">{fmt(localMaterials.grandTotal)} ₴</p>
+            <p className="text-sm font-bold text-emerald-700">{fmtShort(localMaterials.grandTotal)}</p>
           </div>
           <span className="text-slate-400 text-sm">{expanded ? "▲" : "▼"}</span>
         </div>
@@ -159,7 +161,7 @@ function SummaryCard({ label, value, color, bold }: {
     <div className="px-3 py-2.5 text-center">
       <p className="text-[10px] text-slate-400 uppercase tracking-wide">{label}</p>
       <p className={`text-sm mt-0.5 ${color} ${bold ? "font-bold" : "font-semibold"}`}>
-        {value.toLocaleString("ru-RU")} ₴
+        {value.toLocaleString("ru-RU")}
       </p>
     </div>
   );
@@ -178,7 +180,7 @@ function CategoryBlock({ icon, title, items, fmt }: {
           <span className="text-sm">{icon}</span>
           <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>
         </div>
-        <span className="text-xs text-slate-400 font-semibold">{fmt(catTotal)} ₴</span>
+        <span className="text-xs text-slate-400 font-semibold">{fmt(catTotal)}</span>
       </div>
 
       {/* Items */}
@@ -197,9 +199,9 @@ function CategoryBlock({ icon, title, items, fmt }: {
             <p className="text-sm font-semibold text-slate-700">
               <span className="text-slate-400 font-normal">{item.qty} {item.unit}</span>
               <span className="text-slate-300 mx-1">×</span>
-              {fmt(item.pricePerUnit)} ₴
+              {fmt(item.pricePerUnit)}
             </p>
-            <p className="text-xs font-bold text-emerald-700">{fmt(item.total)} ₴</p>
+            <p className="text-xs font-bold text-emerald-700">{fmt(item.total)}</p>
           </div>
         </div>
       ))}
@@ -466,7 +468,7 @@ function TemplateItemRow({ item, isEditing, onToggleEdit, onChange, onRemove }: 
               {FORMULA_LABELS[item.formulaType] ?? item.formulaType}
             </span>
             <span className="text-[10px] text-slate-400">
-              {item.pricePerUnit.toLocaleString("ru-RU")} ₴/{item.unit}
+              {item.pricePerUnit.toLocaleString("ru-RU")}/{item.unit}
             </span>
           </div>
         </div>

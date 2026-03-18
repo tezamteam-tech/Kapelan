@@ -15,6 +15,7 @@ import { UsersPage } from "./components/pages/UsersPage";
 import { SettingsPage } from "./components/pages/SettingsPage";
 import { CalendarPage } from "./components/pages/CalendarPage";
 import { InstallOrdersPage } from "./components/pages/InstallOrdersPage";
+import { MeasurementOrdersPage } from "./components/pages/MeasurementOrdersPage";
 
 export const router = createBrowserRouter([
   {
@@ -30,6 +31,7 @@ export const router = createBrowserRouter([
           { path: "ai-chat", Component: AIChatPage },
           { path: "leads", Component: LeadsPage },
           { path: "install-orders", Component: InstallOrdersPage },
+          { path: "measurements", Component: MeasurementOrdersPage },
           { path: "tasks", Component: TasksPage },
           { path: "calendar", Component: CalendarPage },
           { path: "warehouse", Component: WarehousePage },
