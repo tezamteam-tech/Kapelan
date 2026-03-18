@@ -103,26 +103,27 @@ app.get("/make-server-1df47c03/health", (c) => {
 });
 
 // System prompt for AI Sales Manager Agent
-const AGENT_SYSTEM_PROMPT = `Ты — AI-ассистент для менеджеров компании Kapelan по установке кондиционеров.
+const AGENT_SYSTEM_PROMPT = `Ты — AI-ассистент менеджера компании Kapelan по установке кондиционеров.
 
-ТВОЯ РОЛЬ — АВТОМАТИЗАЦИЯ РАБОТЫ МЕНЕДЖЕРА. Выполняй реальные действия через инструменты.
+ТВОЯ РОЛЬ — автоматизация работы менеджера. Выполняй реальные действия в CRM через инструменты.
 
-ПОЛНЫЙ РАБОЧИЙ ПРОЦЕСС (выполняй по шагам):
-1. search_warehouse_ac — найти кондиционер из РЕАЛЬНОГО склада по площади/бюджету (только те, что есть в наличии)
-2. check_consumables_stock — проверить расходники/комплектующие для выбранной модели
-3. create_installation_order — создать ордер монтажа (кондиционер + расходники + клиент)
-4. assign_installer — назначить монтажника на ордер (после создания ордера)
+РАБОЧИЙ ПРОЦЕСС (шаг за шагом):
+1. search_warehouse_ac — подобрать кондиционер из РЕАЛЬНОГО склада по площади/бюджету (только то, что есть в наличии — stock > 0)
+2. check_consumables_stock — проверить расходники и комплектующие для выбранной модели
+3. create_installation_order — создать ордер монтажа (кондиционер + расходники + данные клиента)
+4. assign_installer — назначить монтажника на ордер и задать дату монтажа
 5. create_client_lead — только если нужна отдельная заявка без ордера
 
-ПРИНЦИПЫ:
-1. ВСЕГДА подбирай только из СКЛАДА (search_warehouse_ac) — не предлагай то, чего нет в наличии
-2. СРАЗУ действуй — если известна площадь, вызывай search_warehouse_ac немедленно
-3. Трасса по умолчанию 4м если не указана
-4. После создания ордера — предложи назначить монтажника (assign_installer)
-5. Назначай монтажника только если клиент/менеджер указал дату или попросил назначить
-6. Короткие подтверждения после каждого шага
+ПРАВИЛА:
+1. ТОЛЬКО СО СКЛАДА — никогда не предлагай то, чего нет в наличии. Используй search_warehouse_ac.
+2. ДЕЙСТВУЙ СРАЗУ — известна площадь? Немедленно вызывай search_warehouse_ac.
+3. Длина трассы — 4 м по умолчанию, если не указана.
+4. После создания ордера — предложи назначить монтажника.
+5. Назначай монтажника, если менеджер указал дату или попросил назначить.
+6. Пиши кратко и по делу после каждого шага.
 
-СТИЛЬ: Деловой, без воды. Emoji: ❄️ ✅ 📦 🔧 👷 Только русский язык.`;
+СТИЛЬ: деловой, без воды. Emoji: ❄️ ✅ 📦 🔧 👷
+ЯЗЫК: только русский. Никакого украинского.`;
 
 // ─── AI Agent Tools Definition ─────────────────────────────────────────────────
 const AGENT_TOOLS = [
@@ -130,14 +131,14 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "search_warehouse_ac",
-      description: "Найти кондиционер/сплит-систему/фанкойл из РЕАЛЬНОГО склада. Возвращает только позиции с остатком > 0. Вызывай сразу как известна площадь.",
+      description: "Подобрать кондиционер/сплит/фанкойл из РЕАЛЬНОГО склада. Возвращает только позиции с остатком > 0. Вызывай сразу как известна площадь помещения.",
       parameters: {
         type: "object",
         properties: {
-          area: { type: "number", description: "Площадь помещения в кв.м" },
-          budget: { type: "number", description: "Максимальный бюджет в гривнах (опционально)" },
-          tier: { type: "string", enum: ["economy", "standard", "premium"], description: "Ценовой сегмент (опционально)" },
-          equipmentType: { type: "string", enum: ["split_ac", "fan_coil", "chiller", "any"], description: "Тип оборудования (по умолчанию any)" }
+          area:          { type: "number", description: "Площадь помещения в кв.м" },
+          budget:        { type: "number", description: "Максимальный бюджет в гривнах (необязательно)" },
+          tier:          { type: "string", enum: ["economy", "standard", "premium"], description: "Ценовой сегмент (необязательно)" },
+          equipmentType: { type: "string", enum: ["split_ac", "fan_coil", "chiller", "any"], description: "Тип оборудования: split_ac/fan_coil/chiller/any (по умолчанию any)" }
         },
         required: ["area"]
       }
@@ -147,12 +148,12 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "check_consumables_stock",
-      description: "Проверить расходники/комплектующие для монтажа выбранного кондиционера. Использует warehouseAcId из search_warehouse_ac.",
+      description: "Проверить наличие расходников и комплектующих на складе для монтажа выбранного кондиционера. Используй warehouseAcId из search_warehouse_ac.",
       parameters: {
         type: "object",
         properties: {
-          warehouseAcId: { type: "string", description: "ID позиции кондиционера со склада (из search_warehouse_ac)" },
-          traceLength: { type: "number", description: "Длина трассы в метрах (по умолчанию 4)" }
+          warehouseAcId: { type: "string", description: "ID позиции кондиционера на складе (из результата search_warehouse_ac)" },
+          traceLength:   { type: "number", description: "Длина фреоновой трассы в метрах (по умолчанию 4)" }
         },
         required: ["warehouseAcId", "traceLength"]
       }
@@ -162,19 +163,19 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "create_installation_order",
-      description: "Создать ордер монтажа. Требует имя клиента, телефон, warehouseAcId со склада и площадь.",
+      description: "Создать ордер монтажа в CRM. Обязательно: имя клиента, телефон, ID кондиционера со склада, площадь помещения.",
       parameters: {
         type: "object",
         properties: {
-          clientName: { type: "string", description: "Имя клиента" },
-          clientPhone: { type: "string", description: "Телефон клиента" },
+          clientName:    { type: "string", description: "Имя клиента" },
+          clientPhone:   { type: "string", description: "Телефон клиента" },
           clientAddress: { type: "string", description: "Адрес монтажа (если неизвестен — 'Уточнить')" },
-          warehouseAcId: { type: "string", description: "ID позиции кондиционера со склада" },
-          roomArea: { type: "number", description: "Площадь помещения в кв.м" },
-          roomType: { type: "string", description: "Тип помещения" },
-          traceLength: { type: "number", description: "Длина трассы в метрах (по умолчанию 4)" },
-          acCount: { type: "number", description: "Количество кондиционеров (по умолчанию 1)" },
-          notes: { type: "string", description: "Примечания к заказу" }
+          warehouseAcId: { type: "string", description: "ID позиции кондиционера на складе" },
+          roomArea:      { type: "number", description: "Площадь помещения в кв.м" },
+          roomType:      { type: "string", description: "Тип помещения (квартира / офис / склад / магазин)" },
+          traceLength:   { type: "number", description: "Длина трассы в метрах (по умолчанию 4)" },
+          acCount:       { type: "number", description: "Количество кондиционеров (по умолчанию 1)" },
+          notes:         { type: "string", description: "Примечания к заказу" }
         },
         required: ["clientName", "clientPhone", "warehouseAcId", "roomArea"]
       }
@@ -184,13 +185,13 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "assign_installer",
-      description: "Назначить монтажника на ордер монтажа и задать дату монтажа.",
+      description: "Назначить монтажника на ордер монтажа. Можно указать конкретное имя или система выберет первого доступного. Дата необязательна.",
       parameters: {
         type: "object",
         properties: {
-          orderId: { type: "string", description: "ID ордера монтажа" },
-          installerName: { type: "string", description: "Имя монтажника (если уже известно — назначить сразу)" },
-          scheduledDate: { type: "string", description: "Дата монтажа в формате YYYY-MM-DD" }
+          orderId:       { type: "string", description: "ID ордера монтажа" },
+          installerName: { type: "string", description: "Имя монтажника (если уже известно)" },
+          scheduledDate: { type: "string", description: "Дата монтажа в формате YYYY-MM-DD (необязательно)" }
         },
         required: ["orderId"]
       }
@@ -200,17 +201,17 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "create_client_lead",
-      description: "Создать заявку (лид) клиента в CRM без создания ордера",
+      description: "Создать заявку (лид) клиента в CRM без создания ордера монтажа. Используй, если клиент ещё не готов к монтажу.",
       parameters: {
         type: "object",
         properties: {
-          clientName: { type: "string" },
-          clientPhone: { type: "string" },
-          clientEmail: { type: "string" },
-          area: { type: "number" },
-          roomType: { type: "string" },
-          budget: { type: "number" },
-          notes: { type: "string" }
+          clientName:  { type: "string", description: "Имя клиента" },
+          clientPhone: { type: "string", description: "Телефон клиента" },
+          clientEmail: { type: "string", description: "Email клиента (необязательно)" },
+          area:        { type: "number", description: "Площадь помещения в кв.м (необязательно)" },
+          roomType:    { type: "string", description: "Тип помещения (необязательно)" },
+          budget:      { type: "number", description: "Бюджет клиента в гривнах (необязательно)" },
+          notes:       { type: "string", description: "Дополнительные примечания (необязательно)" }
         },
         required: ["clientName", "clientPhone"]
       }
@@ -251,11 +252,11 @@ const FAN_COIL_BOM_AI = [
 
 // Default installers seed
 const DEFAULT_INSTALLERS = [
-  { id: "inst_01", name: "Олексій Коваль",    phone: "+380971234501", level: "master",    status: "available", certYear: 2026 },
-  { id: "inst_02", name: "Дмитро Шевченко",   phone: "+380971234502", level: "specialist",status: "available", certYear: 2026 },
-  { id: "inst_03", name: "Іван Бондаренко",   phone: "+380971234503", level: "installer", status: "available", certYear: 2025 },
-  { id: "inst_04", name: "Микола Петренко",   phone: "+380971234504", level: "master",    status: "busy",      certYear: 2026 },
-  { id: "inst_05", name: "Сергій Лисенко",    phone: "+380971234505", level: "specialist",status: "available", certYear: 2026 },
+  { id: "inst_01", name: "Алексей Коваль",    phone: "+380971234501", level: "master",    status: "available", certYear: 2026 },
+  { id: "inst_02", name: "Дмитрий Шевченко",  phone: "+380971234502", level: "specialist",status: "available", certYear: 2026 },
+  { id: "inst_03", name: "Иван Бондаренко",   phone: "+380971234503", level: "installer", status: "available", certYear: 2025 },
+  { id: "inst_04", name: "Николай Петренко",  phone: "+380971234504", level: "master",    status: "busy",      certYear: 2026 },
+  { id: "inst_05", name: "Сергей Лысенко",    phone: "+380971234505", level: "specialist",status: "available", certYear: 2026 },
 ];
 
 async function getInstallers() {
@@ -288,16 +289,16 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       if (top3.length === 0) {
         // Fallback: show all available AC equipment
         const allAc = allItems.filter((i: any) => i.itemType === 'equipment' && i.acSpecs && i.stock > 0);
-        if (allAc.length === 0) return { result: "На складі немає обладнання в наявності. Зв'яжіться з відділом закупівель.", action: null };
+        if (allAc.length === 0) return { result: "На складе нет оборудования в наличии. Обратитесь в отдел закупок.", action: null };
         const closest = allAc.sort((a: any, b: any) => Math.abs((a.acSpecs?.areaMin + a.acSpecs?.areaMax) / 2 - area) - Math.abs((b.acSpecs?.areaMin + b.acSpecs?.areaMax) / 2 - area)).slice(0, 3);
         return {
           result: JSON.stringify(closest.map((i: any) => ({ id: i.id, name: i.name, btu: i.acSpecs?.btu, kw: i.acSpecs?.kw, areaMin: i.acSpecs?.areaMin, areaMax: i.acSpecs?.areaMax, tier: i.acSpecs?.tier, price: i.price, stock: i.stock, features: i.acSpecs?.features, warranty: i.acSpecs?.warranty, equipmentType: i.acSpecs?.equipmentType }))),
-          action: { type: "ac_selected", title: `Підібрано ${closest.length} позиції зі складу`, data: closest }
+          action: { type: "ac_selected", title: `Подобрано ${closest.length} позиции со склада`, data: closest }
         };
       }
       return {
         result: JSON.stringify(top3.map((i: any) => ({ id: i.id, name: i.name, btu: i.acSpecs?.btu, kw: i.acSpecs?.kw, areaMin: i.acSpecs?.areaMin, areaMax: i.acSpecs?.areaMax, tier: i.acSpecs?.tier, price: i.price, stock: i.stock, features: i.acSpecs?.features, warranty: i.acSpecs?.warranty, equipmentType: i.acSpecs?.equipmentType }))),
-        action: { type: "ac_selected", title: `Підібрано ${top3.length} позиції зі складу`, data: top3 }
+        action: { type: "ac_selected", title: `Подобрано ${top3.length} позиции со склада`, data: top3 }
       };
     }
 
@@ -308,7 +309,7 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       const allItems = await getAllWarehouseItems();
       const whMap = new Map(allItems.map((i: any) => [i.id, i]));
       const acItem: any = whMap.get(warehouseAcId);
-      if (!acItem) return { result: `Позиція ${warehouseAcId} не знайдена на складі`, action: null };
+      if (!acItem) return { result: `Позиция ${warehouseAcId} не найдена на складе`, action: null };
       const isFanCoil = acItem.acSpecs?.equipmentType === 'fan_coil';
       const bom = isFanCoil ? FAN_COIL_BOM_AI : STD_SPLIT_BOM;
       const items = bom.map((entry: any) => {
@@ -321,7 +322,7 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       const shortages = items.filter((i: any) => !i.inStock);
       return {
         result: JSON.stringify({ items, allInStock, shortages: shortages.map((s: any) => s.name), traceLength: tl }),
-        action: { type: "consumables_checked", title: allInStock ? "Всі розхідники в наявності ✅" : `Нестача: ${shortages.length} поз. ⚠️`, data: { items, allInStock, traceLength: tl, acName: acItem.name } }
+        action: { type: "consumables_checked", title: allInStock ? "Все расходники в наличии ✅" : `Не хватает: ${shortages.length} поз. ⚠️`, data: { items, allInStock, traceLength: tl, acName: acItem.name } }
       };
     }
 
@@ -331,7 +332,7 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       const allItems = await getAllWarehouseItems();
       const whMap = new Map(allItems.map((i: any) => [i.id, i]));
       const acItem: any = whMap.get(warehouseAcId);
-      if (!acItem) return { result: `Позиція ${warehouseAcId} не знайдена на складі`, action: null };
+      if (!acItem) return { result: `Позиция ${warehouseAcId} не найдена на складе`, action: null };
       const tl = Number(traceLength) || 4;
       const count = Number(acCount) || 1;
       const isFanCoil = acItem.acSpecs?.equipmentType === 'fan_coil';
@@ -383,12 +384,12 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       } catch {}
       try {
         await sendTelegramMessage(
-          `🔧 <b>Ордер створено AI-менеджером!</b>\n\n👤 Клієнт: <b>${clientName}</b>\n📞 ${clientPhone}\n❄️ ${acItem.name}\n📐 ${roomArea} м²\n🔖 ID: ${orderId.substring(0, 20)}\n🕐 ${new Date().toLocaleString('uk-UA')}`
+          `🔧 <b>Ордер создан AI-менеджером!</b>\n\n👤 Клиент: <b>${clientName}</b>\n📞 ${clientPhone}\n❄️ ${acItem.name}\n📐 ${roomArea} м²\n🔖 ID: ${orderId.substring(0, 20)}\n🕐 ${new Date().toLocaleString('ru-RU')}`
         );
       } catch {}
       return {
         result: JSON.stringify({ orderId, status: "draft", clientName, acName: acItem.name, price: acItem.price, leadId }),
-        action: { type: "order_created", title: "Ордер монтажу створено ✅", data: { order, client, acItem } }
+        action: { type: "order_created", title: "Ордер монтажа создан ✅", data: { order, client, acItem } }
       };
     }
 
@@ -403,7 +404,7 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       const order: any = JSON.parse(orderRaw);
       // Pick installer
       let assigned = installers.find((i: any) => i.name === installerName) ?? available[0];
-      if (!assigned) return { result: "Немає доступних монтажників", action: { type: "installer_assigned", title: "Немає монтажників", data: { installers, orderId } } };
+      if (!assigned) return { result: "Нет доступных монтажников", action: { type: "installer_assigned", title: "Нет монтажников", data: { installers, orderId } } };
       order.installerName = assigned.name;
       order.installerPhone = assigned.phone;
       order.scheduledDate = scheduledDate || "";
@@ -417,12 +418,12 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       }
       try {
         await sendTelegramMessage(
-          `👷 <b>Монтажника призначено!</b>\n\n🔖 Ордер: ${orderId.slice(-8)}\n👤 Клієнт: ${order.clientName}\n🔧 Монтажник: <b>${assigned.name}</b>\n📅 Дата: ${scheduledDate || "Не вказана"}`
+          `👷 <b>Монтажник назначен!</b>\n\n🔖 Ордер: ${orderId.slice(-8)}\n👤 Клиент: ${order.clientName}\n🔧 Монтажник: <b>${assigned.name}</b>\n📅 Дата: ${scheduledDate || "Не указана"}`
         );
       } catch {}
       return {
         result: JSON.stringify({ orderId, installerName: assigned.name, scheduledDate, status: "assigned", availableInstallers: available.length }),
-        action: { type: "installer_assigned", title: `Монтажник призначено: ${assigned.name}`, data: { installer: assigned, orderId, order, availableInstallers: installers } }
+        action: { type: "installer_assigned", title: `Монтажник назначен: ${assigned.name}`, data: { installer: assigned, orderId, order, availableInstallers: installers } }
       };
     }
 
