@@ -9,7 +9,8 @@ import {
   ClipboardPaste, MessageCircle, AlertCircle,
   Zap, ThermometerSnowflake, ClipboardCheck, Package,
   ListChecks, Plus, Trash2, ChevronRight, ArrowUpRight,
-  MessageSquare, Clock
+  MessageSquare, Clock, UserCheck, Warehouse, FileText,
+  CalendarDays, Phone, XCircle, CheckSquare
 } from "lucide-react";
 import { projectId, publicAnonKey } from "/utils/supabase/info";
 
@@ -19,7 +20,7 @@ const JH = { ...AH, "Content-Type": "application/json" };
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface ActionItem {
-  type: "ac_selected" | "consumables_checked" | "order_created" | "lead_created";
+  type: "ac_selected" | "consumables_checked" | "order_created" | "lead_created" | "installer_assigned";
   title: string;
   data: any;
 }
@@ -34,11 +35,33 @@ interface SessionMeta {
   createdAt: string;
   updatedAt: string;
   lastMessage: string;
-  lastReply: string;
   actionsCount: number;
   completed: boolean;
   messageCount: number;
 }
+interface Installer {
+  id: string;
+  name: string;
+  phone: string;
+  level: string;
+  status: "available" | "busy";
+  certYear: number;
+}
+
+// ─── Workflow steps config ─────────────────────────────────────────────────────
+const WORKFLOW_STEPS = [
+  { key: "ac_selected",        icon: <Warehouse className="size-3.5" />,       label: "Підбір зі складу",   color: "blue" },
+  { key: "consumables_checked",icon: <Package className="size-3.5" />,          label: "Комплектуючі",       color: "amber" },
+  { key: "order_created",      icon: <ClipboardCheck className="size-3.5" />,   label: "Ордер монтажу",     color: "teal" },
+  { key: "installer_assigned", icon: <UserCheck className="size-3.5" />,        label: "Монтажник",          color: "violet" },
+];
+
+const STEP_COLORS: Record<string, string> = {
+  blue:   "bg-blue-100 text-blue-700 border-blue-300 ring-blue-100",
+  amber:  "bg-amber-100 text-amber-700 border-amber-300 ring-amber-100",
+  teal:   "bg-teal-100 text-teal-700 border-teal-300 ring-teal-100",
+  violet: "bg-violet-100 text-violet-700 border-violet-300 ring-violet-100",
+};
 
 function cleanMessage(content: string): string {
   return content.replace(/```json[\s\S]*?```/g, "").replace(/```[\s\S]*?```/g, "").trim();
@@ -47,58 +70,80 @@ function cleanMessage(content: string): string {
 function timeAgo(isoDate: string): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   const m = Math.floor(diff / 60000);
-  if (m < 1) return "только что";
-  if (m < 60) return `${m} мин назад`;
+  if (m < 1) return "тільки що";
+  if (m < 60) return `${m} хв тому`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h} ч назад`;
-  const d = Math.floor(h / 24);
-  return `${d} д назад`;
+  if (h < 24) return `${h} год тому`;
+  return `${Math.floor(h / 24)} д тому`;
 }
 
-// ─── Tier config ───────────────────────────────────────────────────────────────
-const TIER_CFG: Record<string, { label: string; bg: string; text: string; border: string; badge: string }> = {
-  economy:  { label: "Эконом",   bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200", badge: "💚" },
-  standard: { label: "Стандарт", bg: "bg-blue-50",    text: "text-blue-700",    border: "border-blue-200",    badge: "💙" },
-  premium:  { label: "Премиум",  bg: "bg-violet-50",  text: "text-violet-700",  border: "border-violet-200",  badge: "💜" },
+const TIER_CFG: Record<string, { label: string; bg: string; text: string; border: string }> = {
+  economy:  { label: "Економ",   bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200" },
+  standard: { label: "Стандарт", bg: "bg-blue-50",    text: "text-blue-700",    border: "border-blue-200" },
+  premium:  { label: "Преміум",  bg: "bg-violet-50",  text: "text-violet-700",  border: "border-violet-200" },
 };
 
 // ─── Action Cards ──────────────────────────────────────────────────────────────
-function AcSelectedCard({ data }: { data: any[] }) {
+function AcWarehouseCard({ data }: { data: any[] }) {
   const [expanded, setExpanded] = useState(false);
-  const models = data || [];
+  const models = Array.isArray(data) ? data : [];
   if (!models.length) return null;
-  const cfg = TIER_CFG[models[0].tier] || TIER_CFG.standard;
+  const first = models[0];
+  const cfg = TIER_CFG[first.acSpecs?.tier || first.tier] || TIER_CFG.standard;
+  // Normalize data from warehouse items
+  const normalize = (m: any) => ({
+    id: m.id,
+    name: m.name,
+    btu: m.acSpecs?.btu ?? m.btu,
+    kw: m.acSpecs?.kw ?? m.kw,
+    areaMin: m.acSpecs?.areaMin ?? m.areaMin,
+    areaMax: m.acSpecs?.areaMax ?? m.areaMax,
+    tier: m.acSpecs?.tier ?? m.tier,
+    price: m.price,
+    stock: m.stock,
+    features: m.acSpecs?.features ?? m.features ?? [],
+    warranty: m.acSpecs?.warranty ?? m.warranty,
+    equipmentType: m.acSpecs?.equipmentType ?? "split_ac",
+  });
+  const items = models.map(normalize);
+  const show = expanded ? items : items.slice(0, 1);
+  const typeLabel: Record<string, string> = { split_ac: "Спліт-система", fan_coil: "Фанкойл", chiller: "Чилер", vrv: "VRV" };
   return (
     <div className={`rounded-xl border ${cfg.border} ${cfg.bg} p-3 mt-1`}>
       <div className="flex items-center gap-2 mb-2">
-        <ThermometerSnowflake className={`size-4 ${cfg.text}`} />
-        <span className="text-xs font-bold text-slate-700">Подобрано из каталога</span>
+        <Warehouse className={`size-4 ${cfg.text}`} />
+        <span className="text-xs font-bold text-slate-700">З реального складу ({items.length} поз.)</span>
+        <span className="ml-auto text-[9px] bg-green-100 text-green-700 font-bold px-1.5 py-0.5 rounded-full border border-green-200">✓ В наявності</span>
       </div>
-      {(expanded ? models : models.slice(0, 1)).map((ac: any, i: number) => (
-        <div key={ac.id} className={`rounded-lg p-2.5 bg-white border mb-1.5 ${i === 0 ? "border-blue-300 shadow-sm" : "border-slate-200"}`}>
+      {show.map((m, i) => (
+        <div key={m.id} className={`rounded-lg p-2.5 bg-white border mb-1.5 ${i === 0 ? "border-blue-300 shadow-sm" : "border-slate-200"}`}>
           <div className="flex items-start justify-between gap-2">
             <div className="flex-1 min-w-0">
               <div className="flex flex-wrap gap-1 mb-1">
-                {i === 0 && <span className="text-[9px] bg-amber-400 text-white font-bold px-1.5 py-0.5 rounded-full">✓ Лучший выбор</span>}
-                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${cfg.text} ${cfg.bg}`}>{TIER_CFG[ac.tier]?.label}</span>
+                {i === 0 && <span className="text-[9px] bg-amber-400 text-white font-bold px-1.5 py-0.5 rounded-full">✓ Найкращий вибір</span>}
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${cfg.text} ${cfg.bg}`}>{TIER_CFG[m.tier]?.label}</span>
+                <span className="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full">{typeLabel[m.equipmentType] || m.equipmentType}</span>
               </div>
-              <p className="text-xs font-bold text-slate-800">{ac.brand} {ac.model}</p>
-              <p className="text-[10px] text-slate-500">{ac.btu} BTU · {ac.areaMin}–{ac.areaMax} м² · гар. {ac.warranty} л</p>
+              <p className="text-xs font-bold text-slate-800 leading-snug">{m.name}</p>
+              {m.btu && <p className="text-[10px] text-slate-500">{m.btu} BTU · {m.kw} кВт · {m.areaMin}–{m.areaMax} м² · гар. {m.warranty} р.</p>}
             </div>
-            <p className="text-sm font-black text-slate-800 flex-shrink-0">{ac.price?.toLocaleString()} ₴</p>
+            <div className="text-right flex-shrink-0">
+              <p className="text-sm font-black text-slate-800">{m.price?.toLocaleString()} ₴</p>
+              <p className="text-[10px] text-green-600 font-bold">залишок: {m.stock} шт</p>
+            </div>
           </div>
-          {ac.features?.length > 0 && (
+          {m.features?.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1.5">
-              {ac.features.slice(0, 3).map((f: string) => (
+              {m.features.slice(0, 3).map((f: string) => (
                 <span key={f} className="text-[9px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-full">{f}</span>
               ))}
             </div>
           )}
         </div>
       ))}
-      {models.length > 1 && (
+      {items.length > 1 && (
         <button onClick={() => setExpanded(v => !v)} className={`text-xs ${cfg.text} font-semibold flex items-center gap-1`}>
-          {expanded ? "Скрыть" : `Ещё ${models.length - 1} варианта`}
+          {expanded ? "Сховати" : `Ще ${items.length - 1} варіанти`}
           <ChevronRight className={`size-3 transition-transform ${expanded ? "rotate-90" : ""}`} />
         </button>
       )}
@@ -108,7 +153,7 @@ function AcSelectedCard({ data }: { data: any[] }) {
 
 function ConsumablesCard({ data }: { data: any }) {
   const [expanded, setExpanded] = useState(false);
-  const { items = [], allInStock, traceLength, acBrand, acModel: acMod } = data;
+  const { items = [], allInStock, traceLength, acName } = data;
   const shortage = items.filter((i: any) => !i.inStock);
   const totalCost = items.reduce((s: number, i: any) => s + (i.price * i.qty), 0);
   return (
@@ -116,42 +161,44 @@ function ConsumablesCard({ data }: { data: any }) {
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <Package className={`size-4 ${allInStock ? "text-green-600" : "text-amber-600"}`} />
-          <span className="text-xs font-bold text-slate-700 truncate max-w-[170px]">{acBrand} {acMod} · трасса {traceLength}м</span>
+          <span className="text-xs font-bold text-slate-700 truncate max-w-[160px]">{acName || "Комплектуючі"} · {traceLength}м</span>
         </div>
         {allInStock
-          ? <span className="text-[10px] bg-green-100 text-green-700 border border-green-300 font-bold px-1.5 py-0.5 rounded-full flex-shrink-0">✅ В наличии</span>
-          : <span className="text-[10px] bg-amber-100 text-amber-700 border border-amber-300 font-bold px-1.5 py-0.5 rounded-full flex-shrink-0">⚠️ Нет {shortage.length} поз.</span>
+          ? <span className="text-[10px] bg-green-100 text-green-700 border border-green-300 font-bold px-1.5 py-0.5 rounded-full flex-shrink-0">✅ Всі є</span>
+          : <span className="text-[10px] bg-amber-100 text-amber-700 border border-amber-300 font-bold px-1.5 py-0.5 rounded-full flex-shrink-0">⚠️ Не вистачає {shortage.length}</span>
         }
       </div>
       <div className="space-y-1">
         {(expanded ? items : items.slice(0, 5)).map((item: any) => (
           <div key={item.id} className="flex items-center justify-between text-[11px]">
             <span className={`flex-1 truncate mr-2 ${!item.inStock ? "text-red-700 font-semibold" : "text-slate-600"}`}>
-              {!item.inStock ? "⚠️ " : ""}{item.name}
+              {!item.inStock ? "⚠️ " : "✓ "}{item.name}
             </span>
             <span className="text-slate-500 flex-shrink-0 text-right">
               {item.qty} {item.unit}
-              <span className={`ml-1 ${!item.inStock ? "text-red-500" : "text-green-600"}`}>
-                (есть: {item.stock})
-              </span>
+              <span className={`ml-1 ${!item.inStock ? "text-red-500" : "text-green-600"}`}>(є: {item.stock})</span>
             </span>
           </div>
         ))}
       </div>
       {items.length > 5 && (
         <button onClick={() => setExpanded(v => !v)} className="mt-1.5 text-[11px] text-blue-600 font-semibold">
-          {expanded ? "Скрыть" : `+ ещё ${items.length - 5} позиций`}
+          {expanded ? "Сховати" : `+ ще ${items.length - 5} позицій`}
         </button>
       )}
       <div className="mt-2 pt-2 border-t border-slate-200 flex justify-between items-center">
-        <span className="text-[10px] text-slate-500">{items.length} позиций</span>
+        <span className="text-[10px] text-slate-500">{items.length} позицій</span>
         <span className="text-xs font-bold text-slate-700">~{totalCost.toLocaleString()} ₴</span>
       </div>
     </div>
   );
 }
 
-function OrderCreatedCard({ data, onNavigate }: { data: any; onNavigate: (p: string) => void }) {
+function OrderCreatedCard({ data, onNavigate, onGeneratePdf, onAssignInstaller }: {
+  data: any; onNavigate: (p: string) => void;
+  onGeneratePdf: (orderId: string) => void;
+  onAssignInstaller: (orderId: string) => void;
+}) {
   const { order } = data;
   return (
     <div className="rounded-xl border-2 border-teal-300 bg-teal-50 p-3 mt-1">
@@ -159,18 +206,47 @@ function OrderCreatedCard({ data, onNavigate }: { data: any; onNavigate: (p: str
         <div className="size-6 rounded-full bg-teal-500 flex items-center justify-center">
           <CheckCircle2 className="size-4 text-white" />
         </div>
-        <span className="text-sm font-bold text-teal-800">Ордер монтажа создан!</span>
+        <span className="text-sm font-bold text-teal-800">Ордер монтажу створено!</span>
       </div>
-      <div className="bg-white rounded-lg p-2.5 border border-teal-200 space-y-1 text-xs">
-        <div className="flex justify-between"><span className="text-slate-500">Клиент</span><span className="font-bold">{order?.clientName}</span></div>
+      <div className="bg-white rounded-lg p-2.5 border border-teal-200 space-y-1 text-xs mb-2">
+        <div className="flex justify-between"><span className="text-slate-500">Клієнт</span><span className="font-bold">{order?.clientName}</span></div>
         <div className="flex justify-between"><span className="text-slate-500">Телефон</span><span>{order?.clientPhone}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Кондиционер</span><span className="font-bold">{order?.acBrand} {order?.acModelName}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Площадь</span><span>{order?.roomArea} м² · {order?.roomType}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Стоимость</span><span className="font-bold">{order?.acPrice?.toLocaleString()} ₴</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Обладнання</span><span className="font-bold text-right max-w-[160px] truncate">{order?.acModelName}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Площа / Трасса</span><span>{order?.roomArea} м² · {order?.traceLength}м</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Статус</span><span className="text-amber-600 font-bold">Чернетка</span></div>
       </div>
-      <button onClick={() => onNavigate("/install-orders")} className="mt-2 w-full flex items-center justify-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white py-2 rounded-lg text-xs font-bold transition-colors">
-        <ArrowUpRight className="size-3.5" />Открыть ордер монтажа
-      </button>
+      <div className="grid grid-cols-3 gap-1.5">
+        <button onClick={() => onNavigate("/install-orders")}
+          className="flex flex-col items-center justify-center gap-1 bg-teal-600 hover:bg-teal-700 text-white py-2 rounded-lg text-[10px] font-bold transition-colors">
+          <ArrowUpRight className="size-3" />Відкрити
+        </button>
+        <button onClick={() => onGeneratePdf(order?.id)}
+          className="flex flex-col items-center justify-center gap-1 bg-slate-700 hover:bg-slate-800 text-white py-2 rounded-lg text-[10px] font-bold transition-colors">
+          <FileText className="size-3" />Документ
+        </button>
+        <button onClick={() => onAssignInstaller(order?.id)}
+          className="flex flex-col items-center justify-center gap-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-[10px] font-bold transition-colors">
+          <UserCheck className="size-3" />Монтажник
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function InstallerAssignedCard({ data }: { data: any }) {
+  const { installer, orderId } = data;
+  return (
+    <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 mt-1">
+      <div className="flex items-center gap-2 mb-2">
+        <UserCheck className="size-4 text-violet-600" />
+        <span className="text-xs font-bold text-violet-800">Монтажника призначено!</span>
+      </div>
+      <div className="bg-white rounded-lg p-2.5 border border-violet-200 space-y-1 text-xs">
+        <div className="flex justify-between"><span className="text-slate-500">Монтажник</span><span className="font-bold">{installer?.name}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Рівень</span><span>{installer?.level}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Телефон</span><span>{installer?.phone}</span></div>
+        {data.scheduledDate && <div className="flex justify-between"><span className="text-slate-500">Дата</span><span className="font-bold text-teal-600">{data.scheduledDate}</span></div>}
+      </div>
     </div>
   );
 }
@@ -181,50 +257,199 @@ function LeadCreatedCard({ data }: { data: any }) {
     <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 mt-1">
       <div className="flex items-center gap-2 mb-1.5">
         <CheckCircle2 className="size-4 text-blue-600" />
-        <span className="text-xs font-bold text-blue-800">Заявка создана в CRM</span>
+        <span className="text-xs font-bold text-blue-800">Заявку створено в CRM</span>
       </div>
       <p className="text-xs font-bold text-slate-800">{client?.name}</p>
       <p className="text-xs text-slate-500">{client?.phone}</p>
-      <p className="text-[10px] text-blue-400 font-mono mt-1">ID: {lead?.id?.substring(0, 28)}…</p>
     </div>
   );
 }
 
-function ActionCard({ action, onNavigate }: { action: ActionItem; onNavigate: (p: string) => void }) {
-  if (action.type === "ac_selected") return <AcSelectedCard data={action.data} />;
+function ActionCard({ action, onNavigate, onGeneratePdf, onAssignInstaller }: {
+  action: ActionItem;
+  onNavigate: (p: string) => void;
+  onGeneratePdf: (id: string) => void;
+  onAssignInstaller: (id: string) => void;
+}) {
+  if (action.type === "ac_selected") return <AcWarehouseCard data={action.data} />;
   if (action.type === "consumables_checked") return <ConsumablesCard data={action.data} />;
-  if (action.type === "order_created") return <OrderCreatedCard data={action.data} onNavigate={onNavigate} />;
+  if (action.type === "order_created") return <OrderCreatedCard data={action.data} onNavigate={onNavigate} onGeneratePdf={onGeneratePdf} onAssignInstaller={onAssignInstaller} />;
+  if (action.type === "installer_assigned") return <InstallerAssignedCard data={action.data} />;
   if (action.type === "lead_created") return <LeadCreatedCard data={action.data} />;
   return null;
 }
 
-// ─── Session actions summary row ───────────────────────────────────────────────
-function ActionSummaryRow({ action }: { action: ActionItem }) {
-  const cfg: Record<string, { icon: React.ReactNode; color: string; bg: string }> = {
-    ac_selected:        { icon: <ThermometerSnowflake className="size-3" />, color: "text-blue-600",   bg: "bg-blue-100" },
-    consumables_checked:{ icon: <Package className="size-3" />,              color: "text-green-600",  bg: "bg-green-100" },
-    order_created:      { icon: <ClipboardCheck className="size-3" />,       color: "text-teal-600",   bg: "bg-teal-100" },
-    lead_created:       { icon: <CheckCircle2 className="size-3" />,          color: "text-violet-600", bg: "bg-violet-100" },
+// ─── Installer Assignment Modal ─────────────────────────────────────────────────
+function InstallerModal({ orderId, onClose, onDone }: { orderId: string; onClose: () => void; onDone: () => void }) {
+  const [installers, setInstallers] = useState<Installer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string>("");
+  const [date, setDate] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/installers`, { headers: AH }).then(r => r.json()).then(d => {
+      setInstallers(d.installers || []);
+      const avail = (d.installers || []).find((i: Installer) => i.status === "available");
+      if (avail) setSelected(avail.id);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  const assign = async () => {
+    const inst = installers.find(i => i.id === selected);
+    if (!inst) return;
+    setSaving(true);
+    try {
+      await fetch(`${API_BASE}/install-orders/${orderId}/assign`, {
+        method: "POST", headers: JH,
+        body: JSON.stringify({ installerName: inst.name, installerPhone: inst.phone, scheduledDate: date }),
+      });
+      onDone();
+    } catch (e) { console.error(e); }
+    finally { setSaving(false); }
   };
-  const c = cfg[action.type] || cfg.lead_created;
-  let sub = "";
-  if (action.type === "ac_selected" && action.data?.[0])
-    sub = `${action.data[0].brand} · ${action.data[0].price?.toLocaleString()} ₴`;
-  else if (action.type === "consumables_checked")
-    sub = `${action.data?.items?.length || 0} позиций · трасса ${action.data?.traceLength}м`;
-  else if (action.type === "order_created")
-    sub = `${action.data?.order?.clientName}`;
-  else if (action.type === "lead_created")
-    sub = action.data?.client?.name || "";
+
+  const levelLabel: Record<string, string> = { trainee: "Стажер", installer: "Монтажник", specialist: "Спеціаліст", master: "Майстер", senior_master: "Ст. майстер" };
+
   return (
-    <div className="flex items-center gap-2 bg-slate-50 rounded-xl p-2">
-      <div className={`size-5 rounded-lg ${c.bg} ${c.color} flex items-center justify-center flex-shrink-0`}>{c.icon}</div>
-      <div className="flex-1 min-w-0">
-        <p className="text-[11px] font-bold text-slate-700 leading-tight truncate">{action.title}</p>
-        {sub && <p className="text-[10px] text-slate-500 truncate">{sub}</p>}
-      </div>
-      <CheckCircle2 className="size-3 text-green-500 flex-shrink-0" />
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="border-b pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-2"><UserCheck className="size-4 text-violet-600" />Призначити монтажника</CardTitle>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><XCircle className="size-5" /></button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-4 space-y-3">
+          {loading ? (
+            <div className="flex justify-center py-6"><Loader2 className="size-5 animate-spin text-slate-400" /></div>
+          ) : (
+            <>
+              <div>
+                <label className="text-xs text-slate-500 font-medium block mb-1.5">Монтажник</label>
+                <div className="space-y-1.5 max-h-52 overflow-auto">
+                  {installers.map(inst => (
+                    <button key={inst.id} onClick={() => inst.status === "available" && setSelected(inst.id)}
+                      className={`w-full flex items-center gap-2.5 p-2.5 rounded-xl border transition-all text-left ${
+                        selected === inst.id ? "border-violet-400 bg-violet-50" :
+                        inst.status === "busy" ? "border-slate-100 bg-slate-50 opacity-50 cursor-not-allowed" :
+                        "border-slate-200 hover:border-violet-300 hover:bg-violet-50/50"
+                      }`}>
+                      <div className={`size-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 ${
+                        inst.status === "available" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"
+                      }`}>
+                        {inst.name.charAt(0)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-slate-800 truncate">{inst.name}</p>
+                        <p className="text-[11px] text-slate-500">{levelLabel[inst.level] || inst.level} · {inst.status === "available" ? "Доступний" : "Зайнятий"}</p>
+                      </div>
+                      <div className="flex-shrink-0 flex items-center gap-1.5">
+                        <span className="text-[9px] text-slate-400">Серт. {inst.certYear}</span>
+                        {selected === inst.id && <CheckSquare className="size-4 text-violet-600" />}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 font-medium block mb-1.5">Дата монтажу (необов'язково)</label>
+                <input type="date" value={date} onChange={e => setDate(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400" />
+              </div>
+              <Button onClick={assign} disabled={!selected || saving} className="w-full bg-violet-600 hover:bg-violet-700 py-5">
+                {saving ? <Loader2 className="size-4 animate-spin mr-2" /> : <UserCheck className="size-4 mr-2" />}
+                Призначити монтажника
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
     </div>
+  );
+}
+
+// ─── Workflow Progress Panel ────────────────────────────────────────────────────
+function WorkflowPanel({ actions, onNavigate, onGeneratePdf, onAssignInstaller }: {
+  actions: ActionItem[];
+  onNavigate: (p: string) => void;
+  onGeneratePdf: (id: string) => void;
+  onAssignInstaller: (id: string) => void;
+}) {
+  const completedTypes = new Set(actions.map(a => a.type));
+  const orderAction = [...actions].reverse().find(a => a.type === "order_created");
+
+  return (
+    <Card className="w-72 flex-shrink-0 flex flex-col min-h-0 hidden xl:flex">
+      <CardHeader className="border-b flex-shrink-0 py-3">
+        <CardTitle className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+          <ListChecks className="size-3.5 text-blue-600" />Прогрес роботи
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex-1 overflow-auto p-3">
+        {/* Workflow steps */}
+        <div className="space-y-1.5 mb-3">
+          {WORKFLOW_STEPS.map((step, i) => {
+            const done = completedTypes.has(step.key as any);
+            const cc = STEP_COLORS[step.color];
+            return (
+              <div key={step.key} className={`flex items-center gap-2.5 rounded-xl p-2 border transition-all ${done ? `${cc} ring-1` : "bg-slate-50 border-slate-200 opacity-50"}`}>
+                <div className={`size-6 rounded-lg flex items-center justify-center flex-shrink-0 ${done ? "" : "bg-slate-200"}`}>
+                  {done ? step.icon : <span className="text-[10px] font-bold text-slate-400">{i + 1}</span>}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-bold leading-tight truncate">{step.label}</p>
+                </div>
+                {done ? <CheckCircle2 className="size-3.5 text-green-500 flex-shrink-0" /> : <div className="size-3.5 rounded-full border-2 border-slate-300 flex-shrink-0" />}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Actions from AI */}
+        {actions.length === 0 ? (
+          <div className="text-center py-4">
+            <Zap className="size-8 text-slate-200 mx-auto mb-2" />
+            <p className="text-[11px] text-slate-400 leading-relaxed max-w-[180px] mx-auto">
+              AI виконає кроки автоматично. Скажіть площу та побажання клієнта.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {actions.slice(-4).map((action, i) => {
+              const step = WORKFLOW_STEPS.find(s => s.key === action.type);
+              const cc = step ? STEP_COLORS[step.color] : "bg-slate-100 text-slate-600 border-slate-200";
+              return (
+                <div key={i} className={`flex items-center gap-2 rounded-xl p-2 border ${cc}`}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[11px] font-bold leading-tight truncate">{action.title}</p>
+                  </div>
+                  <CheckCircle2 className="size-3 text-green-500 flex-shrink-0" />
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Quick actions */}
+        {orderAction && (
+          <div className="mt-3 pt-3 border-t space-y-1.5">
+            <button onClick={() => onNavigate("/install-orders")}
+              className="w-full flex items-center justify-center gap-2 bg-teal-600 text-white py-2.5 rounded-xl text-xs font-bold hover:bg-teal-700 transition-colors">
+              <ClipboardCheck className="size-3.5" />Перейти до ордеру
+            </button>
+            <button onClick={() => onGeneratePdf(orderAction.data?.order?.id)}
+              className="w-full flex items-center justify-center gap-2 bg-slate-700 text-white py-2 rounded-xl text-xs font-semibold hover:bg-slate-800 transition-colors">
+              <FileText className="size-3.5" />Сформувати документ
+            </button>
+            <button onClick={() => onAssignInstaller(orderAction.data?.order?.id)}
+              className="w-full flex items-center justify-center gap-2 bg-violet-100 text-violet-700 py-2 rounded-xl text-xs font-semibold hover:bg-violet-200 transition-colors border border-violet-200">
+              <UserCheck className="size-3.5" />Призначити монтажника
+            </button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -236,17 +461,13 @@ export function SalesManagerChat() {
   return (
     <div className="w-full max-w-[1400px] mx-auto flex flex-col gap-3 h-full">
       <div className="flex gap-2 bg-white rounded-xl border border-slate-200 p-1.5 shadow-sm flex-shrink-0">
-        <button
-          onClick={() => setMode("dialog")}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-all ${mode === "dialog" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-50"}`}
-        >
-          <MessageCircle size={15} />AI Диалог
+        <button onClick={() => setMode("dialog")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-all ${mode === "dialog" ? "bg-blue-600 text-white shadow" : "text-slate-500 hover:bg-slate-50"}`}>
+          <MessageCircle size={15} />AI Діалог
         </button>
-        <button
-          onClick={() => setMode("paste")}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-all ${mode === "paste" ? "bg-violet-600 text-white shadow" : "text-slate-500 hover:bg-slate-50"}`}
-        >
-          <ClipboardPaste size={15} />Вставить переписку
+        <button onClick={() => setMode("paste")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-all ${mode === "paste" ? "bg-violet-600 text-white shadow" : "text-slate-500 hover:bg-slate-50"}`}>
+          <ClipboardPaste size={15} />Вставити переписку
         </button>
       </div>
       {mode === "dialog" ? <DialogMode /> : <PasteMode />}
@@ -258,18 +479,19 @@ export function SalesManagerChat() {
 function DialogMode() {
   const navigate = useNavigate();
 
-  // Sessions list
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Active session
   const [sessionId, setSessionId] = useState<string>(() => newSessionId());
   const [messages, setMessages] = useState<Message[]>([]);
   const [allActions, setAllActions] = useState<ActionItem[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [isNewSession, setIsNewSession] = useState(true);
+
+  // Installer modal
+  const [installerModalOrderId, setInstallerModalOrderId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; };
@@ -279,50 +501,37 @@ function DialogMode() {
     return `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  // Load sessions list
   const loadSessions = useCallback(async () => {
     setSessionsLoading(true);
     try {
       const res = await fetch(`${API_BASE}/chat-sessions`, { headers: AH });
-      if (res.ok) {
-        const data = await res.json();
-        setSessions(data.sessions || []);
-      }
-    } catch (e) { console.error("loadSessions:", e); }
+      if (res.ok) setSessions((await res.json()).sessions || []);
+    } catch (e) { console.error(e); }
     finally { setSessionsLoading(false); }
   }, []);
 
   useEffect(() => { loadSessions(); }, []);
-
-  // Send initial greeting for new sessions
-  useEffect(() => {
-    if (isNewSession) { sendGreeting(sessionId); }
-  }, [sessionId]);
+  useEffect(() => { if (isNewSession) sendGreeting(sessionId); }, [sessionId]);
 
   async function sendGreeting(sid: string) {
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST", headers: JH,
-        body: JSON.stringify({ sessionId: sid, message: "Привет! Коротко расскажи что умеешь.", history: [] }),
+        body: JSON.stringify({ sessionId: sid, message: "Привіт! Коротко розкажи що вмієш і як підбираєш кондиціонери зі складу.", history: [] }),
       });
       if (res.ok) {
         const data = await res.json();
         const content = cleanMessage(data.message || "");
         if (content) setMessages([{ role: "assistant", content, actions: [] }]);
       }
-    } catch (e) { console.error("greeting:", e); }
+    } catch (e) { console.error(e); }
     finally { setLoading(false); }
   }
 
-  // Switch to an existing session
   async function openSession(sid: string) {
     if (sid === sessionId) return;
-    setLoading(true);
-    setMessages([]);
-    setAllActions([]);
-    setInput("");
-    setIsNewSession(false);
+    setLoading(true); setMessages([]); setAllActions([]); setInput(""); setIsNewSession(false);
     try {
       const res = await fetch(`${API_BASE}/chat-session/${sid}`, { headers: AH });
       if (res.ok) {
@@ -333,38 +542,28 @@ function DialogMode() {
         setMessages(hist);
         setAllActions(data.actions || []);
       }
-    } catch (e) { console.error("openSession:", e); }
+    } catch (e) { console.error(e); }
     finally { setLoading(false); setSessionId(sid); }
   }
 
-  // Create new session
   function createNewSession() {
     const sid = newSessionId();
-    setSessionId(sid);
-    setMessages([]);
-    setAllActions([]);
-    setInput("");
-    setIsNewSession(true);
+    setSessionId(sid); setMessages([]); setAllActions([]); setInput(""); setIsNewSession(true);
   }
 
-  // Delete a session
   async function deleteSession(sid: string, e: React.MouseEvent) {
-    e.stopPropagation();
-    setDeletingId(sid);
+    e.stopPropagation(); setDeletingId(sid);
     try {
       await fetch(`${API_BASE}/chat-session/${sid}`, { method: "DELETE", headers: AH });
       setSessions(prev => prev.filter(s => s.id !== sid));
       if (sid === sessionId) createNewSession();
-    } catch (e) { console.error("deleteSession:", e); }
+    } catch (e) { console.error(e); }
     finally { setDeletingId(null); }
   }
 
-  // Send message
   async function sendMessage() {
     if (!input.trim() || loading) return;
-    const userMsg = input.trim();
-    setInput("");
-    setLoading(true);
+    const userMsg = input.trim(); setInput(""); setLoading(true);
     const histForApi = messages.map(m => ({ role: m.role, content: m.content }));
     const updated: Message[] = [...messages, { role: "user", content: userMsg }];
     setMessages(updated);
@@ -377,94 +576,92 @@ function DialogMode() {
         const data = await res.json();
         const content = cleanMessage(data.message || "");
         const acts: ActionItem[] = data.actions || [];
-        const newMessages: Message[] = [...updated, { role: "assistant", content, actions: acts }];
-        setMessages(newMessages);
+        setMessages([...updated, { role: "assistant", content, actions: acts }]);
         if (acts.length) {
           const newAllActions = [...allActions, ...acts];
           setAllActions(newAllActions);
-          // Persist actions for this session
           await fetch(`${API_BASE}/chat-session-actions/${sessionId}`, {
-            method: "POST", headers: JH,
-            body: JSON.stringify({ actions: newAllActions }),
+            method: "POST", headers: JH, body: JSON.stringify({ actions: newAllActions }),
           });
         }
-        // Refresh sessions list to show updated metadata
-        loadSessions();
-        setIsNewSession(false);
+        loadSessions(); setIsNewSession(false);
       } else {
-        setMessages([...updated, { role: "assistant", content: "Ошибка. Попробуйте ещё раз.", actions: [] }]);
+        setMessages([...updated, { role: "assistant", content: "Помилка. Спробуйте ще раз.", actions: [] }]);
       }
     } catch (e) {
-      console.error("sendMessage:", e);
-      setMessages([...updated, { role: "assistant", content: "Ошибка соединения.", actions: [] }]);
+      console.error(e);
+      setMessages([...updated, { role: "assistant", content: "Помилка з'єднання.", actions: [] }]);
     } finally { setLoading(false); }
   }
+
+  const handleGeneratePdf = async (orderId: string) => {
+    if (!orderId) return;
+    try {
+      const res = await fetch(`${API_BASE}/install-orders/${orderId}/pdf`, { headers: AH });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = `order_${orderId.slice(-8)}.pdf`; a.click();
+        URL.revokeObjectURL(url);
+      } else { navigate("/install-orders"); }
+    } catch { navigate("/install-orders"); }
+  };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
-  const latestOrderAction = [...allActions].reverse().find(a => a.type === "order_created");
   const quickActions = [
-    "Подбери кондиционер для квартиры 45 кв.м",
-    "Клиент: Иван, +380991234567, офис 60 м², нужен ордер",
-    "Проверь расходники для ac_eco_12, трасса 5м",
+    "Клієнт: Олена, +380991234567. Квартира 45 м², бюджет 35000 грн",
+    "Офіс 70 м², треба кондиціонер середнього сегменту",
+    "Підбери фанкойл для кімнати 35 м² (є чилер)",
   ];
 
   return (
     <div className="flex gap-3 flex-1 min-h-0">
+      {installerModalOrderId && (
+        <InstallerModal
+          orderId={installerModalOrderId}
+          onClose={() => setInstallerModalOrderId(null)}
+          onDone={() => { setInstallerModalOrderId(null); loadSessions(); }}
+        />
+      )}
 
-      {/* ── Left: Sessions Sidebar ─────────────────────────────────────────── */}
-      <Card className="w-64 flex-shrink-0 flex flex-col min-h-0 hidden lg:flex">
+      {/* Sessions Sidebar */}
+      <Card className="w-60 flex-shrink-0 flex flex-col min-h-0 hidden lg:flex">
         <CardHeader className="border-b flex-shrink-0 py-3 px-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-              <MessageSquare className="size-3.5 text-blue-500" />Диалоги
+              <MessageSquare className="size-3.5 text-blue-500" />Діалоги
             </CardTitle>
-            <button
-              onClick={createNewSession}
-              className="size-7 rounded-lg bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition-colors"
-              title="Новый диалог"
-            >
+            <button onClick={createNewSession}
+              className="size-7 rounded-lg bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition-colors" title="Новий діалог">
               <Plus className="size-3.5" />
             </button>
           </div>
         </CardHeader>
-
         <div className="flex-1 overflow-y-auto">
           {sessionsLoading && sessions.length === 0 && (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="size-4 animate-spin text-slate-400" />
-            </div>
+            <div className="flex items-center justify-center py-8"><Loader2 className="size-4 animate-spin text-slate-400" /></div>
           )}
-
           {sessions.length === 0 && !sessionsLoading && (
             <div className="p-4 text-center">
               <MessageSquare className="size-8 text-slate-200 mx-auto mb-2" />
-              <p className="text-xs text-slate-400">Нет сохранённых диалогов</p>
+              <p className="text-xs text-slate-400">Немає збережених діалогів</p>
             </div>
           )}
-
           <div className="p-2 space-y-1">
             {sessions.map(sess => (
-              <button
-                key={sess.id}
-                onClick={() => openSession(sess.id)}
+              <button key={sess.id} onClick={() => openSession(sess.id)}
                 className={`w-full text-left rounded-xl p-2.5 transition-all group relative ${
-                  sess.id === sessionId
-                    ? "bg-blue-50 border border-blue-200"
-                    : "hover:bg-slate-50 border border-transparent"
-                }`}
-              >
+                  sess.id === sessionId ? "bg-blue-50 border border-blue-200" : "hover:bg-slate-50 border border-transparent"
+                }`}>
                 <div className="flex items-start justify-between gap-1 mb-1">
                   <p className={`text-[11px] font-bold leading-tight line-clamp-2 flex-1 ${sess.id === sessionId ? "text-blue-800" : "text-slate-700"}`}>
                     {sess.title}
                   </p>
-                  <button
-                    onClick={(e) => deleteSession(sess.id, e)}
-                    className="opacity-0 group-hover:opacity-100 size-5 rounded-md hover:bg-red-100 flex items-center justify-center flex-shrink-0 transition-all"
-                    title="Удалить"
-                  >
+                  <button onClick={(e) => deleteSession(sess.id, e)}
+                    className="opacity-0 group-hover:opacity-100 size-5 rounded-md hover:bg-red-100 flex items-center justify-center flex-shrink-0 transition-all">
                     {deletingId === sess.id ? <Loader2 className="size-3 animate-spin text-red-400" /> : <Trash2 className="size-3 text-red-400" />}
                   </button>
                 </div>
@@ -473,13 +670,9 @@ function DialogMode() {
                     <Clock className="size-2.5" />{timeAgo(sess.updatedAt)}
                   </div>
                   {sess.actionsCount > 0 && (
-                    <span className="text-[9px] bg-blue-100 text-blue-600 font-bold px-1 py-0.5 rounded-full">
-                      {sess.actionsCount} дейст.
-                    </span>
+                    <span className="text-[9px] bg-blue-100 text-blue-600 font-bold px-1 py-0.5 rounded-full">{sess.actionsCount} дій</span>
                   )}
-                  {sess.completed && (
-                    <span className="text-[9px] bg-teal-100 text-teal-600 font-bold px-1 py-0.5 rounded-full">✓</span>
-                  )}
+                  {sess.completed && <span className="text-[9px] bg-teal-100 text-teal-600 font-bold px-1 py-0.5 rounded-full">✓</span>}
                 </div>
               </button>
             ))}
@@ -487,7 +680,7 @@ function DialogMode() {
         </div>
       </Card>
 
-      {/* ── Center: Chat ───────────────────────────────────────────────────── */}
+      {/* Chat */}
       <Card className="flex-1 flex flex-col min-h-0">
         <CardHeader className="border-b flex-shrink-0 py-3">
           <div className="flex items-center justify-between">
@@ -496,20 +689,15 @@ function DialogMode() {
                 <Bot className="size-5 text-white" />
               </div>
               <div>
-                <CardTitle className="text-sm">AI Автоматизация монтажа</CardTitle>
-                <CardDescription className="text-xs">Подбирает оборудование · Проверяет склад · Создаёт ордера</CardDescription>
+                <CardTitle className="text-sm">AI Sales Manager</CardTitle>
+                <CardDescription className="text-xs">Підбір зі складу · Комплектація · Ордер · Монтажник</CardDescription>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-xs text-slate-500">Активен</span>
-              </div>
-              <button
-                onClick={createNewSession}
-                className="lg:hidden flex items-center gap-1.5 text-xs bg-blue-600 text-white px-2.5 py-1.5 rounded-lg"
-              >
-                <Plus className="size-3.5" />Новый
+              <span className="size-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-xs text-slate-500">Активний</span>
+              <button onClick={createNewSession} className="lg:hidden flex items-center gap-1.5 text-xs bg-blue-600 text-white px-2.5 py-1.5 rounded-lg">
+                <Plus className="size-3.5" />Новий
               </button>
             </div>
           </div>
@@ -517,15 +705,14 @@ function DialogMode() {
 
         <CardContent className="flex-1 flex flex-col p-0 min-h-0">
           <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-            {/* Empty state */}
             {messages.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center h-full text-center py-8 gap-4">
                 <div className="size-16 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center">
-                  <Zap className="size-8 text-blue-400" />
+                  <Warehouse className="size-8 text-blue-400" />
                 </div>
                 <div>
-                  <p className="font-bold text-slate-700 mb-1">AI-агент готов к работе</p>
-                  <p className="text-sm text-slate-500">Попросите подобрать кондиционер и создать ордер</p>
+                  <p className="font-bold text-slate-700 mb-1">Підбираю тільки з наявного складу</p>
+                  <p className="text-sm text-slate-500">Скажіть площу та побажання клієнта</p>
                 </div>
                 <div className="flex flex-col gap-2 w-full max-w-sm">
                   {quickActions.map(q => (
@@ -562,10 +749,12 @@ function DialogMode() {
                       </div>
                     )}
                   </div>
-                  {msg.role === "assistant" && msg.actions && msg.actions.length > 0 && (
+                  {msg.role === "assistant" && msg.actions?.length > 0 && (
                     <div className="ml-10 space-y-2 mt-1">
                       {msg.actions.map((action, i) => (
-                        <ActionCard key={i} action={action} onNavigate={navigate} />
+                        <ActionCard key={i} action={action} onNavigate={navigate}
+                          onGeneratePdf={handleGeneratePdf}
+                          onAssignInstaller={setInstallerModalOrderId} />
                       ))}
                     </div>
                   )}
@@ -580,7 +769,7 @@ function DialogMode() {
                 </div>
                 <div className="rounded-2xl px-4 py-3 bg-white border border-slate-200 shadow-sm">
                   <div className="flex gap-1.5 items-center">
-                    <span className="text-xs text-slate-400 mr-1">AI работает</span>
+                    <span className="text-xs text-slate-400 mr-1">AI працює</span>
                     {[0, 150, 300].map(d => (
                       <span key={d} className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: `${d}ms` }} />
                     ))}
@@ -593,7 +782,7 @@ function DialogMode() {
           <div className="border-t p-3 flex-shrink-0 bg-white">
             <div className="flex gap-2">
               <Input
-                placeholder="Напишите задачу: «Квартира 45 м², нужен кондиционер и ордер»..."
+                placeholder="Клієнт, площа, побажання… AI підбере зі складу та скомплектує ордер"
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyPress={handleKeyPress}
@@ -609,45 +798,13 @@ function DialogMode() {
         </CardContent>
       </Card>
 
-      {/* ── Right: Actions Panel ───────────────────────────────────────────── */}
-      <Card className="w-72 flex-shrink-0 flex flex-col min-h-0 hidden xl:flex">
-        <CardHeader className="border-b flex-shrink-0 py-3">
-          <CardTitle className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-            <ListChecks className="size-3.5 text-blue-600" />Действия AI в этом диалоге
-          </CardTitle>
-          <CardDescription className="text-[11px]">{allActions.length === 0 ? "Нет выполненных действий" : `Выполнено: ${allActions.length} операций`}</CardDescription>
-        </CardHeader>
-
-        <CardContent className="flex-1 overflow-auto p-3 space-y-2">
-          {allActions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center py-6">
-              <div className="size-12 rounded-2xl bg-slate-100 flex items-center justify-center mb-3">
-                <Zap className="size-6 text-slate-300" />
-              </div>
-              <p className="text-xs font-medium text-slate-500 mb-1">Действий пока нет</p>
-              <p className="text-[11px] text-slate-400 leading-relaxed max-w-[180px]">
-                AI выполнит действия автоматически: подбор кондиционера, проверка склада, создание ордера
-              </p>
-            </div>
-          ) : (
-            <>
-              {allActions.map((action, i) => <ActionSummaryRow key={i} action={action} />)}
-              {latestOrderAction && (
-                <div className="pt-2 border-t border-slate-100 space-y-1.5">
-                  <button onClick={() => navigate("/install-orders")}
-                    className="w-full flex items-center justify-center gap-2 bg-teal-600 text-white py-2.5 rounded-xl text-xs font-bold hover:bg-teal-700 transition-colors">
-                    <ClipboardCheck className="size-3.5" />Перейти к ордеру
-                  </button>
-                  <button onClick={() => navigate("/leads")}
-                    className="w-full flex items-center justify-center gap-2 bg-slate-100 text-slate-600 py-2 rounded-xl text-xs font-semibold hover:bg-slate-200 transition-colors">
-                    Воронка заявок
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
+      {/* Workflow Panel */}
+      <WorkflowPanel
+        actions={allActions}
+        onNavigate={navigate}
+        onGeneratePdf={handleGeneratePdf}
+        onAssignInstaller={setInstallerModalOrderId}
+      />
     </div>
   );
 }
@@ -662,7 +819,6 @@ function PasteMode() {
   const [error, setError] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editPhone, setEditPhone] = useState("");
-  const [editEmail, setEditEmail] = useState("");
   const [editArea, setEditArea] = useState("");
   const [editBudget, setEditBudget] = useState("");
   const [editNotes, setEditNotes] = useState("");
@@ -670,21 +826,20 @@ function PasteMode() {
   const syncFromParsed = (p: any) => {
     setEditName(p.client?.name || "");
     setEditPhone(p.client?.phone || "");
-    setEditEmail(p.client?.email || "");
     setEditArea(p.requirements?.area?.toString() || "");
     setEditBudget(p.requirements?.budget?.toString() || "");
     setEditNotes(p.requirements?.additionalNotes || "");
   };
 
   const handleParse = async () => {
-    if (conversation.trim().length < 10) { setError("Вставьте переписку (минимум 10 символов)"); return; }
+    if (conversation.trim().length < 10) { setError("Вставте переписку (мінімум 10 символів)"); return; }
     setParsing(true); setError(null); setParsed(null); setCreated(null);
     try {
       const res = await fetch(`${API_BASE}/parse-conversation`, { method: "POST", headers: JH, body: JSON.stringify({ conversation }) });
       const data = await res.json();
       if (data.parsed) { setParsed(data.parsed); syncFromParsed(data.parsed); }
-      else setError(data.error || "Не удалось распарсить переписку");
-    } catch (e: any) { setError(`Ошибка: ${e.message}`); }
+      else setError(data.error || "Не вдалося розпарсити переписку");
+    } catch (e: any) { setError(`Помилка: ${e.message}`); }
     finally { setParsing(false); }
   };
 
@@ -695,15 +850,15 @@ function PasteMode() {
       const res = await fetch(`${API_BASE}/create-lead-from-conversation`, {
         method: "POST", headers: JH,
         body: JSON.stringify({
-          clientData: { name: editName || parsed.client?.name || "Клиент", phone: editPhone || parsed.client?.phone || "", email: editEmail || null },
+          clientData: { name: editName || "Клієнт", phone: editPhone || "" },
           requirements: { area: editArea ? Number(editArea) : parsed.requirements?.area, roomType: parsed.requirements?.roomType, budget: editBudget ? Number(editBudget) : parsed.requirements?.budget, additionalNotes: editNotes || parsed.requirements?.additionalNotes },
           acRecommendation: parsed.acRecommendation,
         }),
       });
       const data = await res.json();
       if (data.success) setCreated({ client: data.client, lead: data.lead });
-      else setError(data.error || "Ошибка создания заявки");
-    } catch (e: any) { setError(`Ошибка: ${e.message}`); }
+      else setError(data.error || "Помилка створення заявки");
+    } catch (e: any) { setError(`Помилка: ${e.message}`); }
     finally { setCreating(false); }
   };
 
@@ -715,20 +870,14 @@ function PasteMode() {
             <div className="size-16 rounded-full bg-green-100 flex items-center justify-center mx-auto">
               <CheckCircle2 className="size-8 text-green-600" />
             </div>
-            <h2 className="text-xl font-bold text-slate-800">Заявка создана!</h2>
-            <p className="text-slate-500">Клиент <strong>{created.client.name}</strong> добавлен в систему.</p>
-            <div className="bg-slate-50 rounded-xl p-4 text-left space-y-1 text-sm">
-              <p>👤 <strong>{created.client.name}</strong></p>
-              <p>📞 {created.client.phone || "—"}</p>
-              {created.client.email && <p>📧 {created.client.email}</p>}
-              <p className="text-xs text-slate-400 mt-2">ID: {created.lead.id}</p>
-            </div>
+            <h2 className="text-xl font-bold text-slate-800">Заявку створено!</h2>
+            <p className="text-slate-500">Клієнт <strong>{created.client.name}</strong> додано в систему.</p>
             <div className="flex gap-3">
               <Button variant="outline" className="flex-1" onClick={() => { setCreated(null); setParsed(null); setConversation(""); }}>
-                Новая переписка
+                Нова переписка
               </Button>
               <Button className="flex-1 bg-teal-600 hover:bg-teal-700" onClick={() => window.location.href = "/install-orders"}>
-                <ClipboardCheck className="size-4 mr-1" />Создать ордер
+                <ClipboardCheck className="size-4 mr-1" />Ордер монтажу
               </Button>
             </div>
           </CardContent>
@@ -744,16 +893,15 @@ function PasteMode() {
           <div className="flex items-center gap-2">
             <ClipboardPaste className="size-6 text-violet-600" />
             <div>
-              <CardTitle>Вставить переписку с клиентом</CardTitle>
-              <CardDescription>AI автоматически извлечёт данные клиента, параметры и порекомендует оборудование</CardDescription>
+              <CardTitle>Вставити переписку з клієнтом</CardTitle>
+              <CardDescription>AI автоматично витягне дані клієнта та параметри</CardDescription>
             </div>
           </div>
         </CardHeader>
         <CardContent className="flex-1 flex flex-col p-4 min-h-0 gap-3">
           <textarea
-            value={conversation}
-            onChange={e => setConversation(e.target.value)}
-            placeholder={`Вставьте переписку...\n\nПример:\n— Добрый день! Нас интересуют кондиционеры.\n— Квартира, 45 кв.м. Бюджет до 35000.\n— Меня зовут Александр, +380991234567`}
+            value={conversation} onChange={e => setConversation(e.target.value)}
+            placeholder={`Вставте переписку...\n\nПриклад:\n— Добрий день! Цікавлять кондиціонери.\n— Квартира, 45 кв.м. Бюджет до 35000.\n— Мене звати Олена, +380991234567`}
             className="flex-1 min-h-[200px] w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-violet-400 font-mono"
           />
           {error && (
@@ -762,7 +910,7 @@ function PasteMode() {
             </div>
           )}
           <Button onClick={handleParse} disabled={parsing || !conversation.trim()} className="bg-violet-600 hover:bg-violet-700 text-white py-6 text-sm font-bold">
-            {parsing ? <><Loader2 className="size-4 animate-spin mr-2" />AI анализирует...</> : <><Sparkles className="size-4 mr-2" />Анализировать переписку</>}
+            {parsing ? <><Loader2 className="size-4 animate-spin mr-2" />AI аналізує...</> : <><Sparkles className="size-4 mr-2" />Аналізувати переписку</>}
           </Button>
         </CardContent>
       </Card>
@@ -774,45 +922,23 @@ function PasteMode() {
               <CardContent className="p-4 space-y-3">
                 <div className="flex items-center gap-2">
                   <Zap className="size-4 text-violet-600" />
-                  <p className="text-sm font-bold text-slate-800">AI Анализ переписки</p>
+                  <p className="text-sm font-bold text-slate-800">Результат аналізу</p>
                 </div>
                 <p className="text-sm text-slate-600">{parsed.summary}</p>
-                {parsed.acRecommendation && (
-                  <div className="bg-blue-50 rounded-xl p-3 text-xs">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <ThermometerSnowflake className="size-3.5 text-blue-500" />
-                      <span className="font-bold text-slate-700">Рекомендация AI</span>
-                    </div>
-                    <p className="text-slate-500">Мин. {parsed.acRecommendation.minBtu} BTU · {parsed.acRecommendation.reason}</p>
-                  </div>
-                )}
               </CardContent>
             </Card>
             <Card className="flex-1 overflow-auto">
-              <CardHeader className="border-b py-3">
-                <CardTitle className="text-sm">Данные клиента</CardTitle>
-              </CardHeader>
+              <CardHeader className="border-b py-3"><CardTitle className="text-sm">Дані клієнта</CardTitle></CardHeader>
               <CardContent className="p-4 space-y-3">
-                <Field label="Имя" value={editName} onChange={setEditName} />
+                <Field label="Ім'я" value={editName} onChange={setEditName} />
                 <Field label="Телефон" value={editPhone} onChange={setEditPhone} />
-                <Field label="Email" value={editEmail} onChange={setEditEmail} />
                 <div className="grid grid-cols-2 gap-2">
-                  <Field label="Площадь, м²" value={editArea} onChange={setEditArea} type="number" />
+                  <Field label="Площа, м²" value={editArea} onChange={setEditArea} type="number" />
                   <Field label="Бюджет, ₴" value={editBudget} onChange={setEditBudget} type="number" />
                 </div>
-                {parsed.requirements?.preferences?.length > 0 && (
-                  <div>
-                    <p className="text-xs text-slate-500 mb-1">Пожелания</p>
-                    <div className="flex flex-wrap gap-1">
-                      {parsed.requirements.preferences.map((p: string, i: number) => (
-                        <Badge key={i} variant="secondary" className="text-xs">{p}</Badge>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <Field label="Дополнительно" value={editNotes} onChange={setEditNotes} multiline />
+                <Field label="Додатково" value={editNotes} onChange={setEditNotes} multiline />
                 <Button onClick={handleCreateLead} disabled={creating} className="w-full bg-green-600 hover:bg-green-700 text-white py-5 font-bold">
-                  {creating ? <><Loader2 className="size-4 animate-spin mr-2" />Создание...</> : <><CheckCircle2 className="size-4 mr-2" />Создать заявку</>}
+                  {creating ? <><Loader2 className="size-4 animate-spin mr-2" />Створення...</> : <><CheckCircle2 className="size-4 mr-2" />Створити заявку</>}
                 </Button>
               </CardContent>
             </Card>
@@ -821,8 +947,7 @@ function PasteMode() {
           <Card className="flex-1 flex items-center justify-center">
             <CardContent className="text-center space-y-3 py-12">
               <ClipboardPaste className="size-10 text-slate-200 mx-auto" />
-              <p className="text-sm font-medium text-slate-500">Вставьте переписку слева</p>
-              <p className="text-xs text-slate-400 max-w-[180px] mx-auto">AI извлечёт данные клиента и порекомендует оборудование</p>
+              <p className="text-sm font-medium text-slate-500">Вставте переписку зліва</p>
             </CardContent>
           </Card>
         )}

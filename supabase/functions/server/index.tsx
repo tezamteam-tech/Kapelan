@@ -105,41 +105,39 @@ app.get("/make-server-1df47c03/health", (c) => {
 // System prompt for AI Sales Manager Agent
 const AGENT_SYSTEM_PROMPT = `Ты — AI-ассистент для менеджеров компании Kapelan по установке кондиционеров.
 
-ТВОЯ РОЛЬ — АВТОМАТИЗАЦИЯ РАБОТЫ МЕНЕДЖЕРА.
-Ты не просто отвечаешь на вопросы — ты выполняешь реальные действия в CRM через инструменты.
+ТВОЯ РОЛЬ — АВТОМАТИЗАЦИЯ РАБОТЫ МЕНЕДЖЕРА. Выполняй реальные действия через инструменты.
 
-ДОСТУПНЫЕ ИНСТРУМЕНТЫ:
-- select_ac_model: подобрать кондиционер из каталога по площади и бюджету
-- check_consumables_stock: проверить расходники на складе для монтажа
-- create_installation_order: создать черновик ордера монтажа в системе
-- create_client_lead: создать заявку клиента в CRM
+ПОЛНЫЙ РАБОЧИЙ ПРОЦЕСС (выполняй по шагам):
+1. search_warehouse_ac — найти кондиционер из РЕАЛЬНОГО склада по площади/бюджету (только те, что есть в наличии)
+2. check_consumables_stock — проверить расходники/комплектующие для выбранной модели
+3. create_installation_order — создать ордер монтажа (кондиционер + расходники + клиент)
+4. assign_installer — назначить монтажника на ордер (после создания ордера)
+5. create_client_lead — только если нужна отдельная заявка без ордера
 
-ПРИНЦИПЫ РАБОТЫ:
-1. ДЕЙСТВУЙ СРАЗУ — если известна площадь, немедленно вызывай select_ac_model
-2. НЕ ЗАДАВАЙ ЛИШНИХ ВОПРОСОВ — при подборе предположи длину трассы 4м если не указана
-3. Если менеджер говорит "сформируй ордер" — уточни только что реально не хватает (имя/телефон)
-4. После создания ордера или заявки — напиши короткое подтверждение
-5. Когда описаны клиент и его потребности — подбирай кондиционер + расходники и предлагай создать ордер
+ПРИНЦИПЫ:
+1. ВСЕГДА подбирай только из СКЛАДА (search_warehouse_ac) — не предлагай то, чего нет в наличии
+2. СРАЗУ действуй — если известна площадь, вызывай search_warehouse_ac немедленно
+3. Трасса по умолчанию 4м если не указана
+4. После создания ордера — предложи назначить монтажника (assign_installer)
+5. Назначай монтажника только если клиент/менеджер указал дату или попросил назначить
+6. Короткие подтверждения после каждого шага
 
-СТИЛЬ:
-- Деловой и быстрый, без воды
-- Emoji умеренно: ❄️ ✅ 📦 🔧 👤
-- Только русский язык
-- Используй инструменты — не просто рассказывай о них`;
+СТИЛЬ: Деловой, без воды. Emoji: ❄️ ✅ 📦 🔧 👷 Только русский язык.`;
 
 // ─── AI Agent Tools Definition ─────────────────────────────────────────────────
 const AGENT_TOOLS = [
   {
     type: "function",
     function: {
-      name: "select_ac_model",
-      description: "Подобрать оптимальную модель кондиционера из каталога по параметрам помещения. Вызывай сразу как известна площадь.",
+      name: "search_warehouse_ac",
+      description: "Найти кондиционер/сплит-систему/фанкойл из РЕАЛЬНОГО склада. Возвращает только позиции с остатком > 0. Вызывай сразу как известна площадь.",
       parameters: {
         type: "object",
         properties: {
           area: { type: "number", description: "Площадь помещения в кв.м" },
           budget: { type: "number", description: "Максимальный бюджет в гривнах (опционально)" },
-          tier: { type: "string", enum: ["economy", "standard", "premium"], description: "Ценовой сегмент (опционально)" }
+          tier: { type: "string", enum: ["economy", "standard", "premium"], description: "Ценовой сегмент (опционально)" },
+          equipmentType: { type: "string", enum: ["split_ac", "fan_coil", "chiller", "any"], description: "Тип оборудования (по умолчанию any)" }
         },
         required: ["area"]
       }
@@ -149,14 +147,14 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "check_consumables_stock",
-      description: "Проверить наличие расходных материалов на складе для монтажа выбранного кондиционера",
+      description: "Проверить расходники/комплектующие для монтажа выбранного кондиционера. Использует warehouseAcId из search_warehouse_ac.",
       parameters: {
         type: "object",
         properties: {
-          acModelId: { type: "string", description: "ID модели кондиционера из каталога" },
+          warehouseAcId: { type: "string", description: "ID позиции кондиционера со склада (из search_warehouse_ac)" },
           traceLength: { type: "number", description: "Длина трассы в метрах (по умолчанию 4)" }
         },
-        required: ["acModelId", "traceLength"]
+        required: ["warehouseAcId", "traceLength"]
       }
     }
   },
@@ -164,21 +162,37 @@ const AGENT_TOOLS = [
     type: "function",
     function: {
       name: "create_installation_order",
-      description: "Создать черновик ордера монтажа в системе. Требует имя клиента, телефон, ID модели и площадь.",
+      description: "Создать ордер монтажа. Требует имя клиента, телефон, warehouseAcId со склада и площадь.",
       parameters: {
         type: "object",
         properties: {
           clientName: { type: "string", description: "Имя клиента" },
           clientPhone: { type: "string", description: "Телефон клиента" },
           clientAddress: { type: "string", description: "Адрес монтажа (если неизвестен — 'Уточнить')" },
-          acModelId: { type: "string", description: "ID модели кондиционера из каталога" },
+          warehouseAcId: { type: "string", description: "ID позиции кондиционера со склада" },
           roomArea: { type: "number", description: "Площадь помещения в кв.м" },
           roomType: { type: "string", description: "Тип помещения" },
           traceLength: { type: "number", description: "Длина трассы в метрах (по умолчанию 4)" },
           acCount: { type: "number", description: "Количество кондиционеров (по умолчанию 1)" },
           notes: { type: "string", description: "Примечания к заказу" }
         },
-        required: ["clientName", "clientPhone", "acModelId", "roomArea"]
+        required: ["clientName", "clientPhone", "warehouseAcId", "roomArea"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "assign_installer",
+      description: "Назначить монтажника на ордер монтажа и задать дату монтажа.",
+      parameters: {
+        type: "object",
+        properties: {
+          orderId: { type: "string", description: "ID ордера монтажа" },
+          installerName: { type: "string", description: "Имя монтажника (если уже известно — назначить сразу)" },
+          scheduledDate: { type: "string", description: "Дата монтажа в формате YYYY-MM-DD" }
+        },
+        required: ["orderId"]
       }
     }
   },
@@ -204,79 +218,134 @@ const AGENT_TOOLS = [
   }
 ];
 
+// ─── Standard BOM (расходники для сплит-систем) ───────────────────────────────
+const STD_SPLIT_BOM = [
+  { warehouseId: "wh_pipe_14",    name: 'Медная труба 1/4" (жидкостная)', unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
+  { warehouseId: "wh_pipe_38",    name: 'Медная труба 3/8" (газовая)',     unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
+  { warehouseId: "wh_insul_14",   name: "Теплоизоляция 9мм",              unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
+  { warehouseId: "wh_insul_38",   name: "Теплоизоляция 13мм",             unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
+  { warehouseId: "wh_drain_pipe", name: "Дренажная труба ø16мм",          unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
+  { warehouseId: "wh_cable",      name: "Кабель питания 3×1.5мм²",        unit: "м",     qtyFixed: 3,  qtyPerMeter: 1 },
+  { warehouseId: "wh_cable_duct", name: "Кабельный канал 60×40",          unit: "м",     qtyFixed: 1,  qtyPerMeter: 1 },
+  { warehouseId: "wh_brackets",   name: "Кронштейны наружного блока",     unit: "компл", qtyFixed: 1,  qtyPerMeter: 0 },
+  { warehouseId: "wh_dowels",     name: "Дюбель-шуруп 6×60",             unit: "шт",    qtyFixed: 12, qtyPerMeter: 0 },
+  { warehouseId: "wh_clamps",     name: "Хомуты для труб",                unit: "шт",    qtyFixed: 4,  qtyPerMeter: 2 },
+  { warehouseId: "wh_freon",      name: "Фреон R32 (буфер дозаправки)",   unit: "кг",    qtyFixed: 1,  qtyPerMeter: 0 },
+  { warehouseId: "wh_sealant",    name: "Герметик силиконовый",           unit: "шт",    qtyFixed: 1,  qtyPerMeter: 0 },
+  { warehouseId: "wh_gland",      name: "Сальники кабельного ввода",      unit: "шт",    qtyFixed: 2,  qtyPerMeter: 0 },
+  { warehouseId: "wh_tape",       name: "Самовулканизирующаяся лента",    unit: "м",     qtyFixed: 2,  qtyPerMeter: 0 },
+];
+
+const FAN_COIL_BOM_AI = [
+  { warehouseId: "wh_ppr_pipe_20", name: "Труба ППР 20мм",                unit: "м",     qtyFixed: 4,  qtyPerMeter: 1 },
+  { warehouseId: "wh_insul_19",   name: "Теплоизоляция 19мм",             unit: "м",     qtyFixed: 4,  qtyPerMeter: 1 },
+  { warehouseId: "wh_ball_valve", name: 'Шаровой кран 3/4"',              unit: "шт",    qtyFixed: 2,  qtyPerMeter: 0 },
+  { warehouseId: "wh_flex_conn",  name: "Гибкая подводка 3/4\"",          unit: "компл", qtyFixed: 1,  qtyPerMeter: 0 },
+  { warehouseId: "wh_motor_valve",name: "Моторизированный клапан",        unit: "шт",    qtyFixed: 1,  qtyPerMeter: 0 },
+  { warehouseId: "wh_drain_pipe", name: "Дренажная труба ø16мм",          unit: "м",     qtyFixed: 3,  qtyPerMeter: 0.5 },
+  { warehouseId: "wh_cable",      name: "Кабель питания 3×1.5мм²",        unit: "м",     qtyFixed: 3,  qtyPerMeter: 1 },
+  { warehouseId: "wh_cable_duct", name: "Кабельный канал 60×40",          unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
+  { warehouseId: "wh_dowels",     name: "Дюбель-шуруп 6×60",             unit: "шт",    qtyFixed: 8,  qtyPerMeter: 0 },
+  { warehouseId: "wh_sealant",    name: "Герметик силиконовый",           unit: "шт",    qtyFixed: 1,  qtyPerMeter: 0 },
+];
+
+// Default installers seed
+const DEFAULT_INSTALLERS = [
+  { id: "inst_01", name: "Олексій Коваль",    phone: "+380971234501", level: "master",    status: "available", certYear: 2026 },
+  { id: "inst_02", name: "Дмитро Шевченко",   phone: "+380971234502", level: "specialist",status: "available", certYear: 2026 },
+  { id: "inst_03", name: "Іван Бондаренко",   phone: "+380971234503", level: "installer", status: "available", certYear: 2025 },
+  { id: "inst_04", name: "Микола Петренко",   phone: "+380971234504", level: "master",    status: "busy",      certYear: 2026 },
+  { id: "inst_05", name: "Сергій Лисенко",    phone: "+380971234505", level: "specialist",status: "available", certYear: 2026 },
+];
+
+async function getInstallers() {
+  const all = await kv.getByPrefix("kapelan_installer:") as string[];
+  if (all.length > 0) return all.map((v: string) => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
+  for (const inst of DEFAULT_INSTALLERS) await kv.set(`kapelan_installer:${inst.id}`, JSON.stringify(inst));
+  return DEFAULT_INSTALLERS;
+}
+
 // ─── Tool execution ────────────────────────────────────────────────────────────
 async function executeAgentTool(name: string, args: any): Promise<{ result: string; action: any }> {
   try {
-    if (name === "select_ac_model") {
-      const { area, budget, tier } = args;
-      let matches = AC_CATALOG.filter((ac: any) => area >= ac.areaMin - 5 && area <= ac.areaMax + 5);
-      if (tier) matches = matches.filter((ac: any) => ac.tier === tier);
-      if (budget) matches = matches.filter((ac: any) => ac.price <= budget);
-      if (matches.length === 0) {
-        matches = AC_CATALOG.filter((ac: any) => area >= ac.areaMin - 5 && area <= ac.areaMax + 5);
-      }
+    // ── 1. Search warehouse for AC equipment ──────────────────────────────────
+    if (name === "search_warehouse_ac") {
+      const { area, budget, tier, equipmentType } = args;
+      const allItems = await getAllWarehouseItems();
+      // Filter equipment items with acSpecs and stock > 0
+      let matches = allItems.filter((item: any) =>
+        item.itemType === 'equipment' &&
+        item.acSpecs &&
+        item.stock > 0 &&
+        area >= (item.acSpecs.areaMin ?? 0) - 5 &&
+        area <= (item.acSpecs.areaMax ?? 9999) + 5
+      );
+      if (tier) matches = matches.filter((item: any) => item.acSpecs?.tier === tier);
+      if (budget) matches = matches.filter((item: any) => item.price <= budget);
+      if (equipmentType && equipmentType !== "any") matches = matches.filter((item: any) => item.acSpecs?.equipmentType === equipmentType);
       matches.sort((a: any, b: any) => a.price - b.price);
       const top3 = matches.slice(0, 3);
       if (top3.length === 0) {
-        return { result: "Подходящих моделей в каталоге не найдено для данной площади", action: null };
+        // Fallback: show all available AC equipment
+        const allAc = allItems.filter((i: any) => i.itemType === 'equipment' && i.acSpecs && i.stock > 0);
+        if (allAc.length === 0) return { result: "На складі немає обладнання в наявності. Зв'яжіться з відділом закупівель.", action: null };
+        const closest = allAc.sort((a: any, b: any) => Math.abs((a.acSpecs?.areaMin + a.acSpecs?.areaMax) / 2 - area) - Math.abs((b.acSpecs?.areaMin + b.acSpecs?.areaMax) / 2 - area)).slice(0, 3);
+        return {
+          result: JSON.stringify(closest.map((i: any) => ({ id: i.id, name: i.name, btu: i.acSpecs?.btu, kw: i.acSpecs?.kw, areaMin: i.acSpecs?.areaMin, areaMax: i.acSpecs?.areaMax, tier: i.acSpecs?.tier, price: i.price, stock: i.stock, features: i.acSpecs?.features, warranty: i.acSpecs?.warranty, equipmentType: i.acSpecs?.equipmentType }))),
+          action: { type: "ac_selected", title: `Підібрано ${closest.length} позиції зі складу`, data: closest }
+        };
       }
       return {
-        result: JSON.stringify(top3.map((ac: any) => ({ id: ac.id, brand: ac.brand, model: ac.model, btu: ac.btu, areaMin: ac.areaMin, areaMax: ac.areaMax, tier: ac.tier, price: ac.price, features: ac.features, warranty: ac.warranty }))),
-        action: { type: "ac_selected", title: `Подобрано ${top3.length} модели`, data: top3 }
+        result: JSON.stringify(top3.map((i: any) => ({ id: i.id, name: i.name, btu: i.acSpecs?.btu, kw: i.acSpecs?.kw, areaMin: i.acSpecs?.areaMin, areaMax: i.acSpecs?.areaMax, tier: i.acSpecs?.tier, price: i.price, stock: i.stock, features: i.acSpecs?.features, warranty: i.acSpecs?.warranty, equipmentType: i.acSpecs?.equipmentType }))),
+        action: { type: "ac_selected", title: `Підібрано ${top3.length} позиції зі складу`, data: top3 }
       };
     }
 
+    // ── 2. Check consumables ───────────────────────────────────────────────────
     if (name === "check_consumables_stock") {
-      const { acModelId, traceLength } = args;
+      const { warehouseAcId, traceLength } = args;
       const tl = Number(traceLength) || 4;
-      const acModel = AC_CATALOG.find((ac: any) => ac.id === acModelId);
-      if (!acModel) {
-        return { result: "Модель не найдена в каталоге", action: null };
-      }
-      // Ensure warehouse items are seeded in KV before looking up individually
       const allItems = await getAllWarehouseItems();
       const whMap = new Map(allItems.map((i: any) => [i.id, i]));
-      const items = [];
-      for (const bom of (acModel as any).bom) {
-        const qty = Math.ceil(bom.qtyFixed + bom.qtyPerMeter * tl);
-        // First try in-memory map (seeded above), fallback to KV direct
-        let stockItem: any = whMap.get(bom.warehouseId) ?? null;
-        if (!stockItem) {
-          try { stockItem = await getWhItemById(bom.warehouseId); } catch {}
-        }
+      const acItem: any = whMap.get(warehouseAcId);
+      if (!acItem) return { result: `Позиція ${warehouseAcId} не знайдена на складі`, action: null };
+      const isFanCoil = acItem.acSpecs?.equipmentType === 'fan_coil';
+      const bom = isFanCoil ? FAN_COIL_BOM_AI : STD_SPLIT_BOM;
+      const items = bom.map((entry: any) => {
+        const qty = Math.ceil(entry.qtyFixed + entry.qtyPerMeter * tl);
+        const stockItem: any = whMap.get(entry.warehouseId);
         const stock = stockItem?.stock ?? 0;
-        items.push({
-          id: bom.warehouseId, name: bom.name, unit: bom.unit,
-          qty, stock, inStock: stock >= qty, price: stockItem?.price ?? 0
-        });
-      }
+        return { id: entry.warehouseId, name: entry.name, unit: entry.unit, qty, stock, inStock: stock >= qty, price: stockItem?.price ?? 0 };
+      });
       const allInStock = items.every((i: any) => i.inStock);
       const shortages = items.filter((i: any) => !i.inStock);
       return {
         result: JSON.stringify({ items, allInStock, shortages: shortages.map((s: any) => s.name), traceLength: tl }),
-        action: { type: "consumables_checked", title: allInStock ? "Все расходники в наличии" : `Нехватка: ${shortages.length} поз.`, data: { items, allInStock, traceLength: tl, acBrand: (acModel as any).brand, acModel: (acModel as any).model } }
+        action: { type: "consumables_checked", title: allInStock ? "Всі розхідники в наявності ✅" : `Нестача: ${shortages.length} поз. ⚠️`, data: { items, allInStock, traceLength: tl, acName: acItem.name } }
       };
     }
 
+    // ── 3. Create order ────────────────────────────────────────────────────────
     if (name === "create_installation_order") {
-      const { clientName, clientPhone, clientAddress, acModelId, roomArea, roomType, traceLength, acCount, notes } = args;
-      const acModel = AC_CATALOG.find((ac: any) => ac.id === acModelId) as any;
-      if (!acModel) {
-        return { result: "Модель кондиционера не найдена в каталоге", action: null };
-      }
+      const { clientName, clientPhone, clientAddress, warehouseAcId, roomArea, roomType, traceLength, acCount, notes } = args;
+      const allItems = await getAllWarehouseItems();
+      const whMap = new Map(allItems.map((i: any) => [i.id, i]));
+      const acItem: any = whMap.get(warehouseAcId);
+      if (!acItem) return { result: `Позиція ${warehouseAcId} не знайдена на складі`, action: null };
       const tl = Number(traceLength) || 4;
       const count = Number(acCount) || 1;
-      // Seed warehouse before snapshot
-      const allWhItems = await getAllWarehouseItems();
-      const whMapOrder = new Map(allWhItems.map((i: any) => [i.id, i]));
-      const consumables = acModel.bom.map((bom: any) => {
-        const si = whMapOrder.get(bom.warehouseId) as any;
+      const isFanCoil = acItem.acSpecs?.equipmentType === 'fan_coil';
+      const bom = isFanCoil ? FAN_COIL_BOM_AI : STD_SPLIT_BOM;
+      const consumables = bom.map((entry: any) => {
+        const si: any = whMap.get(entry.warehouseId);
         return {
-          warehouseId: bom.warehouseId, name: bom.name, unit: bom.unit,
-          qtyRequired: Math.ceil((bom.qtyFixed + bom.qtyPerMeter * tl) * count),
+          warehouseId: entry.warehouseId, name: entry.name, unit: entry.unit,
+          qtyRequired: Math.ceil((entry.qtyFixed + entry.qtyPerMeter * tl) * count),
           qtyIssued: 0, stockSnapshot: si?.stock ?? 0
         };
       });
+      // Add the AC unit itself as a consumable line
+      consumables.unshift({ warehouseId: acItem.id, name: acItem.name, unit: "шт", qtyRequired: count, qtyIssued: 0, stockSnapshot: acItem.stock });
       const client = await findOrCreateClient({ name: clientName, phone: clientPhone });
       const leadId = `lead_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const lead = {
@@ -288,35 +357,72 @@ async function executeAgentTool(name: string, args: any): Promise<{ result: stri
       try {
         const leadsIdx = await kv.get(`leads_by_client:${client.id}`);
         const arr = leadsIdx ? JSON.parse(leadsIdx) : [];
-        arr.push(leadId);
-        await kv.set(`leads_by_client:${client.id}`, JSON.stringify(arr));
+        arr.push(leadId); await kv.set(`leads_by_client:${client.id}`, JSON.stringify(arr));
       } catch {}
-      const orderId = `order_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const orderId = `ord_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const order = {
         id: orderId, clientName, clientPhone,
-        clientAddress: clientAddress || "Уточнить адрес",
+        clientAddress: clientAddress || "Уточнити адресу",
         leadId, roomArea, roomType: roomType || "квартира", traceLength: tl,
-        acModelId: acModel.id, acBrand: acModel.brand, acModelName: acModel.model,
-        acBtu: acModel.btu, acKw: acModel.kw, acPrice: acModel.price, acCount: count,
-        consumables, consumablesIssued: false, installerName: "", scheduledDate: "",
+        acModelId: acItem.acSpecs?.equipmentId || acItem.id,
+        warehouseAcId: acItem.id,
+        acBrand: acItem.name.split(" ")[0],
+        acModelName: acItem.name,
+        acBtu: acItem.acSpecs?.btu, acKw: acItem.acSpecs?.kw,
+        acPrice: acItem.price, acCount: count,
+        consumables, consumablesIssued: false,
+        installerName: "", scheduledDate: "",
         status: "draft", notes: notes || "", source: "ai",
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
       };
-      await kv.set(`order:${orderId}`, JSON.stringify(order));
+      await kv.set(`kapelan_order:${orderId}`, JSON.stringify(order));
       try {
-        const idxRaw = await kv.get('orders_index');
+        const idxRaw = await kv.get('kapelan_orders_index');
         const idx = idxRaw ? JSON.parse(idxRaw) : [];
-        idx.unshift(orderId);
-        await kv.set('orders_index', JSON.stringify(idx));
+        idx.unshift(orderId); await kv.set('kapelan_orders_index', JSON.stringify(idx));
       } catch {}
       try {
         await sendTelegramMessage(
-          `🔧 <b>Ордер создан AI-менеджером!</b>\n\n👤 Клиент: <b>${clientName}</b>\n📞 ${clientPhone}\n❄️ ${acModel.brand} ${acModel.model}\n📐 ${roomArea} м²\n🔖 ID: ${orderId.substring(0, 20)}\n🕐 ${new Date().toLocaleString('ru-RU')}`
+          `🔧 <b>Ордер створено AI-менеджером!</b>\n\n👤 Клієнт: <b>${clientName}</b>\n📞 ${clientPhone}\n❄️ ${acItem.name}\n📐 ${roomArea} м²\n🔖 ID: ${orderId.substring(0, 20)}\n🕐 ${new Date().toLocaleString('uk-UA')}`
         );
       } catch {}
       return {
-        result: JSON.stringify({ orderId, status: "draft", clientName, acBrand: acModel.brand, acModel: acModel.model, price: acModel.price, leadId }),
-        action: { type: "order_created", title: "Ордер монтажа создан ✅", data: { order, client, acModel } }
+        result: JSON.stringify({ orderId, status: "draft", clientName, acName: acItem.name, price: acItem.price, leadId }),
+        action: { type: "order_created", title: "Ордер монтажу створено ✅", data: { order, client, acItem } }
+      };
+    }
+
+    // ── 4. Assign installer ────────────────────────────────────────────────────
+    if (name === "assign_installer") {
+      const { orderId, installerName, scheduledDate } = args;
+      const installers = await getInstallers();
+      const available = installers.filter((i: any) => i.status === "available");
+      // Find order
+      const orderRaw = await kv.get(`kapelan_order:${orderId}`);
+      if (!orderRaw) return { result: `Ордер ${orderId} не знайдено`, action: null };
+      const order: any = JSON.parse(orderRaw);
+      // Pick installer
+      let assigned = installers.find((i: any) => i.name === installerName) ?? available[0];
+      if (!assigned) return { result: "Немає доступних монтажників", action: { type: "installer_assigned", title: "Немає монтажників", data: { installers, orderId } } };
+      order.installerName = assigned.name;
+      order.installerPhone = assigned.phone;
+      order.scheduledDate = scheduledDate || "";
+      order.status = "assigned";
+      order.updatedAt = new Date().toISOString();
+      await kv.set(`kapelan_order:${orderId}`, JSON.stringify(order));
+      // Mark installer as busy if date set
+      if (scheduledDate) {
+        assigned.status = "busy";
+        await kv.set(`kapelan_installer:${assigned.id}`, JSON.stringify(assigned));
+      }
+      try {
+        await sendTelegramMessage(
+          `👷 <b>Монтажника призначено!</b>\n\n🔖 Ордер: ${orderId.slice(-8)}\n👤 Клієнт: ${order.clientName}\n🔧 Монтажник: <b>${assigned.name}</b>\n📅 Дата: ${scheduledDate || "Не вказана"}`
+        );
+      } catch {}
+      return {
+        result: JSON.stringify({ orderId, installerName: assigned.name, scheduledDate, status: "assigned", availableInstallers: available.length }),
+        action: { type: "installer_assigned", title: `Монтажник призначено: ${assigned.name}`, data: { installer: assigned, orderId, order, availableInstallers: installers } }
       };
     }
 
@@ -486,6 +592,61 @@ app.get("/make-server-1df47c03/chat-history/:sessionId", async (c) => {
   } catch (error) {
     console.error("Error fetching chat history:", error);
     return c.json({ error: `Failed to fetch chat history: ${error.message}` }, 500);
+  }
+});
+
+// ─── Installers API ────────────────────────────────────────────────────────────
+app.get("/make-server-1df47c03/installers", async (c) => {
+  try {
+    const installers = await getInstallers();
+    return c.json({ installers });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+app.post("/make-server-1df47c03/installers", async (c) => {
+  try {
+    const body = await c.req.json();
+    const id = body.id || `inst_${Date.now()}`;
+    const installer = { id, name: body.name, phone: body.phone || "", level: body.level || "installer", status: body.status || "available", certYear: body.certYear || new Date().getFullYear() };
+    await kv.set(`kapelan_installer:${id}`, JSON.stringify(installer));
+    return c.json({ installer });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+app.patch("/make-server-1df47c03/installers/:id", async (c) => {
+  try {
+    const id = c.req.param("id");
+    const raw = await kv.get(`kapelan_installer:${id}`);
+    if (!raw) return c.json({ error: "Installer not found" }, 404);
+    const installer = { ...JSON.parse(raw), ...await c.req.json() };
+    await kv.set(`kapelan_installer:${id}`, JSON.stringify(installer));
+    return c.json({ installer });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// POST assign installer to order
+app.post("/make-server-1df47c03/install-orders/:id/assign", async (c) => {
+  try {
+    const orderId = c.req.param("id");
+    const raw = await kv.get(`kapelan_order:${orderId}`);
+    if (!raw) return c.json({ error: "Ордер не найден" }, 404);
+    const order: any = JSON.parse(raw);
+    const { installerName, installerPhone, scheduledDate } = await c.req.json();
+    order.installerName = installerName || "";
+    order.installerPhone = installerPhone || "";
+    order.scheduledDate = scheduledDate || "";
+    if (order.status === "draft" || order.status === "confirmed") order.status = "assigned";
+    order.updatedAt = new Date().toISOString();
+    await kv.set(`kapelan_order:${orderId}`, JSON.stringify(order));
+    return c.json({ order });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
   }
 });
 
