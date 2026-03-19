@@ -661,6 +661,7 @@ ${o.notes ? `<div class="section"><p class="section-title">Примечания<
 
 // ── Info tab ─────────────────────────────────────────────────────────────────
 function InfoTab({ order: o, showAssign, setShowAssign, editInstaller, setEditInstaller, editDate, setEditDate, onAssign }: any) {
+  const { fmtShort } = useCurrency();
   return (
     <div className="p-4 space-y-3">
       {/* AI analysis badge */}
@@ -1314,6 +1315,7 @@ function ManualOrderFlow({ onCreated, onBack, prefillLeadId }: {
 function AcSelectorGrid({ catalog, selected, onSelect, filterArea, suggestedId }: {
   catalog: AcModel[]; selected: string; onSelect: (id: string) => void; filterArea?: number; suggestedId?: string;
 }) {
+  const { fmtShort } = useCurrency();
   const [tier, setTier] = useState<string>("all");
   const filtered = catalog.filter(m => {
     const matchTier = tier === "all" || m.tier === tier;
