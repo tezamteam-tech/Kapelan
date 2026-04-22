@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
-import { FileText, Loader2, RefreshCw, Search, Download, CheckCircle2 } from "lucide-react";
+import { FileText, Loader2, RefreshCw, Search, Download, CheckCircle2, Plus, Trash2 } from "lucide-react";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -50,9 +50,12 @@ function fmtDate(iso: string) {
   }
 }
 
-async function downloadPdf(url: string, filename: string) {
+async function downloadFile(url: string, filename: string) {
   const res = await fetch(url, { headers: AH });
-  if (!res.ok) throw new Error(`Не удалось сформировать документ (${res.status})`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt ? `${txt}`.slice(0, 240) : `Не удалось сформировать документ (${res.status})`);
+  }
   const blob = await res.blob();
   const u = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -172,14 +175,90 @@ export function OrderDocumentsBuilder() {
 
   async function makeOfferPdf() {
     if (!selected) return;
-    await downloadPdf(`${API}/orders/${selected.id}/offer/pdf`, `offer_${selected.number}.pdf`);
+    await downloadFile(`${API}/orders/${selected.id}/offer/pdf`, `offer_${selected.number}.pdf`);
     showToast("КП сформировано");
   }
 
   async function makeActPdf() {
     if (!selected) return;
-    await downloadPdf(`${API}/orders/${selected.id}/act/pdf`, `act_${selected.number}.pdf`);
+    await downloadFile(`${API}/orders/${selected.id}/act/pdf`, `act_${selected.number}.pdf`);
     showToast("Акт сформирован");
+  }
+
+  // --- Builder state (constructor) ---
+  const [docType, setDocType] = useState<"offer" | "act">("offer");
+  const [format, setFormat] = useState<"pdf" | "doc">("pdf");
+  const [docTitle, setDocTitle] = useState("");
+  const [docDate, setDocDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [docNotes, setDocNotes] = useState("");
+  const [rendering, setRendering] = useState(false);
+
+  type DocItem = { name: string; qty: number; unit: string; price: number };
+  type WorkStage = { title: string; amount: number };
+  const [items, setItems] = useState<DocItem[]>([]);
+  const [stages, setStages] = useState<WorkStage[]>([]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const baseItems: DocItem[] = (selected.offer?.lines ?? [])
+      .filter((l: any) => (l?.line_type ?? "") !== "discount")
+      .map((l: any) => ({
+        name: String(l?.name ?? ""),
+        qty: Number(l?.qty ?? 0),
+        unit: String(l?.unit ?? ""),
+        price: Number(l?.price ?? 0),
+      }))
+      .filter((i: any) => i.name);
+    setItems(baseItems.length ? baseItems : [{ name: "", qty: 1, unit: "шт", price: 0 }]);
+    setStages([]);
+    setDocNotes("");
+    setDocType("offer");
+    setFormat("pdf");
+    setDocTitle("");
+    setDocDate(new Date().toISOString().slice(0, 10));
+  }, [selected?.id]);
+
+  const totalItems = useMemo(() => items.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.qty) || 0), 0), [items]);
+  const totalStages = useMemo(() => stages.reduce((s, st) => s + (Number(st.amount) || 0), 0), [stages]);
+  const total = useMemo(() => Math.round((totalItems + totalStages) * 100) / 100, [totalItems, totalStages]);
+
+  async function renderAndDownload() {
+    if (!selected) return;
+    setRendering(true);
+    try {
+      const title = docTitle.trim() || (docType === "act" ? "АКТ ВЫПОЛНЕННЫХ РАБОТ" : "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ");
+      const date = docDate ? new Date(docDate).toLocaleDateString("ru-RU") : new Date().toLocaleDateString("ru-RU");
+      const payload = {
+        docType,
+        format,
+        title,
+        date,
+        items: items.filter((i) => i.name.trim()).map((i) => ({ ...i, qty: Number(i.qty) || 0, price: Number(i.price) || 0 })),
+        workStages: stages.filter((s) => s.title.trim()).map((s) => ({ ...s, amount: Number(s.amount) || 0 })),
+        notes: docNotes.trim(),
+      };
+      const res = await fetch(`${API}/orders/${selected.id}/documents/render`, {
+        method: "POST",
+        headers: JH,
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt ? txt.slice(0, 240) : `Ошибка генерации (${res.status})`);
+      }
+      const blob = await res.blob();
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = u;
+      a.download = `${docType}_${selected.number}.${format === "pdf" ? "pdf" : "doc"}`;
+      a.click();
+      URL.revokeObjectURL(u);
+      showToast("Документ сформирован");
+    } catch (e: any) {
+      showToast(e?.message || "Ошибка генерации", false);
+    } finally {
+      setRendering(false);
+    }
   }
 
   return (
@@ -313,32 +392,157 @@ export function OrderDocumentsBuilder() {
                   <span className="text-[11px] text-slate-400">PDF</span>
                 </div>
 
-                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
-                  <button
-                    onClick={() => makeOfferPdf().catch((e: any) => showToast(e?.message || "Ошибка", false))}
-                    className="flex items-center justify-between gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 hover:bg-blue-100 transition-all"
-                  >
-                    <div className="min-w-0 text-left">
-                      <p className="text-sm font-extrabold text-blue-900 truncate">Коммерческое предложение (КП)</p>
-                      <p className="text-[11px] text-blue-700 truncate">Берётся из `order.offer.lines` + реквизиты клиента</p>
-                    </div>
-                    <Download className="size-4 text-blue-700 flex-shrink-0" />
-                  </button>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-xs font-semibold text-slate-500">Тип документа</span>
+                    <select value={docType} onChange={(e) => setDocType(e.target.value as any)} className={`${inputCls} mt-1`}>
+                      <option value="offer">Коммерческое предложение (КП)</option>
+                      <option value="act">Акт выполненных работ</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-semibold text-slate-500">Формат</span>
+                    <select value={format} onChange={(e) => setFormat(e.target.value as any)} className={`${inputCls} mt-1`}>
+                      <option value="pdf">PDF</option>
+                      <option value="doc">DOC</option>
+                    </select>
+                  </label>
+                </div>
 
-                  <button
-                    onClick={() => makeActPdf().catch((e: any) => showToast(e?.message || "Ошибка", false))}
-                    className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 hover:bg-slate-100 transition-all"
-                  >
-                    <div className="min-w-0 text-left">
-                      <p className="text-sm font-extrabold text-slate-900 truncate">Акт выполненных работ</p>
-                      <p className="text-[11px] text-slate-600 truncate">Берётся из ордера + КП + исполнения</p>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-xs font-semibold text-slate-500">Заголовок (опц.)</span>
+                    <input value={docTitle} onChange={(e) => setDocTitle(e.target.value)} className={`${inputCls} mt-1`} placeholder="Оставьте пустым для стандартного" />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-semibold text-slate-500">Дата</span>
+                    <input type="date" value={docDate} onChange={(e) => setDocDate(e.target.value)} className={`${inputCls} mt-1`} />
+                  </label>
+                </div>
+
+                <div className="mt-3">
+                  <p className="text-xs font-semibold text-slate-500">Позиции (можно редактировать)</p>
+                  <div className="mt-2 space-y-2">
+                    {items.map((it, idx) => (
+                      <div key={idx} className="grid grid-cols-12 gap-2">
+                        <input
+                          value={it.name}
+                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
+                          className={`col-span-12 md:col-span-6 ${inputCls}`}
+                          placeholder="Наименование"
+                        />
+                        <input
+                          type="number"
+                          value={it.qty}
+                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, qty: Number(e.target.value) } : x)))}
+                          className={`col-span-4 md:col-span-2 ${inputCls}`}
+                          placeholder="qty"
+                        />
+                        <input
+                          value={it.unit}
+                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, unit: e.target.value } : x)))}
+                          className={`col-span-4 md:col-span-2 ${inputCls}`}
+                          placeholder="ед."
+                        />
+                        <input
+                          type="number"
+                          value={it.price}
+                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, price: Number(e.target.value) } : x)))}
+                          className={`col-span-4 md:col-span-2 ${inputCls}`}
+                          placeholder="цена"
+                        />
+                        <button
+                          onClick={() => setItems((p) => p.filter((_, i) => i !== idx))}
+                          className="col-span-12 md:col-span-12 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2 hover:bg-red-100 flex items-center gap-2 justify-center"
+                        >
+                          <Trash2 size={14} /> Удалить строку
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => setItems((p) => [...p, { name: "", qty: 1, unit: "шт", price: 0 }])}
+                      className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                    >
+                      <Plus size={14} /> Добавить позицию
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <p className="text-xs font-semibold text-slate-500">Этапы работ (опц.)</p>
+                  <div className="mt-2 space-y-2">
+                    {stages.map((st, idx) => (
+                      <div key={idx} className="grid grid-cols-12 gap-2">
+                        <input
+                          value={st.title}
+                          onChange={(e) => setStages((p) => p.map((x, i) => (i === idx ? { ...x, title: e.target.value } : x)))}
+                          className={`col-span-12 md:col-span-8 ${inputCls}`}
+                          placeholder="Например: Монтаж внутреннего блока"
+                        />
+                        <input
+                          type="number"
+                          value={st.amount}
+                          onChange={(e) => setStages((p) => p.map((x, i) => (i === idx ? { ...x, amount: Number(e.target.value) } : x)))}
+                          className={`col-span-12 md:col-span-4 ${inputCls}`}
+                          placeholder="сумма"
+                        />
+                        <button
+                          onClick={() => setStages((p) => p.filter((_, i) => i !== idx))}
+                          className="col-span-12 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2 hover:bg-red-100 flex items-center gap-2 justify-center"
+                        >
+                          <Trash2 size={14} /> Удалить этап
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => setStages((p) => [...p, { title: "", amount: 0 }])}
+                      className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+                    >
+                      <Plus size={14} /> Добавить этап
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="text-sm font-extrabold text-slate-800 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3">
+                    Итого: {total}
+                    <div className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                      позиции: {Math.round(totalItems * 100) / 100} · этапы: {Math.round(totalStages * 100) / 100}
                     </div>
-                    <Download className="size-4 text-slate-700 flex-shrink-0" />
+                  </div>
+                  <button
+                    disabled={rendering}
+                    onClick={renderAndDownload}
+                    className={`rounded-2xl px-4 py-3 font-extrabold text-white flex items-center justify-center gap-2 ${
+                      rendering ? "bg-slate-300 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"
+                    }`}
+                  >
+                    {rendering ? <Loader2 className="animate-spin" size={18} /> : <Download size={18} />}
+                    {rendering ? "Формирование…" : "Сформировать и скачать"}
                   </button>
                 </div>
 
+                <div className="mt-3">
+                  <p className="text-xs font-semibold text-slate-500">Примечания (опц.)</p>
+                  <textarea value={docNotes} onChange={(e) => setDocNotes(e.target.value)} rows={3} className={`${inputCls} mt-1`} placeholder="Условия, сроки, комментарии…" />
+                </div>
+
                 <div className="mt-3 text-[11px] text-slate-400">
-                  Дальше сюда добавим: счет, договор, спецификацию, гарантийный талон, приложения и шаблоны под разные компании.
+                  Быстрые кнопки ниже оставил для отладки (старые GET эндпоинты). Основной сценарий — через конструктор.
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    onClick={() => makeOfferPdf().catch((e: any) => showToast(e?.message || "Ошибка", false))}
+                    className="px-3 py-2 rounded-xl border border-blue-200 bg-blue-50 text-blue-800 text-xs font-semibold hover:bg-blue-100"
+                  >
+                    Быстро: КП PDF (GET)
+                  </button>
+                  <button
+                    onClick={() => makeActPdf().catch((e: any) => showToast(e?.message || "Ошибка", false))}
+                    className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-slate-800 text-xs font-semibold hover:bg-slate-100"
+                  >
+                    Быстро: Акт PDF (GET)
+                  </button>
                 </div>
               </div>
             </>
