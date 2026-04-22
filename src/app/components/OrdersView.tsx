@@ -213,6 +213,7 @@ export function OrdersView() {
   const [installers, setInstallers] = useState<Array<{ id: string; name: string }>>([]);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [partialReceiptReq, setPartialReceiptReq] = useState<SupplierRequest | null>(null);
   const [createPrefill, setCreatePrefill] = useState<{
     client_name?: string;
@@ -394,7 +395,14 @@ export function OrdersView() {
     client_doc_basis?: string;
   }) {
     try {
-      const res = await fetch(`${API}/orders`, { method: "POST", headers: JH, body: JSON.stringify({ type: "installation", ...payload }) });
+      if (creating) return;
+      setCreating(true);
+      const idemKey = `ord_create_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const res = await fetch(`${API}/orders`, {
+        method: "POST",
+        headers: { ...JH, "Idempotency-Key": idemKey },
+        body: JSON.stringify({ type: "installation", ...payload }),
+      });
       const raw = await res.text();
       let data: any = {};
       try {
@@ -410,6 +418,8 @@ export function OrdersView() {
       showToast("Ордер создан");
     } catch (e: any) {
       showToast(e?.message || "Ошибка создания", false);
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -1046,6 +1056,28 @@ export function OrdersView() {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-700">{STATUS_LABEL[selected.status]}</span>
+              {role === "admin" && (
+                <button
+                  onClick={async () => {
+                    if (!confirm(`Удалить ордер ${selected.number}?`)) return;
+                    try {
+                      const res = await fetch(`${API}/orders/${selected.id}`, { method: "DELETE", headers: AH });
+                      const txt = await res.text();
+                      let data: any = {};
+                      try { data = txt ? JSON.parse(txt) : {}; } catch { throw new Error(txt.slice(0, 120)); }
+                      if (!res.ok || data.error) throw new Error(data.error || "Не удалось удалить");
+                      setOrders((prev) => prev.filter((o) => o.id !== selected.id));
+                      setSelectedId(null);
+                      showToast("Ордер удален");
+                    } catch (e: any) {
+                      showToast(e?.message || "Ошибка удаления", false);
+                    }
+                  }}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold border border-red-200 text-red-700 bg-red-50 hover:bg-red-100"
+                >
+                  Удалить
+                </button>
+              )}
             </div>
           </div>
 
@@ -1431,6 +1463,7 @@ export function OrdersView() {
           prefill={createPrefill}
           onClose={() => setCreateOpen(false)}
           onCreate={createOrder}
+          creating={creating}
         />
       )}
 
@@ -1467,6 +1500,7 @@ function CreateOrderModal({
   prefill,
   onClose,
   onCreate,
+  creating,
 }: {
   warehouseEq: WarehouseItem[];
   prefill: { client_name?: string; client_phone?: string; object_address?: string } | null;
@@ -1482,6 +1516,7 @@ function CreateOrderModal({
     equipment_warehouse_id?: string;
     trace_length_m?: number;
   }) => void;
+  creating?: boolean;
 }) {
   const [clientName, setClientName] = useState(prefill?.client_name ?? "");
   const [clientPhone, setClientPhone] = useState(prefill?.client_phone ?? "");
@@ -1560,7 +1595,7 @@ function CreateOrderModal({
               Отмена
             </button>
             <button
-              disabled={!canCreate}
+              disabled={!canCreate || Boolean(creating)}
               onClick={() =>
                 onCreate({
                   client_name: clientName.trim(),
@@ -1576,10 +1611,17 @@ function CreateOrderModal({
                 })
               }
               className={`px-4 py-2 rounded-xl font-semibold text-white ${
-                canCreate ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"
+                canCreate && !creating ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"
               }`}
             >
-              Создать
+              {creating ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 size={16} className="animate-spin" />
+                  Создание…
+                </span>
+              ) : (
+                "Создать"
+              )}
             </button>
           </div>
         </div>
