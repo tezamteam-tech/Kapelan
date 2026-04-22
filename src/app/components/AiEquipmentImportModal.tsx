@@ -6,7 +6,7 @@ import {
   Layers, Gauge, DollarSign, Zap, AreaChart
 } from "lucide-react";
 import { useCurrency } from "./CurrencyContext";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
 import { useNavigate } from "react-router";
 import {
   TrendingUp, Users, ClipboardList, Package, DollarSign,
@@ -69,10 +69,10 @@ export function DashboardPage() {
     .reduce((sum, l) => sum + (l.requirements_json?.budget || 0), 0);
 
   const statCards = [
-    { label: "Всего заявок", value: leads.length, icon: <ClipboardList size={22} />, color: "from-blue-500 to-blue-600", onClick: () => navigate("/leads") },
-    { label: "Новые", value: statusCounts["new"] || 0, icon: <Clock size={22} />, color: "from-amber-500 to-orange-500", onClick: () => navigate("/leads") },
-    { label: "В работе", value: (statusCounts["measurement"] || 0) + (statusCounts["offer"] || 0) + (statusCounts["deal"] || 0), icon: <Wrench size={22} />, color: "from-purple-500 to-indigo-600", onClick: () => navigate("/leads") },
-    { label: "Выполнено", value: statusCounts["done"] || 0, icon: <TrendingUp size={22} />, color: "from-emerald-500 to-green-600", onClick: () => navigate("/leads") },
+    { label: "Всего заявок", value: leads.length, icon: <ClipboardList size={22} />, color: "from-blue-500 to-blue-600", onClick: () => navigate("/orders") },
+    { label: "Новые", value: statusCounts["new"] || 0, icon: <Clock size={22} />, color: "from-amber-500 to-orange-500", onClick: () => navigate("/orders") },
+    { label: "В работе", value: (statusCounts["measurement"] || 0) + (statusCounts["offer"] || 0) + (statusCounts["deal"] || 0), icon: <Wrench size={22} />, color: "from-purple-500 to-indigo-600", onClick: () => navigate("/orders") },
+    { label: "Выполнено", value: statusCounts["done"] || 0, icon: <TrendingUp size={22} />, color: "from-emerald-500 to-green-600", onClick: () => navigate("/orders") },
   ];
 
   return (
@@ -137,16 +137,16 @@ export function DashboardPage() {
               <ResponsiveContainer width="60%" height={220}>
                 <PieChart>
                   <Pie data={pieData} dataKey="value" cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={3}>
-                    {pieData.map((entry, i) => (
-                      <Cell key={i} fill={entry.color} />
+                    {pieData.map((entry) => (
+                      <Cell key={`cell-${entry.name}`} fill={entry.color} />
                     ))}
                   </Pie>
                   <Tooltip />
                 </PieChart>
               </ResponsiveContainer>
               <div className="space-y-2">
-                {pieData.map((d, i) => (
-                  <div key={i} className="flex items-center gap-2 text-sm">
+                {pieData.map((d) => (
+                  <div key={`legend-${d.name}`} className="flex items-center gap-2 text-sm">
                     <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: d.color }} />
                     <span className="text-slate-600">{d.name}</span>
                     <span className="font-bold text-slate-800">{d.value}</span>

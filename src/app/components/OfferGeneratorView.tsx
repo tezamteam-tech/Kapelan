@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { DocumentsPanel } from "./DocumentsPanel";
 import { useCurrency } from "./CurrencyContext";
 

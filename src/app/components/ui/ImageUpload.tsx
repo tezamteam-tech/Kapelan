@@ -1,5 +1,5 @@
 import React, { useRef, useState, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
 import { Upload, X, ImageIcon, Loader2, Camera, Link2, Check } from "lucide-react";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
 import { Save, Send, CheckCircle, AlertCircle, Coins, Globe, Check } from "lucide-react";
 import { useCurrency, type CurrencyConfig } from "../CurrencyContext";
 

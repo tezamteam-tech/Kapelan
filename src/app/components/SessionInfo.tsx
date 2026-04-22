@@ -1,6 +1,7 @@
 import { Badge } from "./ui/badge";
 import { Copy, Check } from "lucide-react";
 import { useState } from "react";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface SessionInfoProps {
   sessionId: string;
@@ -9,8 +10,8 @@ interface SessionInfoProps {
 export function SessionInfo({ sessionId }: SessionInfoProps) {
   const [copied, setCopied] = useState(false);
 
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(sessionId);
+  const handleCopy = () => {
+    copyToClipboard(sessionId);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -21,7 +22,7 @@ export function SessionInfo({ sessionId }: SessionInfoProps) {
         Session: {sessionId.substring(0, 20)}...
       </Badge>
       <button
-        onClick={copyToClipboard}
+        onClick={handleCopy}
         className="p-1 hover:bg-gray-100 rounded transition-colors"
         title="Копировать Session ID"
       >

@@ -16,6 +16,7 @@ import { SettingsPage } from "./components/pages/SettingsPage";
 import { CalendarPage } from "./components/pages/CalendarPage";
 import { InstallOrdersPage } from "./components/pages/InstallOrdersPage";
 import { MeasurementOrdersPage } from "./components/pages/MeasurementOrdersPage";
+import { OrdersPage } from "./components/pages/OrdersPage";
 
 export const router = createBrowserRouter([
   {
@@ -29,9 +30,11 @@ export const router = createBrowserRouter([
           { index: true, element: <Navigate to="/dashboard" replace /> },
           { path: "dashboard", Component: DashboardPage },
           { path: "ai-chat", Component: AIChatPage },
-          { path: "leads", Component: LeadsPage },
-          { path: "install-orders", Component: InstallOrdersPage },
-          { path: "measurements", Component: MeasurementOrdersPage },
+          { path: "orders", Component: OrdersPage },
+          // Order-first: legacy entry points redirect to Orders
+          { path: "leads", element: <Navigate to="/orders" replace /> },
+          { path: "install-orders", element: <Navigate to="/orders" replace /> },
+          { path: "measurements", element: <Navigate to="/orders" replace /> },
           { path: "tasks", Component: TasksPage },
           { path: "calendar", Component: CalendarPage },
           { path: "warehouse", Component: WarehousePage },

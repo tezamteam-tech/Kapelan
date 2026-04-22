@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useRole } from "./RoleContext";
 import { TrainingAdminPanel } from "./TrainingAdminPanel";
 

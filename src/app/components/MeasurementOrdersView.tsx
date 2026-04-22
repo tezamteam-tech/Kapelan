@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
+import { useNavigate } from "react-router";
 import { useRole } from "./RoleContext";
 import { useCurrency } from "./CurrencyContext";
 import {
@@ -73,6 +74,7 @@ export function MeasurementOrdersView() {
   const { role, userName } = useRole();
   const { fmtShort } = useCurrency();
   const { toast, show } = useToast();
+  const navigate = useNavigate();
 
   const [orders, setOrders] = useState<MeasurementOrder[]>([]);
   const [loading, setLoading] = useState(false);
@@ -220,9 +222,9 @@ export function MeasurementOrdersView() {
           </p>
         </div>
         {(role === "admin" || role === "manager") && (
-          <button onClick={() => { setForm({ scheduledDate: new Date().toISOString().slice(0, 10) }); setMode("create"); }}
+          <button onClick={() => navigate("/orders?create=1")}
             className="flex items-center gap-2 bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
-            <Plus size={15} /> Новый замер
+            <Plus size={15} /> Новый ордер
           </button>
         )}
       </div>

@@ -19,9 +19,8 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { path: "/dashboard",      label: "Дашборд",         icon: <LayoutDashboard size={20} />, roles: ["admin"] },
   { path: "/ai-chat",        label: "AI Менеджер",     icon: <MessageSquare size={20} />,   roles: ["admin", "manager"] },
-  { path: "/leads",          label: "Заявки",          icon: <ClipboardList size={20} />,    roles: ["admin", "manager"] },
-  { path: "/measurements",   label: "Замеры",           icon: <Ruler size={20} />,            roles: ["admin", "manager", "installer"] },
-  { path: "/install-orders", label: "Ордера монтажа",  icon: <ClipboardCheck size={20} />,  roles: ["admin", "manager", "installer"] },
+  { path: "/orders",         label: "Ордера",          icon: <ClipboardCheck size={20} />,  roles: ["admin", "manager", "installer"] },
+  // Order-first: hide legacy modules from navigation
   { path: "/tasks",          label: "Мои задачи",      icon: <Wrench size={20} />,           roles: ["admin", "installer"] },
   { path: "/calendar",       label: "Календарь",       icon: <CalendarDays size={20} />,     roles: ["admin", "manager"] },
   { path: "/warehouse",      label: "Склад",           icon: <Package size={20} />,          roles: ["admin"] },

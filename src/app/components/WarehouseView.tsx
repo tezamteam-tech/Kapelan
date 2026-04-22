@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import {
   Search, Plus, RefreshCw, Package, ArrowDownToLine, ArrowUpFromLine,
   AlertTriangle, CheckCircle2, Settings, Layers, Thermometer,
@@ -1022,6 +1022,11 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
 }) {
   const [step, setStep] = useState<EqStep>("basic");
   const [saving, setSaving] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiUrl, setAiUrl] = useState("");
+  const [aiExtra, setAiExtra] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
 
   // Basic fields
   const [type, setType] = useState(eq.type || "split_ac");
@@ -1051,6 +1056,50 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
   const [installerNotes, setInstallerNotes] = useState(eq.installerNotes || "");
 
   const pSet = (k: string, v: any) => setParams((p: any) => ({ ...p, [k]: v }));
+
+  async function runAiFill() {
+    if (!brand.trim() || !model.trim()) { alert("Сначала заполните производителя и модель"); setStep("basic"); return; }
+    setAiLoading(true);
+    setAiError("");
+    try {
+      const res = await fetch(`${API}/equipment/ai-fill`, {
+        method: "POST",
+        headers: JH,
+        body: JSON.stringify({ type, brand, model, url: aiUrl, extraText: aiExtra }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `AI error ${res.status}`);
+      const s = data.suggested ?? {};
+
+      if (typeof s.powerKw === "number" && s.powerKw > 0) setPowerKw(s.powerKw);
+      if (typeof s.btu === "number" && s.btu > 0) setBtu(s.btu);
+      if (typeof s.areaMin === "number" && s.areaMin > 0) setAreaMin(s.areaMin);
+      if (typeof s.areaMax === "number" && s.areaMax > 0) setAreaMax(s.areaMax);
+      if (typeof s.installerNotes === "string" && s.installerNotes.trim()) setInstallerNotes(s.installerNotes);
+
+      if (s.installParams && typeof s.installParams === "object") {
+        setParams((p: any) => ({ ...p, ...s.installParams }));
+      }
+      if (Array.isArray(s.bom)) {
+        const normalized = s.bom.map((e: any) => ({
+          warehouseId: String(e.warehouseId ?? ""),
+          name: String(e.name ?? ""),
+          unit: String(e.unit ?? "шт"),
+          qtyFixed: Number(e.qtyFixed ?? 0),
+          qtyPerMeter: Number(e.qtyPerMeter ?? 0),
+          notes: String(e.notes ?? ""),
+        })).filter((e: any) => e.name);
+        if (normalized.length) setBom(normalized);
+      }
+
+      setAiOpen(false);
+      setStep("params");
+    } catch (e: any) {
+      setAiError(e.message);
+    } finally {
+      setAiLoading(false);
+    }
+  }
 
   function addTool() {
     const t = toolInput.trim(); if (!t) return;
@@ -1115,9 +1164,19 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
               {brand || "Производитель"} {model || "Модель"}
             </h2>
           </div>
-          <button onClick={onClose} className="bg-white/20 hover:bg-white/30 p-1.5 rounded-full">
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setAiOpen(true); setAiError(""); }}
+              className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-xs font-black flex items-center gap-1.5"
+              title="Заполнить параметры монтажа и BOM через AI"
+            >
+              <Sparkles size={14} /> Спросить AI
+            </button>
+            <button onClick={onClose} className="bg-white/20 hover:bg-white/30 p-1.5 rounded-full">
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Step tabs */}
@@ -1135,6 +1194,42 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {aiOpen && (
+            <div className="border border-blue-200 bg-blue-50 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-black text-blue-800 flex items-center gap-2"><Sparkles size={14} /> AI-заполнение карточки</p>
+                <button type="button" onClick={() => setAiOpen(false)} className="text-blue-700 text-xs font-black hover:underline">Закрыть</button>
+              </div>
+              <div className="grid grid-cols-1 gap-2">
+                <div>
+                  <label className={LBL}>Ссылка на страницу товара (опционально)</label>
+                  <input value={aiUrl} onChange={(e) => setAiUrl(e.target.value)} placeholder="https://..." className={INP} />
+                </div>
+                <div>
+                  <label className={LBL}>Комментарий / требования (опционально)</label>
+                  <textarea value={aiExtra} onChange={(e) => setAiExtra(e.target.value)} rows={3} className={INP} placeholder="Например: монтаж с насосом, трасса до 25м, питание 380В…" />
+                </div>
+              </div>
+              {aiError && (
+                <div className="text-xs font-bold text-red-700 bg-white border border-red-200 rounded-xl px-3 py-2">
+                  {aiError}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={aiLoading}
+                  onClick={runAiFill}
+                  className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-black hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {aiLoading ? "AI думает..." : "Заполнить"}
+                </button>
+                <p className="text-[11px] text-blue-700">
+                  AI предложит параметры и BOM — после применения можно всё отредактировать.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* ── BASIC ── */}
           {step === "basic" && (<>

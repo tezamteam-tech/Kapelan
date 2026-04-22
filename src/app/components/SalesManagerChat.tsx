@@ -11,7 +11,7 @@ import {
   MessageSquare, Clock, UserCheck, Warehouse, FileText,
   XCircle, CheckSquare
 } from "lucide-react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
@@ -210,14 +210,15 @@ function OrderCreatedCard({ data, onNavigate, onGeneratePdf, onAssignInstaller }
         <span className="text-sm font-bold text-teal-800">Ордер монтажа создан!</span>
       </div>
       <div className="bg-white rounded-lg p-2.5 border border-teal-200 space-y-1 text-xs mb-2">
-        <div className="flex justify-between"><span className="text-slate-500">Клиент</span><span className="font-bold">{order?.clientName}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Телефон</span><span>{order?.clientPhone}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Оборудование</span><span className="font-bold text-right max-w-[160px] truncate">{order?.acModelName}</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Площадь / Трасса</span><span>{order?.roomArea} м² · {order?.traceLength}м</span></div>
-        <div className="flex justify-between"><span className="text-slate-500">Статус</span><span className="text-amber-600 font-bold">Черновик</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Ордер</span><span className="font-bold">{order?.number || (order?.id || "").slice(-8)}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Клиент</span><span className="font-bold">{order?.client_name}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Телефон</span><span>{order?.client_phone}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Оборудование</span><span className="font-bold text-right max-w-[160px] truncate">{order?.offer?.lines?.find((l:any)=>l.line_type==="equipment")?.name || "—"}</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Площадь / Трасса</span><span>{order?.room_area_m2 || "—"} м² · {order?.trace_length_m || 4}м</span></div>
+        <div className="flex justify-between"><span className="text-slate-500">Статус</span><span className="text-amber-600 font-bold">{order?.status || "new"}</span></div>
       </div>
       <div className="grid grid-cols-3 gap-1.5">
-        <button onClick={() => onNavigate("/install-orders")}
+        <button onClick={() => onNavigate(`/orders?open=${order?.id || ""}`)}
           className="flex flex-col items-center justify-center gap-1 bg-teal-600 hover:bg-teal-700 text-white py-2 rounded-lg text-[10px] font-bold transition-colors">
           <ArrowUpRight className="size-3" />Открыть
         </button>
@@ -305,9 +306,11 @@ function InstallerModal({ orderId, onClose, onDone }: { orderId: string; onClose
     if (!inst) return;
     setSaving(true);
     try {
-      await fetch(`${API_BASE}/install-orders/${orderId}/assign`, {
-        method: "POST", headers: JH,
-        body: JSON.stringify({ installerName: inst.name, installerPhone: inst.phone, scheduledDate: date }),
+      const execution = { status: "scheduled", scheduled_at: date || "", assigned_installer_id: inst.id, assigned_installer_name: inst.name };
+      await fetch(`${API_BASE}/orders/${orderId}`, {
+        method: "PATCH",
+        headers: JH,
+        body: JSON.stringify({ execution, status: "scheduled" }),
       });
       onDone();
     } catch (e) { console.error(e); }
@@ -448,7 +451,7 @@ function WorkflowPanel({ actions, onNavigate, onGeneratePdf, onAssignInstaller }
         {/* Quick actions */}
         {orderAction && (
           <div className="mt-3 pt-3 border-t space-y-1.5">
-            <button onClick={() => onNavigate("/install-orders")}
+            <button onClick={() => onNavigate(`/orders?open=${orderAction.data?.order?.id || ""}`)}
               className="w-full flex items-center justify-center gap-2 bg-teal-600 text-white py-2.5 rounded-xl text-xs font-bold hover:bg-teal-700 transition-colors">
               <ClipboardCheck className="size-3.5" />Перейти к ордеру
             </button>
@@ -630,14 +633,14 @@ function DialogMode() {
   const handleGeneratePdf = async (orderId: string) => {
     if (!orderId) return;
     try {
-      const res = await fetch(`${API_BASE}/install-orders/${orderId}/pdf`, { headers: AH });
+      const res = await fetch(`${API_BASE}/orders/${orderId}/act/pdf`, { headers: AH });
       if (res.ok) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href = url; a.download = `order_${orderId.slice(-8)}.pdf`; a.click();
+        const a = document.createElement("a"); a.href = url; a.download = `act_${orderId.slice(-8)}.pdf`; a.click();
         URL.revokeObjectURL(url);
-      } else { navigate("/install-orders"); }
-    } catch { navigate("/install-orders"); }
+      } else { navigate("/orders"); }
+    } catch { navigate("/orders"); }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -978,8 +981,8 @@ function PasteMode() {
                 Новая переписка
               </Button>
               <Button className="flex-1 bg-teal-600 hover:bg-teal-700"
-                onClick={() => window.location.href = "/install-orders"}>
-                <ClipboardCheck className="size-4 mr-1" />Ордер монтажа
+                onClick={() => window.location.href = "/orders"}>
+                <ClipboardCheck className="size-4 mr-1" />Ордера
               </Button>
             </div>
           </CardContent>

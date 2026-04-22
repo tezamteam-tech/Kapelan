@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import React, { useState, useEffect, useCallback } from "react";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
 import { useNavigate } from "react-router";
+import { copyToClipboard } from "../utils/clipboard";
 import {
   Plus, Search, RefreshCw, User, Phone, MapPin, Building2,
   ChevronDown, ChevronUp, ClipboardCheck, FileText, Loader2,
@@ -134,6 +135,15 @@ export function LeadsView() {
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
+      <div className="bg-amber-50 border-b border-amber-200 px-5 py-2 text-[12px] text-amber-800">
+        Этот раздел — <b>legacy</b>. Теперь клиент/заявка/замер/монтаж ведутся <b>только внутри ордера</b>.
+        <button
+          onClick={() => navigate("/orders?create=1")}
+          className="ml-2 text-amber-900 font-bold underline underline-offset-2"
+        >
+          Создать ордер →
+        </button>
+      </div>
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div className="bg-white border-b border-slate-200 flex-shrink-0">
         <div className="flex items-center justify-between px-5 py-3">
@@ -146,9 +156,9 @@ export function LeadsView() {
               className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-all">
               <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
             </button>
-            <button onClick={() => setCreateOpen(true)}
-              className="flex items-center gap-1.5 bg-blue-600 text-white text-sm font-semibold px-3 py-2 rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
-              <Plus size={16} /> Создать заявку
+            <button onClick={() => navigate("/orders?create=1")}
+              className="flex items-center gap-1.5 bg-slate-900 text-white text-sm font-semibold px-3 py-2 rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-sm">
+              <ClipboardCheck size={16} /> Создать ордер
             </button>
           </div>
         </div>
@@ -200,7 +210,7 @@ export function LeadsView() {
             </p>
             {leads.length === 0 && (
               <button onClick={() => setCreateOpen(true)} className="mt-3 text-blue-600 text-sm font-semibold hover:underline">
-                Создать первую заявку →
+                Создать ��ервую заявку →
               </button>
             )}
           </div>
@@ -218,7 +228,7 @@ export function LeadsView() {
                 onToggle={() => setExpandedId(isExp ? null : lead.id)}
                 onStatusChange={updateStatus}
                 onDelete={deleteLead}
-                onCreateOrder={() => navigate(`/install-orders?fromLead=${lead.id}`)}
+                onCreateOrder={() => navigate(`/orders?fromLead=${lead.id}`)}
                 showToast={showToast}
               />
             );
@@ -226,18 +236,7 @@ export function LeadsView() {
         )}
       </div>
 
-      {/* ── Create Lead Modal ────────────────────────────────────────────────── */}
-      {createOpen && (
-        <CreateLeadModal
-          onClose={() => setCreateOpen(false)}
-          onCreated={(lead, client) => {
-            setLeads(prev => [lead, ...prev]);
-            setClients(prev => ({ ...prev, [client.id]: client }));
-            setCreateOpen(false);
-            showToast(`✅ Заявка создана — ${client.name}`);
-          }}
-        />
-      )}
+      {/* Create Lead disabled: order-first */}
 
       {/* Toast */}
       {toast && (
@@ -374,7 +373,7 @@ function LeadCard({ lead, client, req, cfg, isExpanded: isExp, isChanging, onTog
             </button>
             <button
               onClick={() => {
-                navigator.clipboard.writeText(lead.id);
+                copyToClipboard(lead.id);
                 showToast("ID скопирован");
               }}
               className="px-3 bg-slate-100 text-slate-500 rounded-xl text-xs font-semibold active:scale-95 hover:bg-slate-200">
@@ -478,7 +477,7 @@ function CreateLeadModal({ onClose, onCreated }: {
           {/* Client */}
           <section>
             <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-              <User size={11} /> ��лиент
+              <User size={11} /> лиент
             </p>
             <div className="space-y-2">
               <FormRow label="Имя *" value={form.clientName} onChange={f("clientName")} placeholder="Иванов Иван Иванович" />

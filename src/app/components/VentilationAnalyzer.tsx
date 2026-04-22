@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, DragEvent } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
+import { copyToClipboard } from "../utils/clipboard";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -217,7 +218,7 @@ export function VentilationAnalyzer() {
   function copyJson() {
     if (!analysis) return;
     const { rawAnalysis: _, ...clean } = analysis;
-    navigator.clipboard.writeText(JSON.stringify(clean, null, 2));
+    copyToClipboard(JSON.stringify(clean, null, 2));
     showToast("📋 JSON скопировано!");
   }
 

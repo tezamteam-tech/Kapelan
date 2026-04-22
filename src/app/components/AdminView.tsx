@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { MaterialsPanel, MaterialsJson, TemplateEditor } from "./MaterialsPanel";
 import { OfferGeneratorView, OffersList } from "./OfferGeneratorView";
 import { AssignInstallerModal } from "./InstallerAssignment";

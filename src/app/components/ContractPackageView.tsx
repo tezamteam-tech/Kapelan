@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import {
   FileText, Plus, Trash2, Download, ChevronDown, ChevronUp,
   Building2, User, Settings, Clock, CheckCircle2, Loader2, X, AlertCircle

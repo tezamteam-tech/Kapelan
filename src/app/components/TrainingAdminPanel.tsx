@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import {
   Plus, Trash2, Edit3, ChevronDown, ChevronUp, Check, X, Save,
   BarChart3, BookOpen, GraduationCap, AlertTriangle, Users,

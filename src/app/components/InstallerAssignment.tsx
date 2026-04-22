@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import {
   UserPlus, Phone, MessageCircle, Wrench, Loader2,
   Check, Calendar, Clock, Send, Trash2, Edit2, X, Plus, Camera

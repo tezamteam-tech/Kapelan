@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { projectId, publicAnonKey } from "/utils/supabase/info";
+import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
 import { SignatureCanvas, SignatureCanvasHandle } from "./SignatureCanvas";
 import { MaterialsPanel, MaterialsJson } from "./MaterialsPanel";
