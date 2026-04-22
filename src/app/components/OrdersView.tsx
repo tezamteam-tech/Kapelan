@@ -1617,6 +1617,7 @@ function ClientDetailsPanel({
   const [taxId, setTaxId] = useState(order.client_tax_id ?? "");
   const [email, setEmail] = useState(order.client_email ?? "");
   const [basis, setBasis] = useState(order.client_doc_basis ?? "");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setName(order.client_name ?? "");
@@ -1653,23 +1654,35 @@ function ClientDetailsPanel({
           <p className="text-[11px] text-slate-400 mt-0.5">Используется при формировании КП и акта.</p>
         </div>
         <button
-          disabled={!dirty}
-          onClick={() =>
-            onSave({
-              client_name: name.trim(),
-              client_phone: phone.trim(),
-              object_address: address.trim(),
-              client_legal_name: legalName.trim() || undefined,
-              client_tax_id: taxId.trim() || undefined,
-              client_email: email.trim() || undefined,
-              client_doc_basis: basis.trim() || undefined,
-            })
-          }
+          disabled={!dirty || saving}
+          onClick={async () => {
+            setSaving(true);
+            try {
+              await onSave({
+                client_name: name.trim(),
+                client_phone: phone.trim(),
+                object_address: address.trim(),
+                client_legal_name: legalName.trim() || undefined,
+                client_tax_id: taxId.trim() || undefined,
+                client_email: email.trim() || undefined,
+                client_doc_basis: basis.trim() || undefined,
+              } as any);
+            } finally {
+              setSaving(false);
+            }
+          }}
           className={`px-3 py-2 rounded-xl text-xs font-semibold ${
-            dirty ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-500 cursor-not-allowed"
+            dirty && !saving ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-500 cursor-not-allowed"
           }`}
         >
-          Сохранить
+          {saving ? (
+            <span className="inline-flex items-center gap-2">
+              <Loader2 size={14} className="animate-spin" />
+              Сохранение…
+            </span>
+          ) : (
+            "Сохранить"
+          )}
         </button>
       </div>
 
