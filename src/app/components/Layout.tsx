@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router";
 import { useRole, type UserRole } from "./RoleContext";
+import { prefetchRoute } from "../lib/routePrefetch";
 import {
   LayoutDashboard, MessageSquare, ClipboardList, Wrench, Package,
   Bell, Wind, GraduationCap, ShoppingCart, FileText, Settings,
@@ -100,6 +101,8 @@ export function Layout() {
               <button
                 key={item.path}
                 onClick={() => handleNav(item.path)}
+                onMouseEnter={() => prefetchRoute(item.path)}
+                onFocus={() => prefetchRoute(item.path)}
                 title={collapsed ? item.label : undefined}
                 className={`
                   w-full flex items-center gap-3 rounded-xl transition-all text-sm
