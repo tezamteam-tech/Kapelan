@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useRole } from "./RoleContext";
 import {
   Plus,
@@ -17,10 +16,9 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { ImageUpload } from "./ui/ImageUpload";
+import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
 
-const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
-const AH = { Authorization: `Bearer ${publicAnonKey}` };
-const JH = { ...AH, "Content-Type": "application/json" };
+const API = API_BASE;
 
 type OrderStatus =
   | "new"
@@ -226,10 +224,12 @@ export function OrdersView() {
     setTimeout(() => setToast(null), 3200);
   }, []);
 
-  const loadWarehouseEquipment = useCallback(async () => {
+  const loadWarehouseEquipment = useCallback(async (opts?: { force?: boolean }) => {
     try {
-      const res = await fetch(`${API}/warehouse`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<{ items?: WarehouseItem[] }>(`${API}/warehouse`, {
+        ttlMs: 2 * 60_000,
+        force: opts?.force,
+      });
       const items: WarehouseItem[] = data.items ?? [];
       const eq = items.filter((i) => i.itemType === "equipment");
       setWarehouseEq(eq);
@@ -240,10 +240,9 @@ export function OrdersView() {
     } catch {}
   }, []);
 
-  const loadInstallers = useCallback(async () => {
+  const loadInstallers = useCallback(async (opts?: { force?: boolean }) => {
     try {
-      const res = await fetch(`${API}/installers`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/installers`, { ttlMs: 5 * 60_000, force: opts?.force });
       const list = (data.installers ?? data.items ?? data.data ?? []) as Array<any>;
       const normalized = list
         .map((i) => ({ id: String(i.id ?? i.name ?? ""), name: String(i.name ?? "") }))
@@ -252,11 +251,10 @@ export function OrdersView() {
     } catch {}
   }, []);
 
-  const loadOrders = useCallback(async () => {
+  const loadOrders = useCallback(async (opts?: { force?: boolean }) => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/orders`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<{ orders?: Order[] }>(`${API}/orders`, { ttlMs: 30_000, force: opts?.force });
       setOrders(data.orders ?? []);
     } catch {
       showToast("Ошибка загрузки ордеров", false);
@@ -269,8 +267,7 @@ export function OrdersView() {
     async (id: string) => {
       setLoading(true);
       try {
-        const res = await fetch(`${API}/orders/${id}`, { headers: AH });
-        const data = await res.json();
+        const data = await getJson<any>(`${API}/orders/${id}`, { ttlMs: 20_000 });
         if (data.error) throw new Error(data.error);
         setSelected(data.order);
         setMaterials(data.materials ?? []);
@@ -413,6 +410,7 @@ export function OrdersView() {
       if (data.error) throw new Error(data.error);
       const ord: Order = data.order;
       setOrders((prev) => [ord, ...prev]);
+      invalidateUrlPrefix(`${API}/orders`);
       setCreateOpen(false);
       setSelectedId(ord.id);
       showToast("Ордер создан");
