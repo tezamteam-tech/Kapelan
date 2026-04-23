@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { FileText, Loader2, RefreshCw, Search, Download, CheckCircle2, Plus, Trash2 } from "lucide-react";
+import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
 
-const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
-const AH = { Authorization: `Bearer ${publicAnonKey}` };
-const JH = { ...AH, "Content-Type": "application/json" };
+const API = API_BASE;
 
 type OrderStatus =
   | "new"
@@ -78,13 +76,12 @@ export function OrderDocumentsBuilder() {
     setTimeout(() => setToast(null), 3200);
   }, []);
 
-  const loadOrders = useCallback(async () => {
+  const loadOrders = useCallback(async (opts?: { force?: boolean }) => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/orders`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<{ orders?: Order[] }>(`${API}/orders`, { ttlMs: 30_000, force: opts?.force });
       setOrders(data.orders ?? []);
-      if (!selectedId && (data.orders?.[0]?.id ?? "")) setSelectedId(data.orders[0].id);
+      if (!selectedId && (data.orders?.[0]?.id ?? "")) setSelectedId(data.orders?.[0]?.id ?? "");
     } catch (e: any) {
       showToast(e?.message || "Ошибка загрузки ордеров", false);
     } finally {
@@ -165,6 +162,7 @@ export function OrderDocumentsBuilder() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      invalidateUrlPrefix(`${API}/orders`);
       showToast("Данные ордера сохранены");
     } catch (e: any) {
       showToast(e?.message || "Ошибка сохранения", false);
@@ -274,7 +272,7 @@ export function OrderDocumentsBuilder() {
           </div>
         </div>
         <button
-          onClick={loadOrders}
+          onClick={() => loadOrders({ force: true })}
           disabled={loading}
           className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2"
         >
