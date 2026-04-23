@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "../../../utils/supabase/info";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { useRole } from "./RoleContext";
 import { useCurrency } from "./CurrencyContext";
+import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
 import {
   Plus, Search, X, RefreshCw, Loader2, Calendar, User, MapPin,
   Phone, Clock, ClipboardCheck, CheckCircle2, XCircle, Ruler,
@@ -12,9 +12,7 @@ import {
   Check, TriangleAlert
 } from "lucide-react";
 
-const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
-const AH  = { Authorization: `Bearer ${publicAnonKey}` };
-const JH  = { ...AH, "Content-Type": "application/json" };
+const API = API_BASE;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type MeasurementStatus =
@@ -87,11 +85,13 @@ export function MeasurementOrdersView() {
   const [form, setForm] = useState<Partial<MeasurementOrder>>({});
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { force?: boolean }) => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/measurement-orders`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<{ orders?: MeasurementOrder[] }>(`${API}/measurement-orders`, {
+        ttlMs: 30_000,
+        force: opts?.force,
+      });
       if (data.orders) setOrders(data.orders);
     } catch { show("Ошибка загрузки", false); }
     finally { setLoading(false); }
@@ -99,14 +99,16 @@ export function MeasurementOrdersView() {
 
   useEffect(() => { load(); }, [load]);
 
-  const filtered = orders.filter(o => {
+  const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    const matchSearch = !q || o.clientName.toLowerCase().includes(q)
-      || o.clientPhone.includes(q) || o.clientAddress.toLowerCase().includes(q)
-      || o.assignedInstaller.toLowerCase().includes(q);
-    const matchStatus = filterStatus === "all" || o.status === filterStatus;
-    return matchSearch && matchStatus;
-  });
+    return orders.filter(o => {
+      const matchSearch = !q || o.clientName.toLowerCase().includes(q)
+        || o.clientPhone.includes(q) || o.clientAddress.toLowerCase().includes(q)
+        || o.assignedInstaller.toLowerCase().includes(q);
+      const matchStatus = filterStatus === "all" || o.status === filterStatus;
+      return matchSearch && matchStatus;
+    });
+  }, [orders, search, filterStatus]);
 
   // ── Status change ─────────────────────────────────────────────────────────────
   async function changeStatus(order: MeasurementOrder, newStatus: MeasurementStatus) {
@@ -118,6 +120,7 @@ export function MeasurementOrdersView() {
       if (data.error) { show(data.error, false); return; }
       setOrders(prev => prev.map(o => o.id === order.id ? data.order : o));
       setSelectedOrder(data.order);
+      invalidateUrlPrefix(`${API}/measurement-orders`);
       show(`✅ Статус изменён: ${STATUS_CFG[newStatus].label}`);
     } catch (e: any) { show(e.message, false); }
   }
@@ -137,6 +140,7 @@ export function MeasurementOrdersView() {
       const data = await res.json();
       if (data.error) { show(data.error, false); return; }
       setOrders(prev => [data.order, ...prev]);
+      invalidateUrlPrefix(`${API}/measurement-orders`);
       setMode("list");
       setForm({});
       show("📐 Ордер на замер создан!");
@@ -162,6 +166,7 @@ export function MeasurementOrdersView() {
       if (data.error) { show(data.error, false); return; }
       setOrders(prev => prev.map(o => o.id === selectedOrder.id ? data.order : o));
       setSelectedOrder(data.order);
+      invalidateUrlPrefix(`${API}/measurement-orders`);
       setMode("list");
       show("✅ Замер сохранён! Ожидает формирования КП.");
     } catch (e: any) { show(e.message, false); }
@@ -185,6 +190,7 @@ export function MeasurementOrdersView() {
       if (data.error) { show(data.error, false); return; }
       setOrders(prev => prev.map(o => o.id === selectedOrder.id ? data.order : o));
       setSelectedOrder(data.order);
+      invalidateUrlPrefix(`${API}/measurement-orders`);
       setMode("list");
       show("📄 КП сформировано и отправлено клиенту!");
     } catch (e: any) { show(e.message, false); }
@@ -198,6 +204,7 @@ export function MeasurementOrdersView() {
       await fetch(`${API}/measurement-orders/${id}`, { method: "DELETE", headers: AH });
       setOrders(prev => prev.filter(o => o.id !== id));
       if (selectedOrder?.id === id) { setSelectedOrder(null); setMode("list"); }
+      invalidateUrlPrefix(`${API}/measurement-orders`);
       show("🗑️ Ордер удалён");
     } catch (e: any) { show(e.message, false); }
   }
