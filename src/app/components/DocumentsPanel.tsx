@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
+import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
 
-const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
-const AH = { Authorization: `Bearer ${publicAnonKey}` };
-const JH = { ...AH, "Content-Type": "application/json" };
+const API = API_BASE;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface DocumentRecord {
@@ -77,8 +75,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
   const fetchDocuments = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/documents/lead/${leadId}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<{ documents?: DocumentRecord[] }>(`${API}/documents/lead/${leadId}`, { ttlMs: 30_000 });
       if (data.documents) setDocuments(data.documents);
     } catch (err) { console.error("Fetch documents error:", err); }
     finally { setLoading(false); }
@@ -86,8 +83,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
 
   const fetchCompany = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/company-config`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<{ config?: CompanyConfig }>(`${API}/company-config`, { ttlMs: 5 * 60_000 });
       if (data.config) setCompany(data.config);
     } catch (err) { console.error("Fetch company error:", err); }
   }, []);
@@ -106,7 +102,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
     if (!selectedOfferId) { showToast("Выберите КП", false); return; }
     setGenerating(true);
     try {
-      const res = await fetch(`${API_BASE}/documents/generate`, {
+      const res = await fetch(`${API}/documents/generate`, {
         method: "POST",
         headers: JH,
         body: JSON.stringify({
@@ -119,6 +115,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
       const data = await res.json();
       if (data.document) {
         setDocuments(prev => [data.document, ...prev]);
+        invalidateUrlPrefix(`${API}/documents/lead/${leadId}`);
         setShowForm(false);
         showToast("📄 Документы сформированы и сохранены!");
       } else {
@@ -132,9 +129,13 @@ export function DocumentsPanel({ leadId, offers }: Props) {
   async function saveCompany() {
     setSavingCompany(true);
     try {
-      const res = await fetch(`${API_BASE}/company-config`, { method: "POST", headers: JH, body: JSON.stringify(company) });
+      const res = await fetch(`${API}/company-config`, { method: "POST", headers: JH, body: JSON.stringify(company) });
       const data = await res.json();
-      if (data.success) { setShowCompanyForm(false); showToast("Реквизиты сохранены ✅"); }
+      if (data.success) {
+        invalidateUrlPrefix(`${API}/company-config`);
+        setShowCompanyForm(false);
+        showToast("Реквизиты сохранены ✅");
+      }
       else showToast(data.error || "Ошибка", false);
     } catch (err: any) { showToast(`Ошибка: ${err.message}`, false); }
     finally { setSavingCompany(false); }
