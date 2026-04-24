@@ -23,6 +23,7 @@ type Client = {
   tax_id?: string;
   address?: string;
   notes?: string;
+  doc_basis?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -55,6 +56,7 @@ export function ClientsPage() {
   const [eTaxId, setETaxId] = useState("");
   const [eAddress, setEAddress] = useState("");
   const [eNotes, setENotes] = useState("");
+  const [eBasis, setEBasis] = useState("");
 
   const showToast = useCallback((msg: string, ok = true) => {
     setToast({ ok, msg });
@@ -154,6 +156,7 @@ export function ClientsPage() {
     setETaxId(selectedClient.tax_id ?? "");
     setEAddress(selectedClient.address ?? "");
     setENotes(selectedClient.notes ?? "");
+    setEBasis(selectedClient.doc_basis ?? "");
   }, [selectedClient?.id]);
 
   const dirty = useMemo(() => {
@@ -166,9 +169,10 @@ export function ClientsPage() {
       (eLegalName.trim() || "") !== String(selectedClient.legal_name ?? "") ||
       (eTaxId.trim() || "") !== String(selectedClient.tax_id ?? "") ||
       (eAddress.trim() || "") !== String(selectedClient.address ?? "") ||
-      (eNotes.trim() || "") !== String(selectedClient.notes ?? "")
+      (eNotes.trim() || "") !== String(selectedClient.notes ?? "") ||
+      (eBasis.trim() || "") !== String(selectedClient.doc_basis ?? "")
     );
-  }, [eAddress, eEmail, eLegalName, eName, eNotes, ePhone, eTaxId, eType, selectedClient]);
+  }, [eAddress, eBasis, eEmail, eLegalName, eName, eNotes, ePhone, eTaxId, eType, selectedClient]);
 
   const saveClient = useCallback(async () => {
     if (!selectedClient) return;
@@ -187,6 +191,7 @@ export function ClientsPage() {
           tax_id: eTaxId.trim(),
           address: eAddress.trim(),
           notes: eNotes.trim(),
+          doc_basis: eBasis.trim(),
         }),
       });
       const d = await res.json().catch(() => ({}));
@@ -200,7 +205,7 @@ export function ClientsPage() {
     } finally {
       setSaving(false);
     }
-  }, [eAddress, eEmail, eLegalName, eName, eNotes, ePhone, eTaxId, eType, saving, selectedClient, showToast]);
+  }, [eAddress, eBasis, eEmail, eLegalName, eName, eNotes, ePhone, eTaxId, eType, saving, selectedClient, showToast]);
 
   return (
     <div className="h-full bg-slate-50 overflow-hidden flex flex-col">
@@ -301,6 +306,13 @@ export function ClientsPage() {
             </div>
             {selectedClient ? (
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => navigate(`/orders?fromClient=${encodeURIComponent(selectedClient.id)}`)}
+                  className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold active:scale-95"
+                  title="Создать новый ордер по этому клиенту"
+                >
+                  <Plus size={16} /> Новый ордер
+                </button>
                 <button
                   onClick={() => navigate(`/orders?clientId=${encodeURIComponent(selectedClient.id)}`)}
                   className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold active:scale-95"
@@ -420,6 +432,10 @@ export function ClientsPage() {
                       <input value={eTaxId} onChange={(e) => setETaxId(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" placeholder="—" />
                     </label>
                     <div />
+                    <label className="block md:col-span-2">
+                      <span className="text-xs font-semibold text-slate-500">Основание (договор/счет)</span>
+                      <input value={eBasis} onChange={(e) => setEBasis(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" placeholder="—" />
+                    </label>
                     <label className="block md:col-span-2">
                       <span className="text-xs font-semibold text-slate-500">Примечания</span>
                       <textarea value={eNotes} onChange={(e) => setENotes(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm min-h-[90px]" placeholder="—" />
