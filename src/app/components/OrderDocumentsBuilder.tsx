@@ -264,10 +264,48 @@ export function OrderDocumentsBuilder() {
     }
   }, [company]);
 
-  type DocItem = { name: string; qty: number; unit: string; price: number };
+  type DocItem = { name: string; qty: number; unit: string; price: number; imageUrl?: string; warehouse_item_id?: string };
   type WorkStage = { title: string; amount: number };
   const [items, setItems] = useState<DocItem[]>([]);
   const [stages, setStages] = useState<WorkStage[]>([]);
+  const [includeImages, setIncludeImages] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("doc.includeImages.v1") === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("doc.includeImages.v1", includeImages ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [includeImages]);
+
+  const [warehouseMap, setWarehouseMap] = useState<Record<string, any>>({});
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await getJson<{ items?: any[] }>(`${API}/warehouse`, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000, swr: true });
+        if (!alive) return;
+        const m: Record<string, any> = {};
+        for (const it of (data.items ?? [])) {
+          if (!it?.id) continue;
+          m[String(it.id)] = it;
+        }
+        setWarehouseMap(m);
+      } catch {
+        if (!alive) return;
+        setWarehouseMap({});
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!selected) return;
@@ -278,6 +316,8 @@ export function OrderDocumentsBuilder() {
         qty: Number(l?.qty ?? 0),
         unit: String(l?.unit ?? ""),
         price: Number(l?.price ?? 0),
+        warehouse_item_id: l?.warehouse_item_id ? String(l.warehouse_item_id) : undefined,
+        imageUrl: l?.warehouse_item_id ? String(warehouseMap?.[String(l.warehouse_item_id)]?.imageUrl ?? "") : undefined,
       }))
       .filter((i: any) => i.name);
     setItems(baseItems.length ? baseItems : [{ name: "", qty: 1, unit: "шт", price: 0 }]);
@@ -289,7 +329,7 @@ export function OrderDocumentsBuilder() {
     setFormat("pdf");
     setDocTitle("");
     setDocDate(new Date().toISOString().slice(0, 10));
-  }, [selected?.id]);
+  }, [selected?.id, warehouseMap]);
 
   const getDefaultTemplate = useCallback((t: "offer" | "contract" | "act", isLegal: boolean) => {
     if (t === "offer") {
@@ -453,8 +493,12 @@ export function OrderDocumentsBuilder() {
       .filter((i) => i.name.trim())
       .map((i, idx) => {
         const rowTotal = (Number(i.price) || 0) * (Number(i.qty) || 0);
+        const img = (includeImages ? String(i.imageUrl ?? "").trim() : "");
         return `<tr>
   <td style="border:1px solid #e5e7eb;padding:6px;">${idx + 1}</td>
+  ${includeImages ? `<td style="border:1px solid #e5e7eb;padding:6px;">
+    ${img ? `<img src="${escapeHtml(img)}" style="width:64px;height:48px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;" />` : `<span style="color:#94a3b8;font-size:11px;">—</span>`}
+  </td>` : ""}
   <td style="border:1px solid #e5e7eb;padding:6px;">${escapeHtml(i.name)}</td>
   <td style="border:1px solid #e5e7eb;padding:6px;text-align:right;">${Number(i.qty) || 0}</td>
   <td style="border:1px solid #e5e7eb;padding:6px;">${escapeHtml(i.unit)}</td>
@@ -491,6 +535,7 @@ ${stages
   <thead>
     <tr>
       <th style="border:1px solid #e5e7eb;padding:6px;text-align:left;width:36px;">№</th>
+      ${includeImages ? `<th style="border:1px solid #e5e7eb;padding:6px;text-align:left;width:72px;">Фото</th>` : ""}
       <th style="border:1px solid #e5e7eb;padding:6px;text-align:left;">Позиция</th>
       <th style="border:1px solid #e5e7eb;padding:6px;text-align:right;width:60px;">Кол-во</th>
       <th style="border:1px solid #e5e7eb;padding:6px;text-align:left;width:60px;">Ед.</th>
@@ -499,7 +544,7 @@ ${stages
     </tr>
   </thead>
   <tbody>
-    ${rows || `<tr><td colspan="6" style="border:1px solid #e5e7eb;padding:10px;color:#64748b;">— (нет позиций)</td></tr>`}
+    ${rows || `<tr><td colspan="${includeImages ? 7 : 6}" style="border:1px solid #e5e7eb;padding:10px;color:#64748b;">— (нет позиций)</td></tr>`}
   </tbody>
 </table>`;
 
@@ -562,7 +607,7 @@ ${stages
 </body></html>`;
 
     setPreviewHtml(html);
-  }, [selected?.id, docType, docTitle, docDate, items, stages, docNotes, docNotesHtml, docBodyHtml, company, escapeHtml, totalItems, totalStages, total]);
+  }, [selected?.id, docType, docTitle, docDate, items, stages, docNotes, docNotesHtml, docBodyHtml, company, escapeHtml, totalItems, totalStages, total, includeImages]);
 
   async function renderAndDownload() {
     if (!selected) return;
@@ -579,9 +624,17 @@ ${stages
       const payload = {
         docType,
         format,
+        includeImages,
         title,
         date,
-        items: items.filter((i) => i.name.trim()).map((i) => ({ ...i, qty: Number(i.qty) || 0, price: Number(i.price) || 0 })),
+        items: items
+          .filter((i) => i.name.trim())
+          .map((i) => ({
+            ...i,
+            qty: Number(i.qty) || 0,
+            price: Number(i.price) || 0,
+            imageUrl: i.imageUrl ? String(i.imageUrl) : undefined,
+          })),
         workStages: stages.filter((s) => s.title.trim()).map((s) => ({ ...s, amount: Number(s.amount) || 0 })),
         notes: docNotes.trim(),
         notesHtml: docNotesHtml || "",
@@ -745,6 +798,21 @@ ${stages
                       <option value="doc">DOC</option>
                     </select>
                   </label>
+                </div>
+
+                <div className="mt-3">
+                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 select-none">
+                    <input
+                      type="checkbox"
+                      checked={includeImages}
+                      onChange={(e) => setIncludeImages(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300"
+                    />
+                    Включать фото оборудования в таблицу КП/акта
+                  </label>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Фото берутся из карточек склада (поле <b>imageUrl</b>). Если фото нет — в таблице будет “—”.
+                  </p>
                 </div>
 
                 <div className="mt-4 bg-slate-50 border border-slate-200 rounded-2xl p-3">
