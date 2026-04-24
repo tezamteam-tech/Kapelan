@@ -299,14 +299,16 @@ export function OrdersView() {
         force: opts?.force,
       });
       const items: WarehouseItem[] = data.items ?? [];
-      const eq = items.filter((i) => i.itemType === "equipment");
+      const eq = items.filter((i) => String(i.itemType ?? "").toLowerCase() === "equipment");
       setWarehouseEq(eq);
       setWarehouseMap(items.reduce((acc, it) => {
         acc[it.id] = it;
         return acc;
       }, {} as Record<string, WarehouseItem>));
-    } catch {}
-  }, []);
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось загрузить склад", false);
+    }
+  }, [showToast]);
 
   const loadInstallers = useCallback(async (opts?: { force?: boolean }) => {
     try {
