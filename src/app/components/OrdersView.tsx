@@ -1942,6 +1942,20 @@ function CreateOrderModal({
     return m;
   }, [warehouseEq]);
 
+  type EquipmentModelLite = {
+    id: string;
+    type?: string;
+    brand?: string;
+    model?: string;
+    price?: number;
+    warranty?: number;
+    imageUrl?: string;
+    warehouseItemId?: string;
+    active?: boolean;
+  };
+  const [catalogEq, setCatalogEq] = useState<EquipmentModelLite[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+
   const [eqLines, setEqLines] = useState<Array<{ id: string; qty: number }>>([{ id: "", qty: 1 }]);
   const [traceLen, setTraceLen] = useState<number>(4);
 
@@ -1969,6 +1983,30 @@ function CreateOrderModal({
       }
     })();
   }, []);
+
+  useEffect(() => {
+    // If warehouse has no equipment items, fallback to equipment catalog (KV module).
+    if (warehouseEq.length > 0) return;
+    let alive = true;
+    (async () => {
+      setCatalogLoading(true);
+      try {
+        const data = await getJson<{ equipment?: EquipmentModelLite[] }>(`${API}/equipment`, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000, swr: true });
+        if (!alive) return;
+        const list = Array.isArray(data.equipment) ? data.equipment : [];
+        setCatalogEq(list.filter((e) => e && e.active !== false));
+      } catch {
+        if (!alive) return;
+        setCatalogEq([]);
+      } finally {
+        if (!alive) return;
+        setCatalogLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [warehouseEq.length]);
 
   const filteredClients = useMemo(() => {
     const qq = clientQ.trim().toLowerCase();
@@ -2148,12 +2186,24 @@ function CreateOrderModal({
                           onChange={(e) => setEqLines((p) => p.map((x, i) => (i === idx ? { ...x, id: e.target.value } : x)))}
                           className={`col-span-12 md:col-span-9 ${inputCls}`}
                         >
-                          <option value="">{warehouseEq.length ? "— выбрать оборудование —" : "— нет оборудования на складе —"}</option>
-                          {warehouseEq.map((i) => (
-                            <option key={i.id} value={i.id}>
-                              {i.name} (stock: {i.stock})
-                            </option>
-                          ))}
+                          <option value="">
+                            {warehouseEq.length
+                              ? "— выбрать оборудование —"
+                              : (catalogLoading ? "— загрузка каталога… —" : (catalogEq.length ? "— выбрать из каталога —" : "— нет оборудования —"))}
+                          </option>
+                          {warehouseEq.length > 0 ? (
+                            warehouseEq.map((i) => (
+                              <option key={i.id} value={i.id}>
+                                {i.name} (stock: {i.stock})
+                              </option>
+                            ))
+                          ) : (
+                            catalogEq.map((m) => (
+                              <option key={m.id} value={`cat:${m.id}`}>
+                                {(m.brand || "").trim()} {(m.model || "").trim()} {m.type ? `· ${m.type}` : ""}{typeof m.price === "number" ? ` · ${m.price}` : ""}
+                              </option>
+                            ))
+                          )}
                         </select>
                         <input
                           type="number"
@@ -2181,7 +2231,8 @@ function CreateOrderModal({
                     </button>
                     {warehouseEq.length === 0 ? (
                       <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-                        На складе нет позиций с типом <b>equipment</b>. Добавь кондиционеры в «Склад» как тип <b>Оборудование</b>, и они появятся здесь.
+                        В “Склад” пока не подтянулось оборудование с типом <b>equipment</b>. Поэтому показываю <b>каталог оборудования</b>. При выборе модели,
+                        если она ещё не связана со складом — система автоматически создаст складскую позицию “Оборудование” (остаток 0) и привяжет ордер к ней.
                       </div>
                     ) : null}
                   </div>
@@ -2211,7 +2262,71 @@ function CreateOrderModal({
             ) : (
               <button
                 disabled={!canCreate || Boolean(creating)}
-                onClick={() =>
+                onClick={async () => {
+                  // Resolve selected equipment lines:
+                  // - warehouse id: keep
+                  // - cat:<id>: use linked warehouseItemId or create a warehouse equipment item on the fly
+                  const resolveEquipmentWarehouseId = async (rawId: string): Promise<{ warehouseId: string; fallback?: { name: string; unit: string; price: number } } | null> => {
+                    const v = String(rawId || "");
+                    if (!v) return null;
+                    if (!v.startsWith("cat:")) return { warehouseId: v };
+                    const catId = v.slice(4);
+                    const model = catalogEq.find((x) => String(x.id) === catId) ?? null;
+                    if (!model) return null;
+                    const linked = (model.warehouseItemId ?? "").trim();
+                    if (linked) {
+                      return {
+                        warehouseId: linked,
+                        fallback: {
+                          name: `${(model.brand ?? "").trim()} ${(model.model ?? "").trim()}`.trim() || linked,
+                          unit: "шт",
+                          price: Number(model.price ?? 0),
+                        },
+                      };
+                    }
+
+                    // Create a warehouse item for this equipment model (stock=0).
+                    const name = `${(model.brand ?? "").trim()} ${(model.model ?? "").trim()}`.trim() || `Оборудование ${catId}`;
+                    const res = await fetch(`${API}/warehouse`, {
+                      method: "POST",
+                      headers: JH,
+                      body: JSON.stringify({
+                        name,
+                        category: "Оборудование",
+                        unit: "шт",
+                        stock: 0,
+                        price: Number(model.price ?? 0),
+                        itemType: "equipment",
+                        imageUrl: model.imageUrl ?? null,
+                        // helps order_core.tsx infer BOM via equipmentId
+                        acSpecs: { equipmentId: catId, equipmentType: model.type ?? "any" },
+                      }),
+                    });
+                    const d = await res.json().catch(() => ({}));
+                    if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+                    const created: WarehouseItem | undefined = d.item;
+                    const wid = String(created?.id ?? "");
+                    if (!wid) throw new Error("Не удалось создать складскую позицию для оборудования");
+                    return { warehouseId: wid, fallback: { name, unit: "шт", price: Number(model.price ?? 0) } };
+                  };
+
+                  let resolved: Array<{ rawId: string; qty: number; warehouseId: string; fallback?: { name: string; unit: string; price: number } }> = [];
+                  try {
+                    const parts = await Promise.all(
+                      eqLines
+                        .filter((x) => x.id)
+                        .map(async (x) => {
+                          const r = await resolveEquipmentWarehouseId(x.id);
+                          if (!r) return null;
+                          return { rawId: x.id, qty: Number(x.qty) || 1, warehouseId: r.warehouseId, fallback: r.fallback };
+                        }),
+                    );
+                    resolved = parts.filter(Boolean) as any;
+                  } catch (e: any) {
+                    alert(e?.message || "Не удалось подготовить оборудование");
+                    return;
+                  }
+
                   onCreate({
                     client_id: selClient?.id,
                     client_name: selClient?.name ?? "",
@@ -2221,27 +2336,28 @@ function CreateOrderModal({
                     client_tax_id: selClient?.tax_id ? String(selClient.tax_id) : undefined,
                     client_email: selClient?.email ? String(selClient.email) : undefined,
                     client_doc_basis: selClient?.doc_basis ? String(selClient.doc_basis) : undefined,
-                    equipment_warehouse_id: eqLines.find((x) => x.id)?.id || undefined,
+                    equipment_warehouse_id: resolved.find((x) => x.warehouseId)?.warehouseId || undefined,
                     trace_length_m: traceLen,
                     offer: (() => {
-                      const lines = eqLines
-                        .filter((x) => x.id)
+                      const lines = resolved
+                        .filter((x) => x.warehouseId)
                         .map((x) => {
-                          const it = eqMap[x.id];
+                          const it = eqMap[x.warehouseId];
+                          const fb = x.fallback;
                           return {
                             line_type: "equipment",
-                            warehouse_item_id: x.id,
-                            name: it?.name ?? x.id,
+                            warehouse_item_id: x.warehouseId,
+                            name: it?.name ?? fb?.name ?? x.warehouseId,
                             qty: Number(x.qty) || 1,
-                            unit: it?.unit ?? "шт",
-                            price: it?.price ?? 0,
+                            unit: it?.unit ?? fb?.unit ?? "шт",
+                            price: it?.price ?? fb?.price ?? 0,
                           };
                         });
                       if (!lines.length) return undefined;
                       return { version: 1, status: "draft", currency: "UAH", lines };
                     })(),
-                  })
-                }
+                  });
+                }}
                 className={`px-4 py-2 rounded-xl font-semibold text-white ${canCreate && !creating ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"}`}
               >
                 {creating ? (
