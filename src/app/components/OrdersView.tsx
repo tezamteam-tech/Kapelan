@@ -212,6 +212,19 @@ export function OrdersView() {
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [warehouseEq, setWarehouseEq] = useState<WarehouseItem[]>([]);
   const [warehouseMap, setWarehouseMap] = useState<Record<string, WarehouseItem>>({});
+  type EquipmentModelLite = {
+    id: string;
+    type?: string;
+    brand?: string;
+    model?: string;
+    price?: number;
+    warranty?: number;
+    imageUrl?: string;
+    warehouseItemId?: string;
+    active?: boolean;
+  };
+  const [catalogEq, setCatalogEq] = useState<EquipmentModelLite[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
   const [installers, setInstallers] = useState<Array<{ id: string; name: string }>>([]);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -220,6 +233,10 @@ export function OrdersView() {
   const [activeStep, setActiveStep] = useState<OrderStepKey>("qualification");
   const [revertingToNew, setRevertingToNew] = useState(false);
   const [statusFlash, setStatusFlash] = useState<{ from: string; to: string } | null>(null);
+  const [orderEqOpen, setOrderEqOpen] = useState(false);
+  const [orderEqSaving, setOrderEqSaving] = useState(false);
+  const [orderEqLines, setOrderEqLines] = useState<Array<{ id: string; qty: number }>>([{ id: "", qty: 1 }]);
+  const [qualOfferOpen, setQualOfferOpen] = useState(false);
   const [createPrefill, setCreatePrefill] = useState<{
     client_id?: string;
     client_name?: string;
@@ -279,6 +296,47 @@ export function OrdersView() {
     if (!selected) return;
     setActiveStep(stepForStatus(selected.status));
   }, [selected?.id, selected?.status]);
+
+  useEffect(() => {
+    // Equipment catalog is the source of truth for equipment selection.
+    let alive = true;
+    (async () => {
+      setCatalogLoading(true);
+      try {
+        const data = await getJson<{ equipment?: EquipmentModelLite[] }>(`${API}/equipment`, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000, swr: true });
+        if (!alive) return;
+        const list = Array.isArray(data.equipment) ? data.equipment : [];
+        setCatalogEq(list.filter((e) => e && e.active !== false));
+      } catch {
+        if (!alive) return;
+        setCatalogEq([]);
+      } finally {
+        if (!alive) return;
+        setCatalogLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    // Seed editor from existing offer equipment lines, else from equipment_warehouse_id.
+    const fromOffer = (selected.offer?.lines ?? []).filter((l: any) => l?.line_type === "equipment" && l?.warehouse_item_id);
+    const base = fromOffer.length
+      ? fromOffer.map((l: any) => ({ wid: String(l.warehouse_item_id), qty: Number(l.qty ?? 1) || 1 }))
+      : (selected.equipment_warehouse_id ? [{ wid: String(selected.equipment_warehouse_id), qty: 1 }] : []);
+
+    const seeded = base.map((x) => {
+      const eqId = (warehouseMap?.[x.wid] as any)?.acSpecs?.equipmentId ? String((warehouseMap[x.wid] as any).acSpecs.equipmentId) : "";
+      return { id: eqId ? `cat:${eqId}` : x.wid, qty: x.qty };
+    });
+    setOrderEqLines(seeded.length ? seeded : [{ id: "", qty: 1 }]);
+    setOrderEqOpen(false);
+    setOrderEqSaving(false);
+    setQualOfferOpen(false);
+  }, [selected?.id, selected?.offer?.lines, selected?.equipment_warehouse_id, warehouseMap]);
 
   const showToast = useCallback((msg: string, ok = true) => {
     setToast({ ok, msg });
@@ -1375,6 +1433,240 @@ export function OrdersView() {
                   </button>
                 )}
               </div>
+
+              {(role === "admin" || role === "manager") && (
+                <div className="mt-4 border border-slate-200 rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Оборудование</p>
+                      <p className="text-sm font-black text-slate-900 mt-0.5 truncate">
+                        {(selected.offer?.lines ?? []).some((l: any) => l?.line_type === "equipment")
+                          ? "В ордере есть оборудование"
+                          : (selected.equipment_warehouse_id ? "Выбрано оборудование" : "Оборудование не выбрано")}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setOrderEqOpen((v) => !v)}
+                      className="px-3 py-2 rounded-xl border border-slate-200 text-slate-700 bg-white hover:bg-slate-50 text-xs font-semibold"
+                    >
+                      {orderEqOpen ? "Скрыть" : "+ Добавить / изменить"}
+                    </button>
+                  </div>
+
+                  {orderEqOpen && (
+                    <div className="p-4 space-y-3">
+                      <div className="text-[11px] text-slate-500">
+                        Выбор из каталога «Оборудование». Кол-во влияет на КП и на обеспечение (материалы/закупки).
+                      </div>
+
+                      <div className="space-y-2">
+                        {orderEqLines.map((ln, idx) => {
+                          const cur = String(ln.id || "");
+                          const isCat = cur.startsWith("cat:");
+                          const catId = isCat ? cur.slice(4) : "";
+                          const model = isCat ? (catalogEq.find((m) => String(m.id) === catId) ?? null) : null;
+                          const wid = !isCat && cur ? cur : (model?.warehouseItemId ?? "");
+                          const whName = wid && warehouseMap[wid] ? warehouseMap[wid].name : "";
+                          const showExtraCurrent = cur && !isCat && !catalogEq.some((m) => `cat:${m.id}` === cur);
+
+                          return (
+                            <div key={idx} className="grid grid-cols-12 gap-2">
+                              <select
+                                value={ln.id}
+                                onChange={(e) => setOrderEqLines((p) => p.map((x, i) => (i === idx ? { ...x, id: e.target.value } : x)))}
+                                className={`col-span-12 md:col-span-9 ${inputCls}`}
+                              >
+                                <option value="">
+                                  {catalogLoading ? "— загрузка каталога… —" : (catalogEq.length ? "— выбрать оборудование —" : "— каталог пуст —")}
+                                </option>
+                                {showExtraCurrent ? (
+                                  <option value={cur}>
+                                    {whName ? `Склад: ${whName}` : `Склад: ${cur}`}
+                                  </option>
+                                ) : null}
+                                {catalogEq.map((m) => (
+                                  <option key={m.id} value={`cat:${m.id}`}>
+                                    {(m.brand || "").trim()} {(m.model || "").trim()} {m.type ? `· ${m.type}` : ""}{typeof m.price === "number" ? ` · ${m.price}` : ""}{m.warehouseItemId ? " · склад: связан" : ""}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="number"
+                                min={1}
+                                value={ln.qty}
+                                onChange={(e) => setOrderEqLines((p) => p.map((x, i) => (i === idx ? { ...x, qty: Math.max(1, Number(e.target.value) || 1) } : x)))}
+                                className={`col-span-6 md:col-span-2 ${inputCls}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setOrderEqLines((p) => p.filter((_, i) => i !== idx))}
+                                className="col-span-6 md:col-span-1 px-3 py-2 rounded-xl border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 text-xs font-bold"
+                                title="Удалить строку"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          );
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => setOrderEqLines((p) => [...p, { id: "", qty: 1 }])}
+                          className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          + Добавить оборудование
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOrderEqOpen(false);
+                          }}
+                          className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50"
+                        >
+                          Отмена
+                        </button>
+                        <button
+                          type="button"
+                          disabled={orderEqSaving || orderEqLines.filter((x) => x.id).length === 0}
+                          onClick={async () => {
+                            if (!selected) return;
+                            if (orderEqSaving) return;
+                            setOrderEqSaving(true);
+                            try {
+                              const resolveEquipmentWarehouseId = async (rawId: string): Promise<{ warehouseId: string; fallback?: { name: string; unit: string; price: number } } | null> => {
+                                const v = String(rawId || "");
+                                if (!v) return null;
+                                if (!v.startsWith("cat:")) return { warehouseId: v };
+                                const catId = v.slice(4);
+                                const m = catalogEq.find((x) => String(x.id) === catId) ?? null;
+                                if (!m) return null;
+                                const linked = (m.warehouseItemId ?? "").trim();
+                                const fb = { name: `${(m.brand ?? "").trim()} ${(m.model ?? "").trim()}`.trim() || catId, unit: "шт", price: Number(m.price ?? 0) };
+                                if (linked) return { warehouseId: linked, fallback: fb };
+
+                                const name = fb.name || `Оборудование ${catId}`;
+                                const res = await fetch(`${API}/warehouse`, {
+                                  method: "POST",
+                                  headers: JH,
+                                  body: JSON.stringify({
+                                    name,
+                                    category: "Оборудование",
+                                    unit: "шт",
+                                    stock: 0,
+                                    price: Number(m.price ?? 0),
+                                    itemType: "equipment",
+                                    imageUrl: m.imageUrl ?? null,
+                                    acSpecs: { equipmentId: catId, equipmentType: m.type ?? "any" },
+                                  }),
+                                });
+                                const d = await res.json().catch(() => ({}));
+                                if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+                                const created: WarehouseItem | undefined = d.item;
+                                const wid = String(created?.id ?? "");
+                                if (!wid) throw new Error("Не удалось создать складскую позицию для оборудования");
+
+                                // refresh warehouse snapshot so next UI steps show it immediately
+                                await loadWarehouseEquipment({ force: true });
+
+                                return { warehouseId: wid, fallback: fb };
+                              };
+
+                              const resolved = (await Promise.all(
+                                orderEqLines
+                                  .filter((x) => x.id)
+                                  .map(async (x) => {
+                                    const r = await resolveEquipmentWarehouseId(x.id);
+                                    if (!r) return null;
+                                    return { qty: Number(x.qty) || 1, warehouseId: r.warehouseId, fallback: r.fallback };
+                                  }),
+                              )).filter(Boolean) as Array<{ qty: number; warehouseId: string; fallback?: { name: string; unit: string; price: number } }>;
+
+                              if (resolved.length === 0) {
+                                showToast("Выберите хотя бы одно оборудование", false);
+                                return;
+                              }
+
+                              const prevOffer = selected.offer ?? { version: 1, status: "draft", currency: "UAH", lines: [] as any[] };
+                              const otherLines = (prevOffer.lines ?? []).filter((l: any) => l?.line_type !== "equipment");
+                              const eqLines = resolved.map((x) => {
+                                const it = warehouseMap[x.warehouseId];
+                                return {
+                                  line_type: "equipment",
+                                  warehouse_item_id: x.warehouseId,
+                                  name: it?.name ?? x.fallback?.name ?? x.warehouseId,
+                                  qty: x.qty,
+                                  unit: it?.unit ?? x.fallback?.unit ?? "шт",
+                                  price: it?.price ?? x.fallback?.price ?? 0,
+                                };
+                              });
+
+                              const patch: any = {
+                                equipment_warehouse_id: resolved[0].warehouseId,
+                                offer: {
+                                  ...prevOffer,
+                                  status: prevOffer.status ?? "draft",
+                                  currency: prevOffer.currency ?? "UAH",
+                                  lines: [...otherLines, ...eqLines],
+                                },
+                              };
+
+                              const res = await fetch(`${API}/orders/${selected.id}`, { method: "PATCH", headers: JH, body: JSON.stringify(patch) });
+                              const data = await res.json().catch(() => ({}));
+                              if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+                              setSelected(data.order);
+                              setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+                              invalidateUrlPrefix(`${API}/orders/${selected.id}`);
+                              showToast("Оборудование сохранено");
+                              setOrderEqOpen(false);
+                            } catch (e: any) {
+                              showToast(e?.message || "Не удалось сохранить оборудование", false);
+                            } finally {
+                              setOrderEqSaving(false);
+                            }
+                          }}
+                          className={`px-3 py-2 rounded-xl text-xs font-black text-white ${orderEqSaving ? "bg-slate-400 cursor-not-allowed" : "bg-slate-900 hover:bg-slate-800"}`}
+                        >
+                          {orderEqSaving ? "Сохранение…" : "Сохранить"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(role === "admin" || role === "manager") && adminMode !== "warehouse" && (
+                <div className="mt-3 border border-slate-200 rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3 bg-white border-b border-slate-200 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">КП и позиции</p>
+                      <p className="text-sm font-black text-slate-900 mt-0.5 truncate">
+                        {selected.offer?.lines?.length ? `${selected.offer.lines.length} строк` : "КП не создано"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setQualOfferOpen((v) => !v)}
+                      className="px-3 py-2 rounded-xl border border-slate-200 text-slate-700 bg-slate-50 hover:bg-slate-100 text-xs font-semibold"
+                    >
+                      {qualOfferOpen ? "Скрыть" : "+ Добавить позиции"}
+                    </button>
+                  </div>
+                  {qualOfferOpen && (
+                    <div className="p-4 bg-slate-50">
+                      <OfferEditor
+                        offer={selected.offer}
+                        warehouseMap={warehouseMap}
+                        onCreateDraft={createOfferDraftFromEquipment}
+                        onSaveLines={saveOfferLines}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
               {nextActions.length === 0 ? (
                 <p className="text-sm text-slate-500 mt-1">Нет обязательных действий. Можно планировать/исполнять.</p>
               ) : (
