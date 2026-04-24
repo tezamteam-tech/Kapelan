@@ -2753,7 +2753,7 @@ function AddOfferLineModal({
   onClose: () => void;
   onAdd: (line: NonNullable<Order["offer"]>["lines"][number]) => void;
 }) {
-  const [mode, setMode] = useState<"warehouse" | "service">("warehouse");
+  const [mode, setMode] = useState<"warehouse" | "supplier" | "service">("warehouse");
   const [warehouseId, setWarehouseId] = useState("");
   const [name, setName] = useState("");
   const [qty, setQty] = useState(1);
@@ -2771,7 +2771,7 @@ function AddOfferLineModal({
     setPrice(it.price ?? 0);
   }, [warehouseId, warehouseMap]);
 
-  const canAdd = mode === "warehouse" ? !!warehouseId : name.trim().length > 0;
+  const canAdd = (mode === "warehouse" || mode === "supplier") ? !!warehouseId : name.trim().length > 0;
 
   return (
     <div className="fixed inset-0 z-[90] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
@@ -2794,6 +2794,13 @@ function AddOfferLineModal({
               Со склада
             </button>
             <button
+              onClick={() => setMode("supplier")}
+              className={`px-3 py-2 rounded-xl text-sm font-semibold border ${mode === "supplier" ? "bg-blue-50 border-blue-200 text-blue-700" : "border-slate-200 text-slate-600"}`}
+              title="Позиция есть в каталоге/складе, но будем покупать у поставщика"
+            >
+              У поставщика
+            </button>
+            <button
               onClick={() => setMode("service")}
               className={`px-3 py-2 rounded-xl text-sm font-semibold border ${mode === "service" ? "bg-blue-50 border-blue-200 text-blue-700" : "border-slate-200 text-slate-600"}`}
             >
@@ -2801,7 +2808,7 @@ function AddOfferLineModal({
             </button>
           </div>
 
-          {mode === "warehouse" ? (
+          {mode === "warehouse" || mode === "supplier" ? (
             <Field label="Позиция склада">
               <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} className={inputCls}>
                 <option value="">— выберите позицию —</option>
@@ -2838,7 +2845,7 @@ function AddOfferLineModal({
           <button
             disabled={!canAdd}
             onClick={() => {
-              if (mode === "warehouse") {
+              if (mode === "warehouse" || mode === "supplier") {
                 const it = warehouseMap[warehouseId];
                 if (!it) return;
                 onAdd({
@@ -2848,7 +2855,8 @@ function AddOfferLineModal({
                   qty,
                   unit: it.unit,
                   price,
-                });
+                  ...(mode === "supplier" ? ({ force_supply_source: "supplier" } as any) : {}),
+                } as any);
               } else {
                 onAdd({ line_type: "service", name: name.trim(), qty, unit, price });
               }
