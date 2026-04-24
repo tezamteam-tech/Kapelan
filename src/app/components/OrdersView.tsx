@@ -1985,8 +1985,7 @@ function CreateOrderModal({
   }, []);
 
   useEffect(() => {
-    // If warehouse has no equipment items, fallback to equipment catalog (KV module).
-    if (warehouseEq.length > 0) return;
+    // Real source of truth for equipment selection is the equipment catalog.
     let alive = true;
     (async () => {
       setCatalogLoading(true);
@@ -2006,7 +2005,7 @@ function CreateOrderModal({
     return () => {
       alive = false;
     };
-  }, [warehouseEq.length]);
+  }, []);
 
   const filteredClients = useMemo(() => {
     const qq = clientQ.trim().toLowerCase();
@@ -2187,23 +2186,13 @@ function CreateOrderModal({
                           className={`col-span-12 md:col-span-9 ${inputCls}`}
                         >
                           <option value="">
-                            {warehouseEq.length
-                              ? "— выбрать оборудование —"
-                              : (catalogLoading ? "— загрузка каталога… —" : (catalogEq.length ? "— выбрать из каталога —" : "— нет оборудования —"))}
+                            {catalogLoading ? "— загрузка каталога… —" : (catalogEq.length ? "— выбрать оборудование —" : "— нет оборудования —")}
                           </option>
-                          {warehouseEq.length > 0 ? (
-                            warehouseEq.map((i) => (
-                              <option key={i.id} value={i.id}>
-                                {i.name} (stock: {i.stock})
-                              </option>
-                            ))
-                          ) : (
-                            catalogEq.map((m) => (
-                              <option key={m.id} value={`cat:${m.id}`}>
-                                {(m.brand || "").trim()} {(m.model || "").trim()} {m.type ? `· ${m.type}` : ""}{typeof m.price === "number" ? ` · ${m.price}` : ""}
-                              </option>
-                            ))
-                          )}
+                          {catalogEq.map((m) => (
+                            <option key={m.id} value={`cat:${m.id}`}>
+                              {(m.brand || "").trim()} {(m.model || "").trim()} {m.type ? `· ${m.type}` : ""}{typeof m.price === "number" ? ` · ${m.price}` : ""}{m.warehouseItemId ? " · склад: связан" : ""}
+                            </option>
+                          ))}
                         </select>
                         <input
                           type="number"
@@ -2229,10 +2218,11 @@ function CreateOrderModal({
                     >
                       + Добавить оборудование
                     </button>
-                    {warehouseEq.length === 0 ? (
-                      <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-                        В “Склад” пока не подтянулось оборудование с типом <b>equipment</b>. Поэтому показываю <b>каталог оборудования</b>. При выборе модели,
-                        если она ещё не связана со складом — система автоматически создаст складскую позицию “Оборудование” (остаток 0) и привяжет ордер к ней.
+                    {(catalogLoading || catalogEq.length > 0) ? (
+                      <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                        Выбор идет из <b>каталога оборудования</b> (раздел «Оборудование»){catalogLoading ? " — загружаю…" : ""}.
+                        Если у модели нет связи со складом — при создании ордера я автоматически создам складскую позицию «Оборудование» (остаток 0),
+                        чтобы дальше КП/обеспечение работали корректно.
                       </div>
                     ) : null}
                   </div>
