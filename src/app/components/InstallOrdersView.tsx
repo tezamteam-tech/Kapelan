@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useRole } from "./RoleContext";
 import { useCurrency } from "./CurrencyContext";
+import { getJson } from "../lib/apiClient";
 import {
   Plus, Search, ArrowLeft, Package, User, MapPin, Thermometer,
   Calendar, ClipboardCheck, Zap, CheckCircle2, AlertCircle, Clock,
@@ -93,8 +94,7 @@ export function InstallOrdersView() {
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/install-orders`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/install-orders`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.orders) setOrders(data.orders);
     } catch { showToast("Ошибка загрузки ордеров", "err"); }
     finally { setLoading(false); }
@@ -114,8 +114,7 @@ export function InstallOrdersView() {
 
   // Refresh selected order after mutations
   const refreshSelected = async (id: string) => {
-    const res = await fetch(`${API}/install-orders/${id}`, { headers: AH });
-    const data = await res.json();
+    const data = await getJson<any>(`${API}/install-orders/${id}`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true });
     if (data.order) {
       setSelected(data.order);
       setOrders(prev => prev.map(o => o.id === id ? data.order : o));
@@ -917,8 +916,9 @@ function AIOrderFlow({ onCreated, onBack }: { onCreated: (o: InstallOrder) => vo
   const [errMsg, setErrMsg] = useState("");
 
   useEffect(() => {
-    fetch(`${API}/install-orders/catalog`, { headers: AH })
-      .then(r => r.json()).then(d => { if (d.catalog) setCatalog(d.catalog); });
+    getJson<any>(`${API}/install-orders/catalog`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true })
+      .then(d => { if (d.catalog) setCatalog(d.catalog); })
+      .catch(() => null);
   }, []);
 
   // Update consumables preview when AC or trace changes
@@ -1146,16 +1146,14 @@ function ManualOrderFlow({ onCreated, onBack, prefillLeadId }: {
   });
 
   useEffect(() => {
-    fetch(`${API}/install-orders/catalog`, { headers: AH })
-      .then(r => r.json()).then(d => { if (d.catalog) setCatalog(d.catalog); });
+    getJson<any>(`${API}/install-orders/catalog`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true })
+      .then(d => { if (d.catalog) setCatalog(d.catalog); });
   }, []);
 
   // Prefill from lead
   useEffect(() => {
     if (!prefillLeadId) return;
-    Promise.all([
-      fetch(`${API}/lead/${prefillLeadId}`, { headers: AH }).then(r => r.json()),
-    ]).then(([leadData]) => {
+    getJson<any>(`${API}/lead/${prefillLeadId}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }).then((leadData) => {
       const lead = leadData.lead;
       const client = leadData.client;
       const req = lead?.requirements_json || {};

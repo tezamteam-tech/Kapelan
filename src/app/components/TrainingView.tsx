@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useRole } from "./RoleContext";
 import { TrainingAdminPanel } from "./TrainingAdminPanel";
+import { getJson } from "../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 
@@ -235,8 +236,7 @@ export function TrainingView() {
   const loadTests = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${API}/training/tests`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/tests`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.tests) setTests(data.tests);
     } catch { showToast("Ошибка загрузки тестов"); }
     finally { setLoading(false); }
@@ -248,12 +248,10 @@ export function TrainingView() {
   const loadStats = useCallback(async (name: string) => {
     if (!name) return;
     try {
-      const [sRes, hRes] = await Promise.all([
-        fetch(`${API}/training/stats/${encodeURIComponent(name)}?year=${CERT_YEAR}`, { headers: AH }),
-        fetch(`${API}/training/results?installerName=${encodeURIComponent(name)}`, { headers: AH }),
+      const [sData, hData] = await Promise.all([
+        getJson<any>(`${API}/training/stats/${encodeURIComponent(name)}?year=${CERT_YEAR}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/training/results?installerName=${encodeURIComponent(name)}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
       ]);
-      const sData = await sRes.json();
-      const hData = await hRes.json();
       if (sData.stats) setStats(sData.stats);
       if (hData.results) setHistory(hData.results);
     } catch { /* silent */ }
@@ -261,16 +259,14 @@ export function TrainingView() {
 
   const loadLeaderboard = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/training/leaderboard`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/leaderboard`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.leaderboard) setLeaderboard(data.leaderboard);
     } catch { /* silent */ }
   }, []);
 
   const loadCertMatrix = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/training/certification/${CERT_YEAR}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/certification/${CERT_YEAR}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.installers) setCertMatrix(data.installers);
     } catch { /* silent */ }
   }, []);
@@ -279,8 +275,7 @@ export function TrainingView() {
   async function openTestIntro(meta: TestMeta) {
     try {
       setLoading(true);
-      const res = await fetch(`${API}/training/tests/${meta.id}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/tests/${meta.id}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.test) { setSelectedTest(data.test); setView("test_intro"); }
     } catch { showToast("Ошибка загрузки теста"); }
     finally { setLoading(false); }
@@ -856,8 +851,7 @@ function ResultView({ result: r, test, installerName, onRetry, onHome, onHistory
     if (detailResult) { setDetailOpen(true); return; }
     setLoadingDetail(true);
     try {
-      const res = await fetch(`${API}/training/results/${r.id}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/results/${r.id}`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.result) { setDetailResult(data.result); setDetailOpen(true); }
     } catch { /* silent */ }
     finally { setLoadingDetail(false); }
@@ -1347,8 +1341,7 @@ function AdminView({ tests, onBack, onRefresh, showToast }: any) {
   async function loadAllResults() {
     setLoadingRes(true);
     try {
-      const res = await fetch(`${API}/training/results`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/results`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.results) setAllResults(data.results);
     } catch { /* silent */ }
     finally { setLoadingRes(false); }

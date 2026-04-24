@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
 import { Save, Send, CheckCircle, AlertCircle, Coins, Globe, Check } from "lucide-react";
 import { useCurrency, type CurrencyConfig } from "../CurrencyContext";
+import { getJson } from "../../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const HEADERS = { Authorization: `Bearer ${publicAnonKey}`, "Content-Type": "application/json" };
@@ -16,13 +17,12 @@ export function SettingsPage() {
 
   const loadConfig = async () => {
     try {
-      const res = await fetch(`${API}/config`, { headers: { Authorization: `Bearer ${publicAnonKey}` } });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/config`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.tgAdminChatId) setTgChatId(String(data.tgAdminChatId));
     } catch {}
   };
 
-  useState(() => { loadConfig(); });
+  useEffect(() => { loadConfig(); }, []);
 
   const saveConfig = async () => {
     setSaving(true);

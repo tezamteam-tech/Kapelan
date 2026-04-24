@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
+import { getJson } from "../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };
@@ -75,13 +76,24 @@ const fmt = (n: number) => n.toLocaleString("ru-RU");
 export function ProcurementView() {
   const { fmtShort } = useCurrency();
   const fmt = fmtShort;
-  const [tab, setTab] = useState<ProcTab>("orders");
+  type ProcTab2 = ProcTab | "catalog";
+  const [tab, setTab] = useState<ProcTab2>("orders");
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [pendingPOs, setPendingPOs] = useState<PurchaseOrder[]>([]);
   const [procOrders, setProcOrders] = useState<ProcurementOrder[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
   const [autoBatching, setAutoBatching] = useState(false);
+
+  // Catalog UI
+  const [warehouseItems, setWarehouseItems] = useState<{ id: string; name: string; category: string; unit: string; sku: string; price: number }[]>([]);
+  const [catalogSupplierId, setCatalogSupplierId] = useState<string>("");
+  const [catalogQ, setCatalogQ] = useState<string>("");
+  const [supplierItems, setSupplierItems] = useState<any[]>([]);
+  const [catalogLinks, setCatalogLinks] = useState<Record<string, any>>({});
+  const [showNewSupplierItem, setShowNewSupplierItem] = useState(false);
+  const [showSupplierItemsImport, setShowSupplierItemsImport] = useState(false);
+  const [showSupplierItemsAiImport, setShowSupplierItemsAiImport] = useState(false);
 
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
   const [showNewSupplier, setShowNewSupplier] = useState(false);
@@ -100,19 +112,22 @@ export function ProcurementView() {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [supRes, poRes, procRes, statRes] = await Promise.all([
-        fetch(`${API}/suppliers`, { headers: AH }),
-        fetch(`${API}/purchase-orders`, { headers: AH }),
-        fetch(`${API}/procurement/orders`, { headers: AH }),
-        fetch(`${API}/procurement/stats`, { headers: AH }),
-      ]);
-      const [supD, poD, procD, statD] = await Promise.all([
-        supRes.json(), poRes.json(), procRes.json(), statRes.json()
+      const [supD, poD, procD, statD, whD] = await Promise.all([
+        getJson<any>(`${API}/suppliers`, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/purchase-orders`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/procurement/orders`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/procurement/stats`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/warehouse`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
       ]);
       if (supD.suppliers) setSuppliers(supD.suppliers);
       if (poD.orders) setPendingPOs(poD.orders.filter((o: PurchaseOrder) => o.status === "pending"));
       if (procD.orders) setProcOrders(procD.orders);
       if (statD.stats) setStats(statD.stats);
+      if (whD.items) {
+        setWarehouseItems((whD.items as any[]).map((i) => ({
+          id: i.id, name: i.name, category: i.category, unit: i.unit, sku: i.sku ?? "", price: i.price ?? 0,
+        })));
+      }
     } catch (e) { console.error("Procurement fetch:", e); showToast("Ошибка загрузки данных", false); }
     finally { setLoading(false); }
   }, [showToast]);
@@ -203,11 +218,38 @@ export function ProcurementView() {
     return map;
   }, [pendingPOs, suppliers]);
 
-  const TABS: { key: ProcTab; icon: string; label: string; badge?: number }[] = [
+  const TABS: { key: ProcTab2; icon: string; label: string; badge?: number }[] = [
     { key: "orders",    icon: "🛒", label: "Заказы",      badge: pendingPOs.length || undefined },
     { key: "history",   icon: "📋", label: "Отправленные", badge: stats?.confirmed || undefined },
     { key: "suppliers", icon: "🏢", label: "Поставщики" },
+    { key: "catalog",   icon: "📦", label: "Каталог" },
   ];
+
+  const loadCatalog = useCallback(async (supplierId: string, q?: string) => {
+    try {
+      const [itemsD, linksD] = await Promise.all([
+        getJson<any>(`${API}/supplier-items?supplierId=${encodeURIComponent(supplierId)}&q=${encodeURIComponent(q ?? "")}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/catalog-links?supplierId=${encodeURIComponent(supplierId)}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+      ]);
+      if (itemsD.items) setSupplierItems(itemsD.items);
+      if (linksD.links) {
+        const m: Record<string, any> = {};
+        for (const l of linksD.links as any[]) m[l.supplierItemId] = l;
+        setCatalogLinks(m);
+      }
+    } catch (e) {
+      console.error("loadCatalog:", e);
+      showToast("Ошибка загрузки каталога", false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    if (tab !== "catalog") return;
+    const first = catalogSupplierId || suppliers[0]?.id || "";
+    if (!first) return;
+    if (!catalogSupplierId) setCatalogSupplierId(first);
+    void loadCatalog(first, catalogQ);
+  }, [tab, suppliers, catalogSupplierId, catalogQ, loadCatalog]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -373,6 +415,159 @@ export function ProcurementView() {
             ))}
           </div>
         )}
+
+        {/* ══ CATALOG TAB ═══════════════════════════════════════════════════════ */}
+        {tab === "catalog" && (
+          <div className="px-4 pt-4 pb-10 space-y-3">
+            <div className="bg-white border border-slate-200 rounded-2xl p-3">
+              <div className="flex flex-col md:flex-row gap-2">
+                <select
+                  value={catalogSupplierId}
+                  onChange={(e) => { setCatalogSupplierId(e.target.value); void loadCatalog(e.target.value, catalogQ); }}
+                  className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 bg-white"
+                >
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <input
+                  value={catalogQ}
+                  onChange={(e) => setCatalogQ(e.target.value)}
+                  placeholder="Поиск по названию / SKU / категории…"
+                  className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  onClick={() => setShowNewSupplierItem(true)}
+                  className="bg-indigo-600 text-white rounded-xl px-4 py-2 text-sm font-bold active:scale-95"
+                >
+                  + Позиция
+                </button>
+                <button
+                  onClick={() => setShowSupplierItemsAiImport(true)}
+                  className="bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl px-4 py-2 text-sm font-bold active:scale-95"
+                  title="AI импорт прайса (любой формат)"
+                >
+                  AI импорт
+                </button>
+                <button
+                  onClick={() => setShowSupplierItemsImport(true)}
+                  className="bg-white border border-slate-200 text-slate-700 rounded-xl px-4 py-2 text-sm font-bold active:scale-95"
+                  title="Быстрый импорт прайса (CSV)"
+                >
+                  CSV импорт
+                </button>
+                <button
+                  onClick={() => loadCatalog(catalogSupplierId, catalogQ)}
+                  className="bg-slate-100 text-slate-700 rounded-xl px-4 py-2 text-sm font-bold active:scale-95"
+                >
+                  Обновить
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-[1200px] w-full text-sm">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+                      <th className="text-left px-3 py-2">Позиция</th>
+                      <th className="text-left px-3 py-2">Категория</th>
+                      <th className="text-left px-3 py-2">SKU</th>
+                      <th className="text-left px-3 py-2">Ед.</th>
+                      <th className="text-right px-3 py-2">Закуп</th>
+                      <th className="text-right px-3 py-2">Продажа</th>
+                      <th className="text-left px-3 py-2">Наличие</th>
+                      <th className="text-center px-3 py-2">Используем</th>
+                      <th className="text-left px-3 py-2">Привязка к складу</th>
+                      <th className="text-center px-3 py-2">Основной</th>
+                      <th className="text-right px-3 py-2">Сохранить</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {supplierItems.map((it: any) => {
+                      const link = catalogLinks[it.id] as any | undefined;
+                      return (
+                        <SupplierItemRow
+                          key={it.id}
+                          item={it}
+                          link={link}
+                          warehouseItems={warehouseItems}
+                          fmt={fmt}
+                          onSaveItem={async (patch) => {
+                            const res = await fetch(`${API}/supplier-items/${it.id}`, { method: "PATCH", headers: JH, body: JSON.stringify(patch) });
+                            const d = await res.json();
+                            if (d.item) {
+                              setSupplierItems((prev) => prev.map((x) => x.id === it.id ? d.item : x));
+                              showToast("✅ Сохранено");
+                            } else showToast(d.error || "Ошибка", false);
+                          }}
+                          onSaveLink={async (payload) => {
+                            const existing = catalogLinks[it.id];
+                            const url = existing ? `${API}/catalog-links/${existing.id}` : `${API}/catalog-links`;
+                            const method = existing ? "PATCH" : "POST";
+                            const res = await fetch(url, { method, headers: JH, body: JSON.stringify({ ...payload, supplierItemId: it.id }) });
+                            const d = await res.json();
+                            if (d.link) {
+                              setCatalogLinks((m) => ({ ...m, [it.id]: d.link }));
+                              showToast("✅ Привязка сохранена");
+                            } else showToast(d.error || "Ошибка", false);
+                          }}
+                        />
+                      );
+                    })}
+                    {supplierItems.length === 0 ? (
+                      <tr><td colSpan={10} className="px-3 py-8 text-center text-slate-400">Нет позиций</td></tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {showNewSupplierItem && (
+              <NewSupplierItemModal
+                suppliers={suppliers}
+                supplierId={catalogSupplierId}
+                onClose={() => setShowNewSupplierItem(false)}
+                onCreated={(item) => {
+                  setShowNewSupplierItem(false);
+                  // If created under currently selected supplier — prepend
+                  if (!catalogSupplierId || item.supplierId === catalogSupplierId) {
+                    setSupplierItems((prev) => [item, ...prev]);
+                  }
+                  showToast("✅ Позиция добавлена");
+                }}
+              />
+            )}
+
+            {showSupplierItemsImport && (
+              <SupplierItemsImportModal
+                suppliers={suppliers}
+                defaultSupplierId={catalogSupplierId || suppliers[0]?.id || ""}
+                onClose={() => setShowSupplierItemsImport(false)}
+                onImported={async (supplierId, count) => {
+                  setShowSupplierItemsImport(false);
+                  showToast(`✅ Импортировано ${count} позиций`);
+                  setCatalogSupplierId(supplierId);
+                  await loadCatalog(supplierId, catalogQ);
+                }}
+              />
+            )}
+
+            {showSupplierItemsAiImport && (
+              <SupplierItemsAiImportModal
+                suppliers={suppliers}
+                defaultSupplierId={catalogSupplierId || suppliers[0]?.id || ""}
+                onClose={() => setShowSupplierItemsAiImport(false)}
+                onImported={async (supplierId, count) => {
+                  setShowSupplierItemsAiImport(false);
+                  showToast(`✅ AI импорт: ${count} позиций`);
+                  setCatalogSupplierId(supplierId);
+                  await loadCatalog(supplierId, catalogQ);
+                }}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Modals ── */}
@@ -418,6 +613,503 @@ export function ProcurementView() {
           toast.ok ? "bg-indigo-700" : "bg-red-600"
         }`}>{toast.text}</div>
       )}
+    </div>
+  );
+}
+
+function SupplierItemRow({
+  item, link, warehouseItems, fmt, onSaveItem, onSaveLink,
+}: {
+  item: any;
+  link?: any;
+  warehouseItems: { id: string; name: string; category: string; unit: string; sku: string; price: number }[];
+  fmt: (n: number) => string;
+  onSaveItem: (patch: any) => Promise<void>;
+  onSaveLink: (payload: any) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<any>({
+    name: item.name ?? "",
+    category: item.category ?? "",
+    sku: item.sku ?? "",
+    unit: item.unit ?? "шт",
+    buyPrice: item.buyPrice ?? 0,
+    sellPrice: item.sellPrice ?? 0,
+    availability: item.availability ?? "order_only",
+    isActive: item.isActive !== false,
+    warehouseItemId: link?.warehouseItemId ?? "",
+    isPrimary: !!link?.isPrimary,
+  });
+
+  useEffect(() => {
+    setDraft({
+      name: item.name ?? "",
+      category: item.category ?? "",
+      sku: item.sku ?? "",
+      unit: item.unit ?? "шт",
+      buyPrice: item.buyPrice ?? 0,
+      sellPrice: item.sellPrice ?? 0,
+      availability: item.availability ?? "order_only",
+      isActive: item.isActive !== false,
+      warehouseItemId: link?.warehouseItemId ?? "",
+      isPrimary: !!link?.isPrimary,
+    });
+  }, [item, link]);
+
+  return (
+    <tr className="border-b border-slate-100 hover:bg-slate-50">
+      <td className="px-3 py-2">
+        <input className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm"
+          value={draft.name} onChange={(e) => setDraft((d: any) => ({ ...d, name: e.target.value }))} />
+      </td>
+      <td className="px-3 py-2">
+        <input className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm"
+          value={draft.category} onChange={(e) => setDraft((d: any) => ({ ...d, category: e.target.value }))} />
+      </td>
+      <td className="px-3 py-2">
+        <input className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm font-mono"
+          value={draft.sku} onChange={(e) => setDraft((d: any) => ({ ...d, sku: e.target.value }))} />
+      </td>
+      <td className="px-3 py-2">
+        <input className="w-20 bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm"
+          value={draft.unit} onChange={(e) => setDraft((d: any) => ({ ...d, unit: e.target.value }))} />
+      </td>
+      <td className="px-3 py-2 text-right">
+        <input className="w-28 text-right bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm"
+          value={draft.buyPrice} onChange={(e) => setDraft((d: any) => ({ ...d, buyPrice: Number(e.target.value) }))} />
+      </td>
+      <td className="px-3 py-2 text-right">
+        <input className="w-28 text-right bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm"
+          value={draft.sellPrice} onChange={(e) => setDraft((d: any) => ({ ...d, sellPrice: Number(e.target.value) }))} />
+      </td>
+      <td className="px-3 py-2">
+        <select className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm"
+          value={draft.availability}
+          onChange={(e) => setDraft((d: any) => ({ ...d, availability: e.target.value }))}
+        >
+          <option value="order_only">Под заказ</option>
+          <option value="in_stock_supplier">Есть у поставщика</option>
+        </select>
+      </td>
+      <td className="px-3 py-2 text-center">
+        <input
+          type="checkbox"
+          checked={!!draft.isActive}
+          onChange={(e) => setDraft((d: any) => ({ ...d, isActive: e.target.checked }))}
+        />
+      </td>
+      <td className="px-3 py-2">
+        <select
+          className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm"
+          value={draft.warehouseItemId}
+          onChange={(e) => setDraft((d: any) => ({ ...d, warehouseItemId: e.target.value }))}
+        >
+          <option value="">— не привязано —</option>
+          {warehouseItems.map((w) => (
+            <option key={w.id} value={w.id}>{w.name} ({w.category})</option>
+          ))}
+        </select>
+      </td>
+      <td className="px-3 py-2 text-center">
+        <input
+          type="checkbox"
+          checked={!!draft.isPrimary}
+          onChange={(e) => setDraft((d: any) => ({ ...d, isPrimary: e.target.checked }))}
+        />
+      </td>
+      <td className="px-3 py-2 text-right">
+        <button
+          onClick={async () => {
+            await onSaveItem({
+              name: draft.name,
+              category: draft.category,
+              sku: draft.sku,
+              unit: draft.unit,
+              buyPrice: draft.buyPrice,
+              sellPrice: draft.sellPrice,
+              availability: draft.availability,
+              isActive: draft.isActive,
+            });
+            await onSaveLink({
+              warehouseItemId: draft.warehouseItemId || null,
+              isPrimary: !!draft.isPrimary,
+              priority: 100,
+            });
+          }}
+          className="bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold active:scale-95"
+          title={`buy=${fmt(Number(draft.buyPrice||0))} sell=${fmt(Number(draft.sellPrice||0))}`}
+        >
+          Сохранить
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function SupplierItemsAiImportModal({
+  suppliers,
+  defaultSupplierId,
+  onClose,
+  onImported,
+}: {
+  suppliers: Supplier[];
+  defaultSupplierId: string;
+  onClose: () => void;
+  onImported: (supplierId: string, count: number) => void | Promise<void>;
+}) {
+  const [supplierId, setSupplierId] = useState(defaultSupplierId);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [preview, setPreview] = useState<any[] | null>(null);
+  const [autoLink, setAutoLink] = useState(true);
+  const [deactivateMissing, setDeactivateMissing] = useState(false);
+
+  async function runParse() {
+    if (!file) return;
+    try {
+      setBusy(true);
+      setErr("");
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${API}/supplier-items/ai-import`, { method: "POST", headers: AH, body: fd });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      setPreview(d.items ?? []);
+    } catch (e: any) {
+      setErr(e?.message || "Ошибка AI-импорта");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runImport() {
+    if (!preview?.length) return;
+    try {
+      setBusy(true);
+      setErr("");
+      const res = await fetch(`${API}/supplier-items/bulk-upsert`, {
+        method: "POST",
+        headers: JH,
+        body: JSON.stringify({
+          supplierId,
+          items: preview.map((r) => ({ ...r, isActive: true })),
+          options: { autoLink, deactivateMissing },
+        }),
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      await onImported(supplierId, Number(d.upserted ?? preview.length));
+    } catch (e: any) {
+      setErr(e?.message || "Ошибка импорта");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h3 className="font-black text-slate-800">AI импорт прайса поставщика</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Поддержка: CSV, XLSX/XLS, PDF, TXT</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">✕</button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          <div className="flex flex-col md:flex-row gap-2">
+            <select
+              className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 bg-white"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <input
+              type="file"
+              onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setErr(""); }}
+              className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-sm"
+            />
+            <button
+              disabled={busy || !file}
+              onClick={runParse}
+              className="bg-indigo-600 text-white rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-60"
+            >
+              {busy ? "..." : "AI анализ"}
+            </button>
+          </div>
+          {err ? <div className="text-sm text-red-600">{err}</div> : null}
+
+          {preview ? (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-bold text-slate-800">Найдено: {preview.length}</p>
+                <button
+                  disabled={busy || preview.length === 0}
+                  onClick={runImport}
+                  className="bg-violet-600 text-white rounded-xl px-4 py-2 text-sm font-black disabled:opacity-60"
+                >
+                  {busy ? "Импорт..." : "Импортировать"}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-col md:flex-row gap-4 text-sm text-slate-700">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={autoLink} onChange={(e) => setAutoLink(e.target.checked)} />
+                  Автосвязка со складом (SKU/название) + primary (если нет)
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={deactivateMissing} onChange={(e) => setDeactivateMissing(e.target.checked)} />
+                  Деактивировать отсутствующие в новом прайсе
+                </label>
+              </div>
+              <div className="mt-2 max-h-56 overflow-auto space-y-2">
+                {preview.slice(0, 12).map((r, idx) => (
+                  <div key={idx} className="bg-white border border-slate-200 rounded-lg p-2">
+                    <div className="text-sm font-semibold text-slate-800">{r.name}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {r.category} · {r.unit} · SKU {r.sku || "—"} · buy {r.buyPrice} · sell {r.sellPrice} · {r.availability}
+                    </div>
+                  </div>
+                ))}
+                {preview.length > 12 ? <div className="text-xs text-slate-400">…и ещё {preview.length - 12}</div> : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NewSupplierItemModal({
+  suppliers, supplierId, onClose, onCreated,
+}: {
+  suppliers: Supplier[];
+  supplierId: string;
+  onClose: () => void;
+  onCreated: (item: any) => void;
+}) {
+  const [v, setV] = useState<any>({ supplierId, name: "", sku: "", unit: "шт", category: "Прочее", buyPrice: 0, sellPrice: 0, availability: "order_only" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 className="font-black text-slate-800">Новая позиция поставщика</h3>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">✕</button>
+        </div>
+        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <select
+            className="border border-slate-200 rounded-xl px-3 py-2"
+            value={v.supplierId}
+            onChange={(e) => setV((d: any) => ({ ...d, supplierId: e.target.value }))}
+          >
+            {suppliers.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <div />
+          <input className="border border-slate-200 rounded-xl px-3 py-2" placeholder="Название"
+            value={v.name} onChange={(e) => setV((d: any) => ({ ...d, name: e.target.value }))} />
+          <input className="border border-slate-200 rounded-xl px-3 py-2" placeholder="SKU"
+            value={v.sku} onChange={(e) => setV((d: any) => ({ ...d, sku: e.target.value }))} />
+          <input className="border border-slate-200 rounded-xl px-3 py-2" placeholder="Категория"
+            value={v.category} onChange={(e) => setV((d: any) => ({ ...d, category: e.target.value }))} />
+          <input className="border border-slate-200 rounded-xl px-3 py-2" placeholder="Ед."
+            value={v.unit} onChange={(e) => setV((d: any) => ({ ...d, unit: e.target.value }))} />
+          <input className="border border-slate-200 rounded-xl px-3 py-2" placeholder="Закуп"
+            value={v.buyPrice} onChange={(e) => setV((d: any) => ({ ...d, buyPrice: Number(e.target.value) }))} />
+          <input className="border border-slate-200 rounded-xl px-3 py-2" placeholder="Продажа"
+            value={v.sellPrice} onChange={(e) => setV((d: any) => ({ ...d, sellPrice: Number(e.target.value) }))} />
+          <select className="border border-slate-200 rounded-xl px-3 py-2"
+            value={v.availability} onChange={(e) => setV((d: any) => ({ ...d, availability: e.target.value }))}>
+            <option value="order_only">Под заказ</option>
+            <option value="in_stock_supplier">Есть у поставщика</option>
+          </select>
+          <div />
+          {err ? <div className="text-sm text-red-600 md:col-span-2">{err}</div> : null}
+        </div>
+        <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold">Отмена</button>
+          <button
+            disabled={busy || !v.name.trim()}
+            onClick={async () => {
+              try {
+                setBusy(true);
+                setErr("");
+                const res = await fetch(`${API}/supplier-items`, { method: "POST", headers: JH, body: JSON.stringify(v) });
+                const d = await res.json();
+                if (d.item) onCreated(d.item);
+                else setErr(d.error || "Ошибка");
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="px-4 py-2 rounded-xl bg-indigo-600 text-white font-black disabled:opacity-60"
+          >
+            {busy ? "..." : "Создать"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SupplierItemsImportModal({
+  suppliers,
+  defaultSupplierId,
+  onClose,
+  onImported,
+}: {
+  suppliers: Supplier[];
+  defaultSupplierId: string;
+  onClose: () => void;
+  onImported: (supplierId: string, count: number) => void | Promise<void>;
+}) {
+  const [supplierId, setSupplierId] = useState(defaultSupplierId);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [autoLink, setAutoLink] = useState(true);
+  const [deactivateMissing, setDeactivateMissing] = useState(false);
+
+  function parseRows() {
+    const raw = text.trim();
+    if (!raw) return [];
+    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+    const delim = lines[0].includes(";") && !lines[0].includes(",") ? ";" : ",";
+    const cells = lines.map((l) => l.split(delim).map((c) => c.trim()));
+    const header = cells[0].map((h) => h.toLowerCase());
+    const hasHeader = header.includes("name") || header.includes("название") || header.includes("buy_price") || header.includes("закуп");
+    const rows = hasHeader ? cells.slice(1) : cells;
+
+    const col = (h: string) => header.indexOf(h);
+    const idx = {
+      name: col("name") >= 0 ? col("name") : col("название"),
+      category: col("category") >= 0 ? col("category") : col("категория"),
+      unit: col("unit") >= 0 ? col("unit") : col("ед") >= 0 ? col("ед") : col("единица"),
+      sku: col("sku"),
+      buy: col("buy_price") >= 0 ? col("buy_price") : col("закуп") >= 0 ? col("закуп") : col("buy"),
+      sell: col("sell_price") >= 0 ? col("sell_price") : col("продажа") >= 0 ? col("продажа") : col("sell"),
+      availability: col("availability") >= 0 ? col("availability") : col("наличие"),
+    };
+
+    const pick = (r: string[], i: number) => (i >= 0 ? (r[i] ?? "") : "");
+    const toNum = (s: string) => Number(String(s ?? "0").replace(",", "."));
+
+    return rows.map((r) => {
+      if (!hasHeader) {
+        // Fallback: name;sku;category;unit;buyPrice;sellPrice;availability
+        return {
+          name: r[0] ?? "",
+          sku: r[1] ?? "",
+          category: r[2] ?? "Прочее",
+          unit: r[3] ?? "шт",
+          buyPrice: toNum(r[4] ?? "0"),
+          sellPrice: toNum(r[5] ?? "0"),
+          availability: r[6] ?? "order_only",
+        };
+      }
+      return {
+        name: pick(r, idx.name),
+        sku: pick(r, idx.sku),
+        category: pick(r, idx.category) || "Прочее",
+        unit: pick(r, idx.unit) || "шт",
+        buyPrice: toNum(pick(r, idx.buy)),
+        sellPrice: toNum(pick(r, idx.sell)),
+        availability: pick(r, idx.availability) || "order_only",
+      };
+    }).filter((r) => String(r.name).trim());
+  }
+
+  const rows = parseRows();
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h3 className="font-black text-slate-800">Импорт прайса поставщика (CSV)</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Колонки: `name;sku;category;unit;buyPrice;sellPrice;availability` (можно с заголовком).
+            </p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">✕</button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          <div className="flex flex-col md:flex-row gap-2">
+            <select
+              className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 bg-white"
+              value={supplierId}
+              onChange={(e) => setSupplierId(e.target.value)}
+            >
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <div className="text-sm text-slate-600 flex items-center">
+              Строк: <span className="font-black ml-1">{rows.length}</span>
+            </div>
+          </div>
+
+          <textarea
+            value={text}
+            onChange={(e) => { setText(e.target.value); setErr(""); }}
+            placeholder={"name;sku;category;unit;buyPrice;sellPrice;availability\nТруба 1/4;PIPE-14;Трубопровод;м;6.50;8.28;in_stock_supplier"}
+            className="w-full h-64 border border-slate-200 rounded-xl p-3 text-sm font-mono outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+          {err ? <div className="text-sm text-red-600">{err}</div> : null}
+          <div className="flex flex-col md:flex-row gap-4 text-sm text-slate-700">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={autoLink} onChange={(e) => setAutoLink(e.target.checked)} />
+              Автосвязка со складом (SKU/название) + primary (если нет)
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" checked={deactivateMissing} onChange={(e) => setDeactivateMissing(e.target.checked)} />
+              Деактивировать отсутствующие в новом прайсе
+            </label>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold">Отмена</button>
+          <button
+            disabled={busy || !supplierId || rows.length === 0}
+            onClick={async () => {
+              try {
+                setBusy(true);
+                setErr("");
+                const res = await fetch(`${API}/supplier-items/bulk-upsert`, {
+                  method: "POST",
+                  headers: JH,
+                  body: JSON.stringify({
+                    supplierId,
+                    items: rows,
+                    options: { autoLink, deactivateMissing },
+                  }),
+                });
+                const d = await res.json();
+                if (d.error) throw new Error(d.error);
+                await onImported(supplierId, Number(d.upserted ?? rows.length));
+              } catch (e: any) {
+                setErr(e?.message || "Ошибка импорта");
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="px-4 py-2 rounded-xl bg-indigo-600 text-white font-black disabled:opacity-60"
+          >
+            {busy ? "Импорт..." : "Импортировать"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

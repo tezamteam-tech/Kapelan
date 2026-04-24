@@ -6,12 +6,13 @@ import {
   Wrench, ChevronDown, ChevronUp, Edit3, Trash2, X, Loader2,
   Eye, BarChart3, TrendingDown, ShoppingCart, ClipboardList,
   Zap, Droplets, Cable, Hammer, Wind, Gauge, Info, ImageIcon,
-  Check, Save, Sparkles
+  Check, Save, Sparkles, Upload
 } from "lucide-react";
 import { ImageUpload } from "./ui/ImageUpload";
 import { AiImportModal } from "./AiImportModal";
 import { AiEquipmentImportModal } from "./AiEquipmentImportModal";
 import { useCurrency } from "./CurrencyContext";
+import { getJson } from "../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -20,7 +21,7 @@ const JH = { ...AH, "Content-Type": "application/json" };
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface WarehouseItem {
   id: string; name: string; category: string; unit: string;
-  stock: number; minStock: number; price: number; sku: string;
+  stock: number; minStock: number; price: number; buyPrice?: number; sku: string;
   supplier?: string; notes?: string; imageUrl?: string;
   itemType?: "consumable" | "assembly" | "equipment";
   assemblyComponents?: { warehouseId: string; name: string; qty: number; unit: string }[];
@@ -117,6 +118,7 @@ function stockLevel(item: WarehouseItem) {
 export function WarehouseView() {
   const { fmtShort, currency } = useCurrency();
   const [tab, setTab] = useState<WHTab>("stock");
+  const [viewMode, setViewMode] = useState<"cards" | "table">("cards");
   const [items, setItems] = useState<WarehouseItem[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
@@ -138,6 +140,7 @@ export function WarehouseView() {
   const [isNewEq, setIsNewEq] = useState(false);
   const [showAiImport, setShowAiImport] = useState(false);
   const [showAiEquipImport, setShowAiEquipImport] = useState(false);
+  const [showCsvImport, setShowCsvImport] = useState(false);
   const [eqSearch, setEqSearch] = useState("");
 
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
@@ -155,13 +158,12 @@ export function WarehouseView() {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [wRes, poRes, movRes, eqRes] = await Promise.all([
-        fetch(`${API}/warehouse`, { headers: AH }),
-        fetch(`${API}/purchase-orders`, { headers: AH }),
-        fetch(`${API}/warehouse-movements`, { headers: AH }),
-        fetch(`${API}/equipment`, { headers: AH }),
+      const [wd, pod, movd, eqd] = await Promise.all([
+        getJson<any>(`${API}/warehouse`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/purchase-orders`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/warehouse-movements`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/equipment`, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000, swr: true }),
       ]);
-      const [wd, pod, movd, eqd] = await Promise.all([wRes.json(), poRes.json(), movRes.json(), eqRes.json()]);
       if (wd.items) setItems(wd.items);
       if (pod.orders) setOrders(pod.orders);
       if (movd.movements) setMovements(movd.movements);
@@ -240,8 +242,7 @@ export function WarehouseView() {
   }
 
   async function loadItemMovements(itemId: string) {
-    const res = await fetch(`${API}/warehouse/${itemId}/movements`, { headers: AH });
-    const d = await res.json();
+    const d = await getJson<any>(`${API}/warehouse/${itemId}/movements`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
     if (d.movements) setDetailMovements(d.movements);
   }
 
@@ -289,27 +290,31 @@ export function WarehouseView() {
             <button onClick={fetchAll} disabled={loading} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all" title="Обновить">
               <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
             </button>
-            {tab === "stock" && (
-              <button
-                onClick={async () => {
-                  if (!confirm("Переинициализировать склад из каталога? Все позиции будут обновлены реальными данными по кондиционерам и расходникам.")) return;
-                  try {
-                    const r = await fetch(`${API}/warehouse/reseed`, { method: "POST", headers: AH });
-                    const d = await r.json();
-                    if (d.success) { showToast(`✅ ${d.message}`); fetchAll(); }
-                    else showToast(d.error || "Ошибка", false);
-                  } catch (e: any) { showToast(`Ошибка: ${e.message}`, false); }
-                }}
-                className="flex items-center gap-1.5 bg-amber-500 text-white text-xs font-semibold px-3 py-2 rounded-xl hover:bg-amber-600 active:scale-95 transition-all"
-                title="Заменить данные склада реальным каталогом кондиционеров"
-              >
-                <RefreshCw size={13} /> Обновить каталог
-              </button>
-            )}
+            <button
+              onClick={() => setViewMode(v => v === "cards" ? "table" : "cards")}
+              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl active:scale-95 transition-all shadow-sm ${
+                viewMode === "table"
+                  ? "bg-slate-800 text-white hover:bg-slate-900"
+                  : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+              }`}
+              title={viewMode === "table" ? "Показать карточками" : "Показать таблицей"}
+            >
+              {viewMode === "table" ? <Layers size={14} /> : <ClipboardList size={14} />}
+              {viewMode === "table" ? "Карточки" : "Таблица"}
+            </button>
             {tab === "stock" && (
               <button onClick={() => setShowAiImport(true)}
                 className="flex items-center gap-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 text-white text-xs font-semibold px-3 py-2 rounded-xl hover:opacity-90 active:scale-95 transition-all shadow-sm shadow-violet-200">
                 <Sparkles size={13} /> AI-импорт
+              </button>
+            )}
+            {tab === "stock" && (
+              <button
+                onClick={() => setShowCsvImport(true)}
+                className="flex items-center gap-1.5 bg-white border border-slate-200 text-slate-700 text-xs font-semibold px-3 py-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm"
+                title="Импорт склада из CSV"
+              >
+                <Upload size={14} /> CSV
               </button>
             )}
             {tab === "stock" && (
@@ -404,8 +409,8 @@ export function WarehouseView() {
               ))}
             </div>
 
-            {/* Items grouped by category */}
-            <div className="p-4 space-y-5 pb-8">
+            {/* Items */}
+            <div className="p-4 pb-8">
               {loading && items.length === 0 ? (
                 <div className="flex justify-center py-16"><Loader2 className="animate-spin text-slate-300" size={28} /></div>
               ) : filteredItems.length === 0 ? (
@@ -413,29 +418,88 @@ export function WarehouseView() {
                   <Package size={36} className="mx-auto mb-3 opacity-30" />
                   <p className="font-medium text-sm">Ничего не найдено</p>
                 </div>
-              ) : (
-                Object.entries(groupedItems).map(([cat, catItems]) => (
-                  <div key={cat}>
-                    <div className="flex items-center gap-2 mb-2">
-                      {CAT_ICONS[cat] || <Package size={13} className="text-slate-400" />}
-                      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{cat}</h3>
-                      <span className="text-[10px] text-slate-400">({catItems.length})</span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-                      {catItems.map(item => (
-                        <WarehouseItemCard
-                          key={item.id}
-                          item={item}
-                          onDetail={() => { setDetailItem(item); loadItemMovements(item.id); }}
-                          onStockIn={() => setMovModal({ item, dir: "in" })}
-                          onStockOut={() => setMovModal({ item, dir: "out" })}
-                          onEdit={() => { setEditItem({ ...item }); setIsNewItem(false); }}
-                          onDelete={() => deleteItem(item.id)}
-                        />
-                      ))}
-                    </div>
+              ) : viewMode === "table" ? (
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-[900px] w-full text-sm">
+                      <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                        <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+                          <th className="text-left px-3 py-2">Позиция</th>
+                          <th className="text-left px-3 py-2">Категория</th>
+                          <th className="text-right px-3 py-2">Остаток</th>
+                          <th className="text-right px-3 py-2">Мин.</th>
+                          <th className="text-right px-3 py-2">Закуп</th>
+                          <th className="text-right px-3 py-2">Цена</th>
+                          <th className="text-left px-3 py-2">Поставщик</th>
+                          <th className="text-left px-3 py-2">SKU</th>
+                          <th className="text-right px-3 py-2">Действия</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredItems.map(item => {
+                          const lvl = stockLevel(item);
+                          return (
+                            <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50">
+                              <td className="px-3 py-2">
+                                <button
+                                  onClick={() => { setDetailItem(item); loadItemMovements(item.id); }}
+                                  className="font-semibold text-slate-800 hover:underline text-left"
+                                >
+                                  {item.name}
+                                </button>
+                                {item.notes ? <div className="text-[11px] text-slate-400 line-clamp-1">{item.notes}</div> : null}
+                              </td>
+                              <td className="px-3 py-2 text-slate-600">{item.category}</td>
+                              <td className="px-3 py-2 text-right">
+                                <span className={`inline-flex items-center gap-1 text-xs font-bold ${lvl.textColor}`}>
+                                  <span className={`w-2 h-2 rounded-full ${lvl.color}`} />
+                                  {item.stock} {item.unit}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-right text-slate-500">{item.minStock} {item.unit}</td>
+                              <td className="px-3 py-2 text-right font-bold text-slate-700">{item.buyPrice ? fmtShort(item.buyPrice) : "—"}</td>
+                              <td className="px-3 py-2 text-right font-bold text-teal-700">{fmtShort(item.price)}</td>
+                              <td className="px-3 py-2 text-slate-500 text-xs">{item.supplier || "—"}</td>
+                              <td className="px-3 py-2 text-slate-500 font-mono text-xs">{item.sku || "—"}</td>
+                              <td className="px-3 py-2 text-right">
+                                <div className="inline-flex gap-1">
+                                  <button onClick={() => setMovModal({ item, dir: "in" })} className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200">+ Приход</button>
+                                  <button onClick={() => setMovModal({ item, dir: "out" })} className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200">- Списать</button>
+                                  <button onClick={() => { setEditItem({ ...item }); setIsNewItem(false); }} className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200">Ред.</button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                ))
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {Object.entries(groupedItems).map(([cat, catItems]) => (
+                    <div key={cat}>
+                      <div className="flex items-center gap-2 mb-2">
+                        {CAT_ICONS[cat] || <Package size={13} className="text-slate-400" />}
+                        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{cat}</h3>
+                        <span className="text-[10px] text-slate-400">({catItems.length})</span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                        {catItems.map(item => (
+                          <WarehouseItemCard
+                            key={item.id}
+                            item={item}
+                            onDetail={() => { setDetailItem(item); loadItemMovements(item.id); }}
+                            onStockIn={() => setMovModal({ item, dir: "in" })}
+                            onStockOut={() => setMovModal({ item, dir: "out" })}
+                            onEdit={() => { setEditItem({ ...item }); setIsNewItem(false); }}
+                            onDelete={() => deleteItem(item.id)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
@@ -498,6 +562,55 @@ export function WarehouseView() {
                     + Добавить первую модель
                   </button>
                 </div>
+              ) : viewMode === "table" ? (
+                  <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                    <div className="overflow-x-auto">
+                    <table className="min-w-[900px] w-full text-sm">
+                      <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                        <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+                          <th className="text-left px-3 py-2">Модель</th>
+                          <th className="text-left px-3 py-2">Тип</th>
+                          <th className="text-right px-3 py-2">BTU</th>
+                          <th className="text-right px-3 py-2">Цена</th>
+                          <th className="text-right px-3 py-2">Действия</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredEq.map(eq => (
+                          <tr key={eq.id} className="border-b border-slate-100 hover:bg-slate-50">
+                            <td className="px-3 py-2">
+                              <button
+                                onClick={() => setSelectedEq(selectedEq?.id === eq.id ? null : eq)}
+                                className="font-semibold text-slate-800 hover:underline text-left"
+                              >
+                                {eq.brand} {eq.model}
+                              </button>
+                            </td>
+                            <td className="px-3 py-2 text-slate-600">{EQ_TYPE_CFG[eq.type]?.label ?? eq.type}</td>
+                            <td className="px-3 py-2 text-right text-slate-600">{eq.btu ?? "—"}</td>
+                            <td className="px-3 py-2 text-right font-bold text-teal-700">{fmtShort(eq.price ?? 0)}</td>
+                            <td className="px-3 py-2 text-right">
+                              <div className="inline-flex gap-1">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setIsNewEq(false); setEditEq({ ...eq }); }}
+                                  className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200"
+                                >
+                                  Ред.
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); deleteEquipment(eq.id); }}
+                                  className="px-2 py-1 rounded-lg bg-red-50 text-red-700 text-xs font-semibold hover:bg-red-100"
+                                >
+                                  Архив
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
                   {filteredEq.map(eq => (
@@ -516,64 +629,173 @@ export function WarehouseView() {
 
         {/* ══ MOVEMENTS TAB ════════════════════════════════════════════════════ */}
         {tab === "movements" && (
-          <div className="p-4 pb-8 space-y-2">
+          <div className="p-4 pb-8">
             {movements.length === 0 ? (
               <div className="text-center py-12 text-slate-400">
                 <BarChart3 size={36} className="mx-auto mb-3 opacity-30" />
                 <p className="font-medium text-sm">Движений пока нет</p>
               </div>
-            ) : (
-              movements.map(m => (
-                <div key={m.id} className={`bg-white rounded-xl border px-4 py-3 flex items-start gap-3 ${
-                  m.type === "in" ? "border-green-200" : m.type === "out" ? "border-red-200" : "border-slate-200"
-                }`}>
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    m.type === "in" ? "bg-green-100" : m.type === "out" ? "bg-red-100" : "bg-slate-100"
-                  }`}>
-                    {m.type === "in" ? <ArrowDownToLine size={14} className="text-green-600" /> :
-                     m.type === "out" ? <ArrowUpFromLine size={14} className="text-red-600" /> :
-                     <Settings size={14} className="text-slate-500" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-slate-800 text-sm truncate">{m.itemName}</p>
-                    <p className="text-xs text-slate-500">{m.reason} {m.note ? `· ${m.note}` : ""}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{new Date(m.createdAt).toLocaleString("ru-RU", { day:"2-digit", month:"2-digit", year:"2-digit", hour:"2-digit", minute:"2-digit" })}</p>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <p className={`font-black text-sm ${m.type === "in" ? "text-green-600" : m.type === "out" ? "text-red-600" : "text-slate-500"}`}>
-                      {m.type === "in" ? "+" : m.type === "out" ? "−" : "±"}{m.qty}
-                    </p>
-                    <p className="text-[10px] text-slate-400">{m.stockBefore} → {m.stockAfter}</p>
-                  </div>
+            ) : viewMode === "table" ? (
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                  <table className="min-w-[900px] w-full text-sm">
+                    <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                      <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+                        <th className="text-left px-3 py-2">Дата</th>
+                        <th className="text-left px-3 py-2">Позиция</th>
+                        <th className="text-left px-3 py-2">Тип</th>
+                        <th className="text-right px-3 py-2">Кол-во</th>
+                        <th className="text-left px-3 py-2">Причина</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {movements.map(m => (
+                        <tr key={m.id} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="px-3 py-2 text-slate-500 text-xs font-mono">
+                            {new Date(m.createdAt).toLocaleString("ru-RU", { day:"2-digit", month:"2-digit", year:"2-digit", hour:"2-digit", minute:"2-digit" })}
+                          </td>
+                          <td className="px-3 py-2 font-semibold text-slate-800">{m.itemName}</td>
+                          <td className="px-3 py-2 text-slate-600">
+                            {m.type === "in" ? "Приход" : m.type === "out" ? "Списание" : "Корректировка"}
+                          </td>
+                          <td className={`px-3 py-2 text-right font-black ${
+                            m.type === "in" ? "text-green-700" : m.type === "out" ? "text-red-700" : "text-slate-600"
+                          }`}>
+                            {m.type === "in" ? "+" : m.type === "out" ? "−" : "±"}{m.qty}
+                          </td>
+                          <td className="px-3 py-2 text-slate-600 text-xs">
+                            {m.reason}{m.note ? ` · ${m.note}` : ""}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {movements.map(m => (
+                  <div key={m.id} className={`bg-white rounded-xl border px-4 py-3 flex items-start gap-3 ${
+                    m.type === "in" ? "border-green-200" : m.type === "out" ? "border-red-200" : "border-slate-200"
+                  }`}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                      m.type === "in" ? "bg-green-100" : m.type === "out" ? "bg-red-100" : "bg-slate-100"
+                    }`}>
+                      {m.type === "in" ? <ArrowDownToLine size={14} className="text-green-600" /> :
+                       m.type === "out" ? <ArrowUpFromLine size={14} className="text-red-600" /> :
+                       <Settings size={14} className="text-slate-500" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-slate-800 text-sm truncate">{m.itemName}</p>
+                      <p className="text-xs text-slate-500">{m.reason} {m.note ? `· ${m.note}` : ""}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">{new Date(m.createdAt).toLocaleString("ru-RU", { day:"2-digit", month:"2-digit", year:"2-digit", hour:"2-digit", minute:"2-digit" })}</p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className={`font-black text-sm ${m.type === "in" ? "text-green-600" : m.type === "out" ? "text-red-600" : "text-slate-500"}`}>
+                        {m.type === "in" ? "+" : m.type === "out" ? "−" : "±"}{m.qty}
+                      </p>
+                      <p className="text-[10px] text-slate-400">{m.stockBefore} → {m.stockAfter}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}
 
         {/* ══ ORDERS TAB ════════════════════════════════════════════════════════ */}
         {tab === "orders" && (
-          <div className="p-4 pb-8 space-y-2">
+          <div className="p-4 pb-8">
             {orders.length === 0 ? (
               <div className="text-center py-12 text-slate-400">
                 <ShoppingCart size={36} className="mx-auto mb-3 opacity-30" />
                 <p className="font-medium text-sm">Закупочных заявок нет</p>
               </div>
+            ) : viewMode === "table" ? (
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                  <table className="min-w-[900px] w-full text-sm">
+                    <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
+                      <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+                        <th className="text-left px-3 py-2">Позиция</th>
+                        <th className="text-right px-3 py-2">Кол-во</th>
+                        <th className="text-right px-3 py-2">Закуп</th>
+                        <th className="text-right px-3 py-2">Сумма</th>
+                        <th className="text-left px-3 py-2">Статус</th>
+                        <th className="text-right px-3 py-2">Действия</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orders.map(po => (
+                        <tr key={po.id} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="px-3 py-2">
+                            <div className="font-semibold text-slate-800">{po.itemName}</div>
+                            <div className="text-[11px] text-slate-400 font-mono">#{po.id.slice(-6)}</div>
+                          </td>
+                          <td className="px-3 py-2 text-right text-slate-700 font-bold">{po.qtyOrdered} {po.itemUnit}</td>
+                          <td className="px-3 py-2 text-right text-slate-600">{fmtShort(po.pricePerUnit)}</td>
+                          <td className="px-3 py-2 text-right font-black text-indigo-700">{fmtShort(po.totalCost)}</td>
+                          <td className="px-3 py-2 text-slate-600">{PO_STATUS_CFG[po.status]?.label ?? po.status}</td>
+                          <td className="px-3 py-2 text-right">
+                            <div className="inline-flex gap-1">
+                              <button
+                                onClick={async () => {
+                                  const qty = po.qtyOrdered;
+                                  const res = await fetch(`${API}/warehouse/${po.itemId}/stock-in`, {
+                                    method: "POST",
+                                    headers: JH,
+                                    body: JSON.stringify({ qty, reason: "purchase", note: `Получение по заказу ${po.id.slice(-6)}` }),
+                                  });
+                                  const d = await res.json();
+                                  if (d.error) { showToast(d.error, false); return; }
+                                  await fetch(`${API}/purchase-orders/${po.id}`, { method: "PATCH", headers: JH, body: JSON.stringify({ status: "received" }) });
+                                  showToast("📦 Товар получен, склад пополнен");
+                                  fetchAll();
+                                }}
+                                className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-semibold hover:bg-slate-200"
+                              >
+                                Приход
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  const res = await fetch(`${API}/purchase-orders/${po.id}`, { method: "PATCH", headers: JH, body: JSON.stringify({ status: "cancelled" }) });
+                                  const d = await res.json();
+                                  if (d.success) { showToast("Заказ отменён"); fetchAll(); }
+                                  else showToast(d.error || "Ошибка", false);
+                                }}
+                                className="px-2 py-1 rounded-lg bg-red-50 text-red-700 text-xs font-semibold hover:bg-red-100"
+                              >
+                                Отмена
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             ) : (
-              orders.map(po => (
-                <PurchaseOrderCard key={po.id} po={po} onReceive={async (qty) => {
-                  const res = await fetch(`${API}/warehouse/${po.itemId}/stock-in`, {
-                    method: "POST", headers: JH, body: JSON.stringify({ qty, reason: "purchase", poId: po.id, note: `Получение по заказу ${po.id.slice(-6)}` }),
-                  });
-                  const d = await res.json();
-                  if (d.error) { showToast(d.error, false); return; }
-                  setItems(prev => prev.map(i => i.id === po.itemId ? d.item : i));
-                  setMovements(prev => [d.movement, ...prev]);
-                  await fetch(`${API}/purchase-orders/${po.id}`, { method: "PATCH", headers: JH, body: JSON.stringify({ status: "received", qtyReceived: qty }) });
-                  setOrders(prev => prev.map(o => o.id === po.id ? { ...o, status: "received", qtyReceived: qty } : o));
-                  showToast("📦 Товар получен, склад пополнен");
-                }} />
-              ))
+              <div className="space-y-2">
+                {orders.map(po => (
+                  <PurchaseOrderCard
+                    key={po.id}
+                    po={po}
+                    onReceive={async (qty) => {
+                      const res = await fetch(`${API}/warehouse/${po.itemId}/stock-in`, {
+                        method: "POST",
+                        headers: JH,
+                        body: JSON.stringify({ qty, reason: "purchase", note: `Получение по заказу ${po.id.slice(-6)}` }),
+                      });
+                      const d = await res.json();
+                      if (d.error) { showToast(d.error, false); return; }
+                      await fetch(`${API}/purchase-orders/${po.id}`, { method: "PATCH", headers: JH, body: JSON.stringify({ status: "received" }) });
+                      showToast("📦 Товар получен, склад пополнен");
+                      fetchAll();
+                    }}
+                  />
+                ))}
+              </div>
             )}
           </div>
         )}
@@ -659,6 +881,151 @@ export function WarehouseView() {
           }}
         />
       )}
+
+      {/* ── CSV Import Modal (склад) ─────────────────────────────────────────── */}
+      {showCsvImport && (
+        <CsvImportModal
+          onClose={() => setShowCsvImport(false)}
+          onImported={(count) => {
+            setShowCsvImport(false);
+            showToast(`✅ Импортировано ${count} позиций`);
+            fetchAll();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CsvImportModal({ onClose, onImported }: { onClose: () => void; onImported: (count: number) => void }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string>("");
+
+  function parseRows(): any[] {
+    const raw = text.trim();
+    if (!raw) return [];
+    const lines = raw.split(/\\r?\\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+    const delim = lines[0].includes(";") && !lines[0].includes(",") ? ";" : ",";
+    const cells = lines.map((l) => l.split(delim).map((c) => c.trim()));
+    const header = cells[0].map((h) => h.toLowerCase());
+    const hasHeader = header.includes("name") || header.includes("название") || header.includes("sku");
+    const rows = hasHeader ? cells.slice(1) : cells;
+
+    const col = (h: string) => header.indexOf(h);
+    const idx = {
+      name: col("name") >= 0 ? col("name") : col("название"),
+      category: col("category") >= 0 ? col("category") : col("категория"),
+      unit: col("unit") >= 0 ? col("unit") : col("ед") >= 0 ? col("ед") : col("единица"),
+      sku: col("sku"),
+      stock: col("stock") >= 0 ? col("stock") : col("остаток"),
+      minStock: col("minstock") >= 0 ? col("minstock") : col("min_stock") >= 0 ? col("min_stock") : col("мин"),
+      price: col("price") >= 0 ? col("price") : col("sell_price") >= 0 ? col("sell_price") : col("цена"),
+    };
+
+    return rows.map((r) => {
+      if (!hasHeader) {
+        // Fallback order: name;category;unit;sku;stock;minStock;price
+        return {
+          name: r[0] ?? "",
+          category: r[1] ?? "Прочее",
+          unit: r[2] ?? "шт",
+          sku: r[3] ?? "",
+          stock: Number(String(r[4] ?? "0").replace(",", ".")),
+          minStock: Number(String(r[5] ?? "0").replace(",", ".")),
+          price: Number(String(r[6] ?? "0").replace(",", ".")),
+        };
+      }
+      const pick = (i: number) => (i >= 0 ? (r[i] ?? "") : "");
+      return {
+        name: pick(idx.name),
+        category: pick(idx.category) || "Прочее",
+        unit: pick(idx.unit) || "шт",
+        sku: pick(idx.sku),
+        stock: Number(String(pick(idx.stock) || "0").replace(",", ".")),
+        minStock: Number(String(pick(idx.minStock) || "0").replace(",", ".")),
+        price: Number(String(pick(idx.price) || "0").replace(",", ".")),
+      };
+    }).filter((r) => String(r.name).trim());
+  }
+
+  const rows = parseRows();
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h3 className="font-black text-slate-800">Импорт склада из CSV</h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Колонки: `name;category;unit;sku;stock;minStock;price` (можно с заголовком).
+            </p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <textarea
+              value={text}
+              onChange={(e) => { setText(e.target.value); setErr(""); }}
+              placeholder={"name;category;unit;sku;stock;minStock;price\\nТруба 1/4;Трубопровод;м;PIPE-14;100;30;8.28"}
+              className="w-full h-64 border border-slate-200 rounded-xl p-3 text-sm font-mono outline-none focus:ring-2 focus:ring-teal-500"
+            />
+            {err ? <p className="text-xs text-red-600 mt-2">{err}</p> : null}
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Превью</p>
+            <p className="text-sm font-semibold text-slate-800 mt-1">Строк: {rows.length}</p>
+            <div className="mt-3 space-y-2 max-h-48 overflow-auto">
+              {rows.slice(0, 8).map((r, idx) => (
+                <div key={idx} className="bg-white border border-slate-200 rounded-lg p-2">
+                  <div className="text-sm font-semibold text-slate-800 line-clamp-1">{r.name}</div>
+                  <div className="text-[11px] text-slate-500">
+                    {r.category} · {r.stock} {r.unit} · мин {r.minStock} · {r.sku ? `SKU ${r.sku} · ` : ""}{r.price}
+                  </div>
+                </div>
+              ))}
+              {rows.length > 8 ? <p className="text-xs text-slate-400">…и ещё {rows.length - 8}</p> : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700">
+            Отмена
+          </button>
+          <button
+            disabled={busy || rows.length === 0}
+            onClick={async () => {
+              try {
+                setBusy(true);
+                setErr("");
+                let ok = 0;
+                for (const r of rows) {
+                  const res = await fetch(`${API}/warehouse`, { method: "POST", headers: JH, body: JSON.stringify(r) });
+                  const d = await res.json();
+                  if (d.error) throw new Error(d.error);
+                  ok++;
+                }
+                onImported(ok);
+              } catch (e: any) {
+                setErr(e?.message || "Ошибка импорта");
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="px-4 py-2 rounded-xl text-sm font-black text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {busy ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+            Импортировать
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

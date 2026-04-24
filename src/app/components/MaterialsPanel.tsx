@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
+import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AUTH_HEADERS = { Authorization: `Bearer ${publicAnonKey}` };
@@ -261,8 +262,7 @@ export function TemplateEditor({ onSaved }: TemplateEditorProps) {
   async function loadTemplate() {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/material-templates/default`, { headers: AUTH_HEADERS });
-      const data = await res.json();
+      const data = await getJson<any>(`${API_BASE}/material-templates/default`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.template) setTemplate(data.template);
     } catch (err) {
       console.error("Load template error:", err);

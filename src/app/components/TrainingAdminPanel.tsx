@@ -6,6 +6,7 @@ import {
   Clock, Target, Award, ArrowLeft, RefreshCw, Eye, ToggleLeft,
   ToggleRight, ChevronRight, Loader2, Search, Filter
 } from "lucide-react";
+import { getJson } from "../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };
@@ -115,8 +116,7 @@ export function TrainingAdminPanel({ onBack, showToast }: TrainingAdminPanelProp
   const loadTests = useCallback(async () => {
     setLoadingTests(true);
     try {
-      const res = await fetch(`${API}/training/tests?active=false`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/tests?active=false`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.tests) setTests(data.tests.sort((a: TestMeta, b: TestMeta) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       ));
@@ -128,8 +128,7 @@ export function TrainingAdminPanel({ onBack, showToast }: TrainingAdminPanelProp
 
   async function openTestEditor(testId: string) {
     try {
-      const res = await fetch(`${API}/training/tests/${testId}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/tests/${testId}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.test) { setEditingTest(data.test); setCreatingNew(false); }
     } catch (e) { showToast("Ошибка загрузки теста"); }
   }
@@ -884,12 +883,10 @@ function AnalyticsTab({ showToast }: { showToast: (msg: string) => void }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rRes, tRes] = await Promise.all([
-        fetch(`${API}/training/results`, { headers: AH }),
-        fetch(`${API}/training/tests?active=false`, { headers: AH }),
+      const [rData, tData] = await Promise.all([
+        getJson<any>(`${API}/training/results`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/training/tests?active=false`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true }),
       ]);
-      const rData = await rRes.json();
-      const tData = await tRes.json();
       if (rData.results) setAllResults(rData.results);
       if (tData.tests) setAllTests(tData.tests);
     } catch (e) { console.error("Load analytics:", e); }
@@ -901,8 +898,7 @@ function AnalyticsTab({ showToast }: { showToast: (msg: string) => void }) {
   async function loadResultDetail(resultId: string) {
     setLoadingDetail(true);
     try {
-      const res = await fetch(`${API}/training/results/${resultId}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/training/results/${resultId}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.result) setSelectedResult(data.result);
     } catch (e) { showToast("Ошибка загрузки результата"); }
     finally { setLoadingDetail(false); }
@@ -1206,8 +1202,7 @@ function ResultDetailView({ result: r, testTitle, onBack }: {
   useEffect(() => {
     if (!r.testId) return;
     setLoadingTest(true);
-    fetch(`${API}/training/tests/${r.testId}`, { headers: AH })
-      .then(res => res.json())
+    getJson<any>(`${API}/training/tests/${r.testId}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true })
       .then(data => { if (data.test) setTestFull(data.test); })
       .catch(() => {})
       .finally(() => setLoadingTest(false));
@@ -1420,8 +1415,7 @@ function CertTab() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/training/certification/${CERT_YEAR}`, { headers: AH });
-        const data = await res.json();
+        const data = await getJson<any>(`${API}/training/certification/${CERT_YEAR}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
         if (data.installers) setMatrix(data.installers);
       } catch { /* silent */ }
       finally { setLoading(false); }

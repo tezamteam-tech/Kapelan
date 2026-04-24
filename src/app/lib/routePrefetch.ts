@@ -9,11 +9,13 @@ const prefetchMap: Record<string, Prefetcher> = {
   "/warehouse": () => import("../components/pages/WarehousePage"),
   "/procurement": () => import("../components/pages/ProcurementPage"),
   "/documents": () => import("../components/pages/DocumentsPage"),
+  "/clients": () => import("../components/pages/ClientsPage"),
   "/reminders": () => import("../components/pages/RemindersPage"),
   "/ventilation": () => import("../components/pages/VentilationPage"),
   "/training": () => import("../components/pages/TrainingPage"),
   "/users": () => import("../components/pages/UsersPage"),
   "/settings": () => import("../components/pages/SettingsPage"),
+  "/profile": () => import("../components/pages/ProfilePage"),
 };
 
 export function prefetchRoute(path: string) {

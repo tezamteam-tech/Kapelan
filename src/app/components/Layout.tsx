@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router";
 import { useRole, type UserRole } from "./RoleContext";
 import { prefetchRoute } from "../lib/routePrefetch";
@@ -8,6 +8,7 @@ import {
   Users, ChevronLeft, ChevronRight, LogOut, Snowflake, Menu, X,
   CalendarDays, ClipboardCheck, Ruler
 } from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
 
 interface NavItem {
   path: string;
@@ -20,13 +21,14 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { path: "/dashboard",      label: "Дашборд",         icon: <LayoutDashboard size={20} />, roles: ["admin"] },
   { path: "/ai-chat",        label: "AI Менеджер",     icon: <MessageSquare size={20} />,   roles: ["admin", "manager"] },
-  { path: "/orders",         label: "Ордера",          icon: <ClipboardCheck size={20} />,  roles: ["admin", "manager", "installer"] },
+  { path: "/orders",         label: "Ордера",          icon: <ClipboardCheck size={20} />,  roles: ["admin", "manager"] },
   // Order-first: hide legacy modules from navigation
   { path: "/tasks",          label: "Мои задачи",      icon: <Wrench size={20} />,           roles: ["admin", "installer"] },
   { path: "/calendar",       label: "Календарь",       icon: <CalendarDays size={20} />,     roles: ["admin", "manager"] },
   { path: "/warehouse",      label: "Склад",           icon: <Package size={20} />,          roles: ["admin"] },
   { path: "/procurement",    label: "Закупки",         icon: <ShoppingCart size={20} />,      roles: ["admin"] },
   { path: "/documents",      label: "Документы",       icon: <FileText size={20} />,          roles: ["admin", "manager"] },
+  { path: "/clients",        label: "Клиенты",         icon: <Users size={20} />,             roles: ["admin", "manager"] },
   { path: "/reminders",      label: "Напоминания ТО",  icon: <Bell size={20} />,              roles: ["admin", "manager"] },
   { path: "/ventilation",    label: "Вентиляция AI",   icon: <Wind size={20} />,              roles: ["admin", "manager", "installer"] },
   { path: "/training",       label: "Обучение",        icon: <GraduationCap size={20} />,     roles: ["admin", "manager", "installer"] },
@@ -47,11 +49,20 @@ const ROLE_COLORS: Record<UserRole, string> = {
 };
 
 export function Layout() {
-  const { role, setRole, userName, hasAccess } = useRole();
+  const { role, userName, hasAccess } = useRole();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [avatar, setAvatar] = useState<string>("");
+
+  useEffect(() => {
+    try {
+      setAvatar(localStorage.getItem("kapelan_user_avatar") || "");
+    } catch {
+      setAvatar("");
+    }
+  }, [location.pathname]);
 
   const visibleItems = NAV_ITEMS.filter(item => hasAccess(item.roles));
 
@@ -61,6 +72,14 @@ export function Layout() {
     navigate(path);
     setMobileOpen(false);
   };
+
+  const signOut = useCallback(async () => {
+    try {
+      await supabase?.auth.signOut();
+    } finally {
+      navigate("/login", { replace: true });
+    }
+  }, [navigate]);
 
   return (
     <div className="h-screen flex overflow-hidden bg-slate-50">
@@ -122,26 +141,18 @@ export function Layout() {
           })}
         </nav>
 
-        {/* Role switcher */}
+        {/* Auth actions */}
         <div className={`border-t border-slate-200 p-3 flex-shrink-0 ${collapsed ? "px-2" : ""}`}>
-          {!collapsed && (
-            <div className="mb-2">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mb-1.5 px-1">Роль</p>
-              <div className="flex gap-1">
-                {(["admin", "manager", "installer"] as UserRole[]).map(r => (
-                  <button
-                    key={r}
-                    onClick={() => setRole(r)}
-                    className={`flex-1 text-[10px] py-1.5 rounded-lg font-semibold transition-all ${
-                      role === r ? ROLE_COLORS[r] : "text-slate-400 hover:bg-slate-100"
-                    }`}
-                  >
-                    {r === "admin" ? "Админ" : r === "manager" ? "Менеджер" : "Монтажник"}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          <button
+            onClick={() => void signOut()}
+            className={`w-full flex items-center gap-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-xs font-bold ${
+              collapsed ? "justify-center px-2 py-2" : "px-3 py-2"
+            }`}
+            title="Выйти"
+          >
+            <LogOut size={16} />
+            {!collapsed ? "Выйти" : null}
+          </button>
 
           {/* Collapse toggle */}
           <button
@@ -172,9 +183,19 @@ export function Layout() {
             <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${ROLE_COLORS[role]}`}>
               {ROLE_LABELS[role]}
             </span>
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-sm font-bold">
-              {userName.charAt(0).toUpperCase()}
-            </div>
+            <button
+              onClick={() => navigate("/profile")}
+              onMouseEnter={() => prefetchRoute("/profile")}
+              onFocus={() => prefetchRoute("/profile")}
+              className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center text-white text-sm font-bold overflow-hidden"
+              title="Профиль"
+            >
+              {avatar ? (
+                <img src={avatar} alt="avatar" className="w-full h-full object-cover" />
+              ) : (
+                userName.charAt(0).toUpperCase()
+              )}
+            </button>
           </div>
         </header>
 

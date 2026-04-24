@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
 import { SignatureCanvas, SignatureCanvasHandle } from "./SignatureCanvas";
 import { MaterialsPanel, MaterialsJson } from "./MaterialsPanel";
+import { useRole } from "./RoleContext";
+import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AUTH_HEADERS = { Authorization: `Bearer ${publicAnonKey}` };
@@ -16,6 +18,8 @@ interface Lead {
   id: string;
   clientId: string;
   status: LeadStatus;
+  assignedInstallerId?: string | null;
+  assignedInstallerTeamId?: string | null;
   requirements_json: {
     area?: number;
     roomType?: string;
@@ -33,6 +37,16 @@ interface Client {
   name: string;
   phone: string;
   email?: string | null;
+}
+
+interface Installer {
+  id: string;
+  name: string;
+  phone: string;
+  teamId?: string | null;
+  teamName?: string | null;
+  isTeamLead?: boolean;
+  active?: boolean;
 }
 
 interface Measurement {
@@ -88,6 +102,7 @@ function StatusBadge({ status }: { status: string }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 export function InstallerView() {
   const { fmtShort, currency } = useCurrency();
+  const { userName } = useRole();
   const [screen, setScreen] = useState<"list" | "form">("list");
   const [leads, setLeads] = useState<Lead[]>([]);
   const [clients, setClients] = useState<Record<string, Client>>({});
@@ -96,6 +111,8 @@ export function InstallerView() {
   const [filterTab, setFilterTab] = useState<FilterTab>("measurement");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [installers, setInstallers] = useState<Installer[]>([]);
+  const [me, setMe] = useState<Installer | null>(null);
 
   // Form state
   const [traceLength, setTraceLength] = useState("");
@@ -122,30 +139,70 @@ export function InstallerView() {
     setTimeout(() => setToastMsg(null), 3500);
   }, []);
 
+  const fetchInstallers = useCallback(async () => {
+    try {
+      const data = await getJson<any>(`${API_BASE}/installers`, { ttlMs: 5 * 60_000, staleTtlMs: 30 * 60_000, swr: true });
+      if (Array.isArray(data.installers)) setInstallers(data.installers);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => { fetchInstallers(); }, [fetchInstallers]);
+
+  useEffect(() => {
+    const name = String(userName || "").trim().toLowerCase();
+    if (!name) { setMe(null); return; }
+    const found = installers.find(i => String(i.name || "").trim().toLowerCase() === name) ?? null;
+    setMe(found);
+  }, [installers, userName]);
+
+  const scopeInstallerIds = useMemo(() => {
+    if (!me) return new Set<string>();
+    if (me.isTeamLead && me.teamId) {
+      const ids = installers
+        .filter(i => (i.teamId || null) === me.teamId && (i.active ?? true) !== false)
+        .map(i => i.id);
+      return new Set(ids);
+    }
+    return new Set([me.id]);
+  }, [installers, me]);
+
   // ─ Fetch leads ─
   const fetchLeads = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/leads`, { headers: AUTH_HEADERS });
-      const data = await res.json();
+      const data = await getJson<any>(`${API_BASE}/leads`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.leads) {
-        setLeads(data.leads);
-        const ids = [...new Set<string>(data.leads.map((l: Lead) => l.clientId))];
-        ids.forEach(fetchClient);
+        const all: Lead[] = data.leads;
+        // Scope: installer sees only assigned to self; team lead sees whole team
+        const scoped = me
+          ? all.filter((l) => {
+              const aid = (l.assignedInstallerId ?? null) as string | null;
+              const tid = (l.assignedInstallerTeamId ?? null) as string | null;
+              if (me.isTeamLead && me.teamId) {
+                return (tid && tid === me.teamId) || (aid && scopeInstallerIds.has(aid));
+              }
+              return aid ? scopeInstallerIds.has(aid) : false;
+            })
+          : [];
+        setLeads(scoped);
+        const ids = [...new Set<string>(scoped.map((l: Lead) => l.clientId))];
+        ids.forEach((id) => void fetchClient(id));
       }
     } catch {
       showToast("Ошибка загрузки заявок", false);
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [me, scopeInstallerIds, showToast]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
   async function fetchClient(clientId: string) {
     try {
-      const res = await fetch(`${API_BASE}/client/${clientId}`, { headers: AUTH_HEADERS });
-      const data = await res.json();
+      if (clients[clientId]) return;
+      const data = await getJson<any>(`${API_BASE}/client/${clientId}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.client) setClients(prev => ({ ...prev, [clientId]: data.client }));
     } catch { /* silent */ }
   }
@@ -169,8 +226,7 @@ export function InstallerView() {
     setSavedMaterials(null);
 
     try {
-      const res = await fetch(`${API_BASE}/measurements/lead/${lead.id}`, { headers: AUTH_HEADERS });
-      const data = await res.json();
+      const data = await getJson<any>(`${API_BASE}/measurements/lead/${lead.id}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.measurement) {
         const m: Measurement = data.measurement;
         setExistingMeasurement(m);
@@ -589,7 +645,13 @@ export function InstallerView() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-xl font-bold">Мои задания</h1>
-            <p className="text-blue-200 text-sm mt-0.5">{filteredLeads.length} заявок</p>
+            <p className="text-blue-200 text-sm mt-0.5">
+              {me
+                ? (me.isTeamLead && me.teamId ? `Бригада: ${me.teamName || me.teamId}` : "Назначено вам")
+                : "Профиль монтажника не найден"}
+              {" · "}
+              {filteredLeads.length} заявок
+            </p>
           </div>
           <button
             onClick={fetchLeads}
@@ -619,6 +681,11 @@ export function InstallerView() {
           <div className="flex flex-col items-center justify-center h-48 text-slate-400 gap-3">
             <span className="text-4xl animate-spin">⏳</span>
             <p className="text-sm">Загрузка...</p>
+          </div>
+        ) : !me ? (
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 text-sm text-slate-600">
+            Для роли <b>Монтажник</b> нужно, чтобы ваш <b>userName</b> совпадал с именем в списке монтажников.
+            Сейчас: <b>{userName || "—"}</b>.
           </div>
         ) : filteredLeads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-48 text-slate-400 gap-3">

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
+import { getJson } from "../../lib/apiClient";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ChevronLeft, ChevronRight, Loader2, Calendar as CalendarIcon,
@@ -159,12 +160,10 @@ export function CalendarPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [aRes, iRes] = await Promise.all([
-        fetch(`${API_BASE}/assignments`, { headers: AH }),
-        fetch(`${API_BASE}/installers`, { headers: AH }),
+      const [aData, iData] = await Promise.all([
+        getJson<any>(`${API_BASE}/assignments`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API_BASE}/installers`, { ttlMs: 5 * 60_000, staleTtlMs: 30 * 60_000, swr: true }),
       ]);
-      const aData = await aRes.json();
-      const iData = await iRes.json();
       if (aData.assignments) setAssignments(aData.assignments);
       if (iData.installers) setInstallers(iData.installers);
     } catch (err) {

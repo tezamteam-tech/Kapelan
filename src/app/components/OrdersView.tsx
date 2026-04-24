@@ -77,6 +77,7 @@ interface Order {
     assigned_installer_name?: string;
     completion_notes?: string;
     photos?: string[];
+    signed_act_url?: string;
     client_signed?: boolean;
     client_sign_name?: string;
     client_signed_at?: string;
@@ -84,6 +85,7 @@ interface Order {
       materials?: Record<string, boolean>;
       equipment?: boolean;
       tools?: Record<string, boolean>;
+      custom?: Array<{ id: string; text: string; done: boolean }>;
       ready_confirmed?: boolean;
       updated_at?: string;
     };
@@ -197,6 +199,7 @@ export function OrdersView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [q, setQ] = useState("");
   const [prepFilter, setPrepFilter] = useState<"all" | "departed" | "packing" | "ready" | "not_started">("all");
   const [installerScope, setInstallerScope] = useState<"my" | "all">("my");
@@ -213,16 +216,75 @@ export function OrdersView() {
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [partialReceiptReq, setPartialReceiptReq] = useState<SupplierRequest | null>(null);
+  const [activeStep, setActiveStep] = useState<OrderStepKey>("qualification");
+  const [revertingToNew, setRevertingToNew] = useState(false);
+  const [statusFlash, setStatusFlash] = useState<{ from: string; to: string } | null>(null);
   const [createPrefill, setCreatePrefill] = useState<{
     client_name?: string;
     client_phone?: string;
     object_address?: string;
   } | null>(null);
 
+  const applyStepStatus = useCallback(async (step: OrderStepKey) => {
+    if (!selected) return;
+    const currentStep = stepForStatus(selected.status);
+    const curIdx = STEP_CFG.findIndex((s) => s.key === currentStep);
+    const targetIdx = STEP_CFG.findIndex((s) => s.key === step);
+    if (curIdx !== -1 && targetIdx !== -1 && Math.abs(targetIdx - curIdx) > 1) {
+      showToast(
+        `Нельзя применить шаг «${STEP_CFG.find((x) => x.key === step)?.label}» с пропуском. ` +
+          `Сначала примените соседний шаг (${targetIdx > curIdx ? "следующий" : "предыдущий"}).`,
+        false,
+      );
+      return;
+    }
+    const stepToStatus: Record<OrderStepKey, OrderStatus> = {
+      qualification: "qualification",
+      survey: "survey_scheduled",
+      offer: "offer_prepared",
+      supply: "awaiting_supply",
+      schedule: "ready_to_schedule",
+      execute: "in_progress",
+      close: "completed",
+    };
+    const nextStatus = stepToStatus[step];
+    if (nextStatus === selected.status) return;
+    const states = stepStatesForOrder(selected, materials, supplierRequests);
+    const st = states[step];
+    if (st.blockedReason) {
+      showToast(`Нельзя перейти на шаг «${STEP_CFG.find((x) => x.key === step)?.label}»: ${st.blockedReason}`, false);
+      return;
+    }
+    if (!confirm(`Сменить статус ордера на «${STATUS_LABEL[nextStatus]}»?\n\nМожно откатывать назад, но делайте осознанно.`)) return;
+    try {
+      const res = await fetch(`${API}/orders/${selected.id}`, { method: "PATCH", headers: JH, body: JSON.stringify({ status: nextStatus }) });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setSelected(data.order);
+      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      flashStatus(STATUS_LABEL[selected.status] ?? String(selected.status), STATUS_LABEL[nextStatus] ?? String(nextStatus));
+      showToast(`Статус: ${STATUS_LABEL[nextStatus]}`);
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось изменить статус", false);
+    }
+  }, [selected, materials, supplierRequests, setOrders]);
+
+  useEffect(() => {
+    if (!selected) return;
+    setActiveStep(stepForStatus(selected.status));
+  }, [selected?.id, selected?.status]);
+
   const showToast = useCallback((msg: string, ok = true) => {
     setToast({ ok, msg });
     setTimeout(() => setToast(null), 3200);
   }, []);
+
+  const flashStatus = useCallback((from: string, to: string) => {
+    setStatusFlash({ from, to });
+    setTimeout(() => setStatusFlash(null), 2600);
+  }, []);
+
+  const detailAbortRef = React.useRef<AbortController | null>(null);
 
   const loadWarehouseEquipment = useCallback(async (opts?: { force?: boolean }) => {
     try {
@@ -254,7 +316,7 @@ export function OrdersView() {
   const loadOrders = useCallback(async (opts?: { force?: boolean }) => {
     setLoading(true);
     try {
-      const data = await getJson<{ orders?: Order[] }>(`${API}/orders`, { ttlMs: 30_000, force: opts?.force });
+      const data = await getJson<{ orders?: Order[] }>(`${API}/orders?lite=1`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, force: opts?.force });
       setOrders(data.orders ?? []);
     } catch {
       showToast("Ошибка загрузки ордеров", false);
@@ -263,20 +325,46 @@ export function OrdersView() {
     }
   }, [showToast]);
 
+  const prefetchOrderDetail = useCallback(async (id: string) => {
+    try {
+      // Warm cache: return instantly on click (SWR will refresh later)
+      await getJson<any>(`${API}/orders/${id}?light=1`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
+      // Also prefetch tab data in background
+      void getJson<any>(`${API}/orders/${id}/materials`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }).catch(() => null);
+      void getJson<any>(`${API}/orders/${id}/supplier-requests`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }).catch(() => null);
+      void getJson<any>(`${API}/orders/${id}/timeline`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }).catch(() => null);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const loadOrderDetail = useCallback(
     async (id: string) => {
-      setLoading(true);
+      detailAbortRef.current?.abort();
+      const ac = new AbortController();
+      detailAbortRef.current = ac;
+      setDetailLoading(true);
       try {
-        const data = await getJson<any>(`${API}/orders/${id}`, { ttlMs: 20_000 });
-        if (data.error) throw new Error(data.error);
-        setSelected(data.order);
-        setMaterials(data.materials ?? []);
-        setSupplierRequests(data.supplierRequests ?? []);
-        setTimeline(data.timeline ?? []);
+        // Fast path: load only base order first
+        const base = await getJson<any>(`${API}/orders/${id}?light=1`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, signal: ac.signal, swr: true });
+        if (base.error) throw new Error(base.error);
+        setSelected(base.order);
+
+        // Load heavy parts in parallel (each cached)
+        const [m, s, t] = await Promise.all([
+          getJson<any>(`${API}/orders/${id}/materials`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, signal: ac.signal, swr: true }),
+          getJson<any>(`${API}/orders/${id}/supplier-requests`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, signal: ac.signal, swr: true }),
+          getJson<any>(`${API}/orders/${id}/timeline`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, signal: ac.signal, swr: true }),
+        ]);
+        setMaterials(m.materials ?? []);
+        setSupplierRequests(s.supplierRequests ?? []);
+        setTimeline(t.timeline ?? []);
       } catch (e: any) {
+        if (e?.name === "AbortError") return;
         showToast(e?.message || "Ошибка загрузки ордера", false);
       } finally {
-        setLoading(false);
+        if (detailAbortRef.current === ac) detailAbortRef.current = null;
+        setDetailLoading(false);
       }
     },
     [showToast],
@@ -294,12 +382,10 @@ export function OrdersView() {
     if (!leadId) return;
     (async () => {
       try {
-        const res = await fetch(`${API}/leads`, { headers: AH });
-        const data = await res.json();
+        const data = await getJson<any>(`${API}/leads`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
         const lead = (data.leads ?? []).find((l: any) => l.id === leadId);
         if (!lead) throw new Error("Lead не найден");
-        const cRes = await fetch(`${API}/client/${lead.clientId}`, { headers: AH });
-        const cData = await cRes.json();
+        const cData = await getJson<any>(`${API}/client/${lead.clientId}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
         const client = cData.client;
         setCreatePrefill({
           client_name: client?.name ?? "",
@@ -577,6 +663,25 @@ export function OrdersView() {
       showToast("Фото сохранены");
     } catch (e: any) {
       showToast(e?.message || "Ошибка сохранения фото", false);
+    }
+  }
+
+  async function saveSignedAct(url: string | undefined) {
+    if (!selected) return;
+    try {
+      const execution = { ...(selected.execution ?? {}), signed_act_url: url || undefined };
+      const res = await fetch(`${API}/orders/${selected.id}`, {
+        method: "PATCH",
+        headers: JH,
+        body: JSON.stringify({ execution }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setSelected(data.order);
+      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      showToast("Акт загружен");
+    } catch (e: any) {
+      showToast(e?.message || "Ошибка сохранения акта", false);
     }
   }
 
@@ -967,7 +1072,15 @@ export function OrdersView() {
                     {g.list.slice(0, 4).map((o) => (
                       <button
                         key={o.id}
-                        onClick={() => setSelectedId(o.id)}
+                        onMouseEnter={() => void prefetchOrderDetail(o.id)}
+                        onFocus={() => void prefetchOrderDetail(o.id)}
+                        onClick={() => {
+                          setSelected(o);
+                          setMaterials([]);
+                          setSupplierRequests([]);
+                          setTimeline([]);
+                          setSelectedId(o.id);
+                        }}
                         className="px-2.5 py-1.5 rounded-xl border border-slate-200 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
                         title={o.object_address || ""}
                       >
@@ -995,7 +1108,15 @@ export function OrdersView() {
             filtered.map((o) => (
               <button
                 key={o.id}
-                onClick={() => setSelectedId(o.id)}
+                onMouseEnter={() => void prefetchOrderDetail(o.id)}
+                onFocus={() => void prefetchOrderDetail(o.id)}
+                onClick={() => {
+                  setSelected(o);
+                  setMaterials([]);
+                  setSupplierRequests([]);
+                  setTimeline([]);
+                  setSelectedId(o.id);
+                }}
                 className={`w-full text-left rounded-2xl border p-3 transition-all ${
                   selectedId === o.id ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
                 }`}
@@ -1053,6 +1174,12 @@ export function OrdersView() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {detailLoading && <Loader2 size={16} className="animate-spin text-slate-300" />}
+              {statusFlash && (
+                <span className="hidden sm:inline-flex text-[11px] font-extrabold px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-900 border border-indigo-200">
+                  {statusFlash.from} → {statusFlash.to}
+                </span>
+              )}
               <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-blue-50 text-blue-700">{STATUS_LABEL[selected.status]}</span>
               {role === "admin" && (
                 <button
@@ -1080,28 +1207,102 @@ export function OrdersView() {
           </div>
 
           <div className="flex-1 overflow-auto p-4 lg:p-6 space-y-4">
-            <ClientDetailsPanel
+            <ClientSummaryCard
               order={selected}
-              onSave={async (patch) => {
-                try {
-                  const res = await fetch(`${API}/orders/${selected.id}`, {
-                    method: "PATCH",
-                    headers: JH,
-                    body: JSON.stringify(patch),
-                  });
-                  const data = await res.json();
-                  if (data.error) throw new Error(data.error);
-                  setSelected(data.order);
-                  setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
-                  showToast("Данные клиента сохранены");
-                } catch (e: any) {
-                  showToast(e?.message || "Ошибка сохранения", false);
+              onOpenClients={
+                role === "admin" || role === "manager"
+                  ? () => {
+                      const phone = selected.client_phone ? `?q=${encodeURIComponent(selected.client_phone)}` : "";
+                      navigate(`/clients${phone}`);
+                    }
+                  : undefined
+              }
+            />
+
+            <OrderStepper
+              status={selected.status}
+              activeKey={activeStep}
+              states={stepStatesForOrder(selected, materials, supplierRequests)}
+              onStepClick={(key) => {
+                setActiveStep(key);
+                const st = stepStatesForOrder(selected, materials, supplierRequests)[key];
+                if (st.blockedReason) {
+                  showToast(`Чтобы выполнить шаг «${STEP_CFG.find((x) => x.key === key)?.label}», нужно: ${st.blockedReason}`, false);
                 }
               }}
             />
 
+            {(role === "admin" || role === "manager") && (
+              <div className="bg-white border border-slate-200 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div className="text-xs text-slate-500">
+                  Текущий статус: <span className="font-extrabold text-slate-800">{STATUS_LABEL[selected.status]}</span>
+                  {" · "}
+                  Открыт экран: <span className="font-extrabold text-indigo-800">{STEP_CFG.find((s) => s.key === activeStep)?.label}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => applyStepStatus(activeStep)}
+                    className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800"
+                    title="Проставит статус под выбранный шаг (только соседний шаг без пропусков)"
+                  >
+                    Применить статус шага
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activeStep === "qualification" && (
             <div className="bg-white border border-slate-200 rounded-2xl p-4">
-              <p className="text-xs text-slate-400 font-semibold">Следующие действия</p>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-extrabold text-slate-800">Старт / Квалификация</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Здесь менеджер понимает вводные и выбирает следующий шаг: замер, КП или планирование.
+                    Это не “действие”, а экран навигации по процессу.
+                  </p>
+                </div>
+                {(role === "admin" || role === "manager") && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!selected) return;
+                      if (!confirm("Вернуть статус ордера на «Новый»?")) return;
+                      const from = STATUS_LABEL[selected.status] ?? selected.status;
+                      const to = STATUS_LABEL.new;
+                      setRevertingToNew(true);
+                      try {
+                        const res = await fetch(`${API}/orders/${selected.id}`, { method: "PATCH", headers: JH, body: JSON.stringify({ status: "new" }) });
+                        const data = await res.json();
+                        if (data.error) throw new Error(data.error);
+                        setSelected(data.order);
+                        setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+                        flashStatus(from, to);
+                        showToast(`Статус изменён: ${from} → ${to}`);
+                      } catch (e: any) {
+                        showToast(e?.message || "Не удалось изменить статус", false);
+                      } finally {
+                        setRevertingToNew(false);
+                      }
+                    }}
+                    disabled={revertingToNew}
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold border ${
+                      revertingToNew
+                        ? "border-slate-200 text-slate-400 bg-slate-50 cursor-not-allowed"
+                        : "border-slate-200 text-slate-700 bg-white hover:bg-slate-50"
+                    }`}
+                  >
+                    {revertingToNew ? (
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 size={14} className="animate-spin" />
+                        Возврат…
+                      </span>
+                    ) : (
+                      "← Вернуть на «Новый»"
+                    )}
+                  </button>
+                )}
+              </div>
               {nextActions.length === 0 ? (
                 <p className="text-sm text-slate-500 mt-1">Нет обязательных действий. Можно планировать/исполнять.</p>
               ) : (
@@ -1124,7 +1325,9 @@ export function OrdersView() {
                 </div>
               )}
             </div>
+            )}
 
+            {activeStep === "offer" && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <div className="bg-white border border-slate-200 rounded-2xl p-4">
                 <p className="text-xs text-slate-400 font-semibold">КП</p>
@@ -1205,81 +1408,159 @@ export function OrdersView() {
                 </div>
               </div>
             </div>
+            )}
 
-            {adminMode !== "warehouse" && role !== "installer" && (
-              <OfferEditor
-                offer={selected.offer}
+            {activeStep === "offer" && adminMode !== "warehouse" && role !== "installer" && (
+              <div>
+                <OfferEditor
+                  offer={selected.offer}
+                  warehouseMap={warehouseMap}
+                  onCreateDraft={createOfferDraftFromEquipment}
+                  onSaveLines={saveOfferLines}
+                />
+              </div>
+            )}
+
+            {activeStep === "survey" && (
+            <div>
+              <SurveyPanel
+                survey={selected.survey}
+                installers={installers}
+                traceLengthCurrent={selected.trace_length_m ?? 4}
+                onSchedule={scheduleSurvey}
+                onComplete={completeSurvey}
+              />
+            </div>
+            )}
+
+            {activeStep === "schedule" && (
+              <>
+                <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                  <p className="text-xs text-slate-400 font-semibold">Планирование</p>
+                  <p className="text-sm font-bold text-slate-800 mt-1">Чек‑лист подготовки к выезду</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    На этом шаге формируем действия для монтажников: комплект со склада, инструменты, готовность.
+                  </p>
+                </div>
+
+                <ExecutionPlanner
+                  execution={selected.execution}
+                  installers={installers}
+                  onSchedule={scheduleExecution}
+                  onStart={startExecution}
+                  onComplete={completeExecution}
+                  onDownloadAct={downloadActPdf}
+                  mode="plan"
+                />
+
+                <InstallerChecklistPanel
+                  orderNumber={selected.number}
+                  equipmentWarehouseId={selected.equipment_warehouse_id}
+                  materials={materials}
+                  warehouseMap={warehouseMap}
+                  supplierRequests={supplierRequests}
+                  execution={selected.execution}
+                  onSaveChecklist={async (next, nextPrep) => {
+                    if (!selected) return;
+                    if (nextPrep === "departed") {
+                      const res = await fetch(`${API}/orders/${selected.id}/execution/depart`, {
+                        method: "POST",
+                        headers: JH,
+                        body: JSON.stringify({ note: "Выезд на монтаж" }),
+                      });
+                      const data = await res.json();
+                      if (data.error) throw new Error(data.error);
+                      if (data.order) {
+                        setSelected(data.order);
+                        setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+                        setTimeline(data.timeline ?? timeline);
+                        showToast("Выезд зафиксирован");
+                      }
+                    } else {
+                      const execution = { ...(selected.execution ?? {}), checklist: next, prep_status: nextPrep };
+                      const res = await fetch(`${API}/orders/${selected.id}`, {
+                        method: "PATCH",
+                        headers: JH,
+                        body: JSON.stringify({ execution }),
+                      });
+                      const data = await res.json();
+                      if (data.order) {
+                        setSelected(data.order);
+                        setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+                        showToast("Чеклист сохранен");
+                      }
+                    }
+                  }}
+                />
+              </>
+            )}
+
+            {activeStep === "execute" && (
+              <>
+                <ExecutionPlanner
+                  execution={selected.execution}
+                  installers={installers}
+                  onSchedule={scheduleExecution}
+                  onStart={startExecution}
+                  onComplete={completeExecution}
+                  onDownloadAct={downloadActPdf}
+                  mode="execute"
+                />
+              </>
+            )}
+
+            {activeStep === "execute" && (
+              <MaterialsActualPanel
+                orderStatus={selected.status}
+                materials={materials}
                 warehouseMap={warehouseMap}
-                onCreateDraft={createOfferDraftFromEquipment}
-                onSaveLines={saveOfferLines}
+                onSave={saveActualMaterials}
               />
             )}
 
-            <SurveyPanel
-              survey={selected.survey}
-              installers={installers}
-              traceLengthCurrent={selected.trace_length_m ?? 4}
-              onSchedule={scheduleSurvey}
-              onComplete={completeSurvey}
-            />
-
-            <ExecutionPlanner
-              execution={selected.execution}
-              installers={installers}
-              onSchedule={scheduleExecution}
-              onStart={startExecution}
-              onComplete={completeExecution}
-              onSavePhotos={saveExecutionPhotos}
-              onDownloadAct={downloadActPdf}
-            />
-
-            <MaterialsActualPanel
-              orderStatus={selected.status}
-              materials={materials}
-              warehouseMap={warehouseMap}
-              onSave={saveActualMaterials}
-            />
-
-            <InstallerChecklistPanel
-              orderNumber={selected.number}
-              equipmentWarehouseId={selected.equipment_warehouse_id}
-              materials={materials}
-              warehouseMap={warehouseMap}
-              supplierRequests={supplierRequests}
-              execution={selected.execution}
-              onSaveChecklist={async (next, nextPrep) => {
-                if (!selected) return;
-                if (nextPrep === "departed") {
-                  const res = await fetch(`${API}/orders/${selected.id}/execution/depart`, {
-                    method: "POST",
-                    headers: JH,
-                    body: JSON.stringify({ note: "Выезд на монтаж" }),
-                  });
-                  const data = await res.json();
-                  if (data.error) throw new Error(data.error);
-                  if (data.order) {
-                    setSelected(data.order);
-                    setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
-                    setTimeline(data.timeline ?? timeline);
-                    showToast("Выезд зафиксирован");
+            {activeStep === "execute" && (
+              <InstallerChecklistPanel
+                orderNumber={selected.number}
+                equipmentWarehouseId={selected.equipment_warehouse_id}
+                materials={materials}
+                warehouseMap={warehouseMap}
+                supplierRequests={supplierRequests}
+                execution={selected.execution}
+                onSaveChecklist={async (next, nextPrep) => {
+                  if (!selected) return;
+                  if (nextPrep === "departed") {
+                    const res = await fetch(`${API}/orders/${selected.id}/execution/depart`, {
+                      method: "POST",
+                      headers: JH,
+                      body: JSON.stringify({ note: "Выезд на монтаж" }),
+                    });
+                    const data = await res.json();
+                    if (data.error) throw new Error(data.error);
+                    if (data.order) {
+                      setSelected(data.order);
+                      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+                      setTimeline(data.timeline ?? timeline);
+                      showToast("Выезд зафиксирован");
+                    }
+                  } else {
+                    const execution = { ...(selected.execution ?? {}), checklist: next, prep_status: nextPrep };
+                    const res = await fetch(`${API}/orders/${selected.id}`, {
+                      method: "PATCH",
+                      headers: JH,
+                      body: JSON.stringify({ execution }),
+                    });
+                    const data = await res.json();
+                    if (data.order) {
+                      setSelected(data.order);
+                      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+                      showToast("Чеклист сохранен");
+                    }
                   }
-                } else {
-                  const execution = { ...(selected.execution ?? {}), checklist: next, prep_status: nextPrep };
-                  const res = await fetch(`${API}/orders/${selected.id}`, {
-                    method: "PATCH",
-                    headers: JH,
-                    body: JSON.stringify({ execution }),
-                  });
-                  const data = await res.json();
-                  if (data.order) {
-                    setSelected(data.order);
-                    setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
-                    showToast("Чеклист сохранен");
-                  }
-                }
-              }}
-            />
+                }}
+              />
+            )}
 
+            {activeStep === "offer" && (
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
                 <p className="text-sm font-bold text-slate-800">Документы</p>
@@ -1303,9 +1584,28 @@ export function OrdersView() {
                 </span>
               </div>
             </div>
+            )}
 
-            <TimelinePanel timeline={timeline} />
+            {activeStep === "close" && (
+              <>
+                {selected.status !== "completed" && selected.status !== "closed" && selected.status !== "cancelled" && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+                    <p className="text-sm font-extrabold text-amber-900">Закрытие обычно делается после выполнения</p>
+                    <p className="text-[11px] text-amber-800 mt-1">
+                      Но фото/акт можно загружать сразу с объекта — это помогает контролировать качество.
+                    </p>
+                  </div>
+                )}
+                <CloseoutPanel
+                  execution={selected.execution}
+                  onSavePhotos={saveExecutionPhotos}
+                  onSaveSignedAct={saveSignedAct}
+                />
+                <TimelinePanel timeline={timeline} />
+              </>
+            )}
 
+            {activeStep === "supply" && (
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
                 <p className="text-sm font-bold text-slate-800">Материалы</p>
@@ -1338,7 +1638,9 @@ export function OrdersView() {
                 )}
               </div>
             </div>
+            )}
 
+            {activeStep === "supply" && (
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
               <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -1443,6 +1745,7 @@ export function OrdersView() {
                 )}
               </div>
             </div>
+            )}
           </div>
         </div>
       ) : (
@@ -1529,15 +1832,18 @@ function CreateOrderModal({
   const canCreate = clientName.trim().length > 0 && clientPhone.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center p-4" onMouseDown={onClose}>
-      <div className="w-full max-w-xl bg-white rounded-3xl shadow-xl border border-slate-200" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+    <div className="fixed inset-0 z-[80] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
+      <div
+        className="w-full sm:max-w-xl h-[92vh] sm:h-auto bg-white rounded-t-3xl sm:rounded-3xl shadow-xl border border-slate-200 flex flex-col overflow-hidden"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 sm:px-5 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
           <p className="text-base font-black text-slate-800">Новый Order (услуга)</p>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">
             ✕
           </button>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-4 sm:p-5 space-y-4 overflow-auto">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label="Клиент">
               <input value={clientName} onChange={(e) => setClientName(e.target.value)} className={inputCls} placeholder="Имя клиента" />
@@ -1587,8 +1893,10 @@ function CreateOrderModal({
               />
             </Field>
           </div>
+        </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2">
+        <div className="px-4 sm:px-5 py-4 border-t border-slate-100 bg-white">
+          <div className="flex items-center justify-end gap-2">
             <button onClick={onClose} className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">
               Отмена
             </button>
@@ -1622,9 +1930,9 @@ function CreateOrderModal({
               )}
             </button>
           </div>
-        </div>
-        <div className="px-5 py-4 border-t border-slate-100 text-[11px] text-slate-400">
-          После создания: добавим КП и кнопку “Подтвердить ордер” для формирования обеспечения (склад/поставщики).
+          <p className="mt-3 text-[11px] text-slate-400">
+            После создания: добавим КП и кнопку “Подтвердить ордер” для формирования обеспечения (склад/поставщики).
+          </p>
         </div>
       </div>
     </div>
@@ -1637,6 +1945,186 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="text-xs font-semibold text-slate-500">{label}</span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+type OrderStepKey = "qualification" | "survey" | "offer" | "supply" | "schedule" | "execute" | "close";
+
+const STEP_CFG: Array<{ key: OrderStepKey; label: string; icon: React.ReactNode }> = [
+  { key: "qualification", label: "Квалификация", icon: <ClipboardList size={14} /> },
+  { key: "survey", label: "Замер", icon: <CalendarDays size={14} /> },
+  { key: "offer", label: "КП", icon: <CheckCircle2 size={14} /> },
+  { key: "supply", label: "Обеспечение", icon: <Package size={14} /> },
+  { key: "schedule", label: "Планирование", icon: <CalendarDays size={14} /> },
+  { key: "execute", label: "Исполнение", icon: <Truck size={14} /> },
+  { key: "close", label: "Закрытие", icon: <CheckCircle2 size={14} /> },
+];
+
+function stepForStatus(s: OrderStatus): OrderStepKey {
+  if (s === "new" || s === "qualification") return "qualification";
+  if (s === "survey_scheduled" || s === "survey_done") return "survey";
+  if (s === "offer_prepared" || s === "offer_sent" || s === "offer_approved") return "offer";
+  if (s === "awaiting_supply") return "supply";
+  if (s === "ready_to_schedule" || s === "scheduled") return "schedule";
+  if (s === "in_progress") return "execute";
+  if (s === "completed") return "close";
+  return "close";
+}
+
+type StepState = { done: boolean; blockedReason?: string };
+
+function stepStatesForOrder(order: Order, materials: MaterialLine[], supplierRequests: SupplierRequest[]): Record<OrderStepKey, StepState> {
+  const hasClient = Boolean(order.client_name?.trim() && order.client_phone?.trim() && order.object_address?.trim());
+  const surveyHasAssignee = Boolean(order.survey?.assigned_installer_id && order.survey?.scheduled_at);
+  const surveyDone = order.survey?.status === "done" || Boolean(order.survey?.performed_at);
+  const offerHasLines = Boolean(order.offer && (order.offer.lines?.length ?? 0) > 0);
+  const offerApproved = order.offer?.status === "approved" || order.status === "offer_approved" || order.status === "awaiting_supply" || order.status === "ready_to_schedule" || order.status === "scheduled" || order.status === "in_progress" || order.status === "completed" || order.status === "closed";
+  const materialsBuilt = (materials?.length ?? 0) > 0;
+  const hasDeficit = materials.some((m) => (m.to_purchase_qty ?? 0) > 0);
+  const supplierReqsCreated = (supplierRequests?.length ?? 0) > 0;
+
+  const execHasAssignee = Boolean(order.execution?.assigned_installer_id && order.execution?.scheduled_at);
+  const checklistReady = Boolean(order.execution?.checklist?.ready_confirmed);
+  const departed = order.execution?.prep_status === "departed";
+  const started = order.execution?.status === "in_progress" || Boolean(order.execution?.started_at);
+  const executionDone = order.execution?.status === "done" || Boolean(order.execution?.completed_at) || order.status === "completed" || order.status === "closed";
+
+  const closeHasPhotos = (order.execution?.photos?.length ?? 0) > 0;
+  const closeHasAct = Boolean(order.execution?.signed_act_url);
+  const closeHasClientSign = Boolean(order.execution?.client_signed);
+
+  const current = stepForStatus(order.status);
+  const currentIdx = STEP_CFG.findIndex((s) => s.key === current);
+  const idxOf = (k: OrderStepKey) => STEP_CFG.findIndex((s) => s.key === k);
+  const isPast = (k: OrderStepKey) => idxOf(k) < currentIdx;
+
+  const qualification: StepState = {
+    done: isPast("qualification") || (order.status !== "new" && hasClient),
+    blockedReason: !hasClient ? "Заполните клиента/телефон/адрес объекта" : undefined,
+  };
+
+  const survey: StepState = {
+    done: isPast("survey") || surveyDone,
+    blockedReason: !hasClient ? "Сначала заполните клиента/адрес" : (!surveyHasAssignee ? "Назначьте замер: монтажник и дата" : undefined),
+  };
+
+  const offer: StepState = {
+    done: isPast("offer") || offerApproved,
+    blockedReason: !offerHasLines ? "Сначала создайте КП и добавьте строки" : undefined,
+  };
+
+  const supply: StepState = {
+    done: isPast("supply") || (materialsBuilt && (!hasDeficit || supplierReqsCreated)),
+    blockedReason: !offerApproved ? "Сначала утвердите КП" : (!materialsBuilt ? "Сначала подтвердите ордер (обеспечение), чтобы сформировать материалы" : undefined),
+  };
+
+  const schedule: StepState = {
+    done: isPast("schedule") || departed || (execHasAssignee && checklistReady && !hasDeficit),
+    blockedReason: !materialsBuilt ? "Сначала сформируйте материалы (шаг «Обеспечение»)" : (hasDeficit ? "Есть дефициты: дождитесь поставки/приёмки или закройте дефицит" : (!execHasAssignee ? "Назначьте монтажника и дату" : (!checklistReady ? "Соберите чек‑лист выезда: материалы/инструменты" : undefined))),
+  };
+
+  const execute: StepState = {
+    done: isPast("execute") || executionDone,
+    blockedReason: !execHasAssignee ? "Сначала запланируйте монтаж (монтажник + дата)" : undefined,
+  };
+
+  const close: StepState = {
+    done: isPast("close") || (executionDone && closeHasPhotos && closeHasAct),
+    blockedReason: !executionDone ? "Сначала завершите работы" : (!closeHasPhotos ? "Загрузите фото выполненных работ" : (!closeHasAct ? "Загрузите подписанный акт" : (!closeHasClientSign ? "Отметьте подпись клиента (в исполнении)" : undefined))),
+  };
+
+  return { qualification, survey, offer, supply, schedule, execute, close };
+}
+
+function OrderStepper({
+  status,
+  activeKey,
+  states,
+  onStepClick,
+}: {
+  status: OrderStatus;
+  activeKey?: OrderStepKey;
+  states?: Partial<Record<OrderStepKey, StepState>>;
+  onStepClick?: (key: OrderStepKey) => void;
+}) {
+  const current = stepForStatus(status);
+  const idx = STEP_CFG.findIndex((s) => s.key === current);
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl px-3 py-2 overflow-x-auto">
+      <div className="min-w-max flex items-center gap-2">
+        {STEP_CFG.map((s, i) => {
+          const isCurrent = s.key === current;
+          const isActive = activeKey ? s.key === activeKey : isCurrent;
+          const isDone = i < idx;
+          const st = states?.[s.key];
+          const done = Boolean(st?.done) || isDone;
+          const blocked = Boolean(st?.blockedReason) && !done;
+          return (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => onStepClick?.(s.key)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold whitespace-nowrap transition-all ${
+                isActive
+                  ? "border-indigo-200 bg-indigo-50 text-indigo-900 ring-2 ring-indigo-100"
+                  : done
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                    : blocked
+                      ? "border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                      : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <span className="opacity-90">{s.icon}</span>
+              {s.label}
+              {done && <span className="ml-1 text-[10px] font-black">✓</span>}
+              {blocked && <span className="ml-1 text-[10px] font-black">!</span>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ClientSummaryCard({
+  order,
+  onOpenClients,
+}: {
+  order: Order;
+  onOpenClients?: () => void;
+}) {
+  const name = order.client_name || "Клиент";
+  const phone = order.client_phone || "—";
+  const addr = order.object_address || "Адрес: уточнить";
+  const legal = order.client_legal_name || "";
+  const tax = order.client_tax_id || "";
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs text-slate-400 font-semibold">Клиент (только просмотр)</p>
+          <p className="text-sm font-extrabold text-slate-800 truncate mt-0.5">{name}</p>
+          <p className="text-xs text-slate-600 truncate mt-0.5">{phone} · {addr}</p>
+          {(legal || tax) && (
+            <p className="text-[11px] text-slate-500 truncate mt-1">
+              {legal ? legal : "—"}{tax ? ` · ИНН: ${tax}` : ""}
+            </p>
+          )}
+        </div>
+        {onOpenClients && (
+          <button
+            type="button"
+            onClick={onOpenClients}
+            className="px-3 py-2 rounded-xl text-xs font-semibold border border-slate-200 text-slate-700 bg-white hover:bg-slate-50"
+          >
+            Открыть клиента
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-slate-400 mt-2">
+        Редактирование клиента делается в разделе «Клиенты», здесь данные используются для КП/акта.
+      </p>
+    </div>
   );
 }
 
@@ -1947,15 +2435,18 @@ function AddOfferLineModal({
   const canAdd = mode === "warehouse" ? !!warehouseId : name.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-[90] bg-black/40 flex items-center justify-center p-4" onMouseDown={onClose}>
-      <div className="w-full max-w-xl bg-white rounded-3xl shadow-xl border border-slate-200" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+    <div className="fixed inset-0 z-[90] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
+      <div
+        className="w-full sm:max-w-xl h-[92vh] sm:h-auto bg-white rounded-t-3xl sm:rounded-3xl shadow-xl border border-slate-200 flex flex-col overflow-hidden"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 sm:px-5 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
           <p className="text-base font-black text-slate-800">Добавить строку КП</p>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">
             ✕
           </button>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-4 sm:p-5 space-y-4 overflow-auto">
           <div className="flex gap-2">
             <button
               onClick={() => setMode("warehouse")}
@@ -1999,34 +2490,34 @@ function AddOfferLineModal({
               <input type="number" min={0} value={price} onChange={(e) => setPrice(Number(e.target.value))} className={inputCls} />
             </Field>
           </div>
+        </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2">
-            <button onClick={onClose} className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">
-              Отмена
-            </button>
-            <button
-              disabled={!canAdd}
-              onClick={() => {
-                if (mode === "warehouse") {
-                  const it = warehouseMap[warehouseId];
-                  if (!it) return;
-                  onAdd({
-                    line_type: (it.itemType === "equipment" ? "equipment" : it.itemType === "assembly" ? "assembly" : "consumable") as any,
-                    warehouse_item_id: it.id,
-                    name: it.name,
-                    qty,
-                    unit: it.unit,
-                    price,
-                  });
-                } else {
-                  onAdd({ line_type: "service", name: name.trim(), qty, unit, price });
-                }
-              }}
-              className={`px-4 py-2 rounded-xl font-semibold text-white ${canAdd ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"}`}
-            >
-              Добавить
-            </button>
-          </div>
+        <div className="px-4 sm:px-5 py-4 border-t border-slate-100 flex items-center justify-end gap-2 bg-white">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">
+            Отмена
+          </button>
+          <button
+            disabled={!canAdd}
+            onClick={() => {
+              if (mode === "warehouse") {
+                const it = warehouseMap[warehouseId];
+                if (!it) return;
+                onAdd({
+                  line_type: (it.itemType === "equipment" ? "equipment" : it.itemType === "assembly" ? "assembly" : "consumable") as any,
+                  warehouse_item_id: it.id,
+                  name: it.name,
+                  qty,
+                  unit: it.unit,
+                  price,
+                });
+              } else {
+                onAdd({ line_type: "service", name: name.trim(), qty, unit, price });
+              }
+            }}
+            className={`px-4 py-2 rounded-xl font-semibold text-white ${canAdd ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"}`}
+          >
+            Добавить
+          </button>
         </div>
       </div>
     </div>
@@ -2142,16 +2633,16 @@ function ExecutionPlanner({
   onSchedule,
   onStart,
   onComplete,
-  onSavePhotos,
   onDownloadAct,
+  mode,
 }: {
   execution: Order["execution"] | undefined;
   installers: Array<{ id: string; name: string }>;
   onSchedule: (p: { installerId: string; installerName: string; date: string }) => void;
   onStart: () => void;
   onComplete: (p: { completion_notes?: string; client_signed: boolean; client_sign_name?: string }) => void;
-  onSavePhotos: (photos: string[]) => void;
   onDownloadAct: () => void;
+  mode?: "plan" | "execute";
 }) {
   const [installerId, setInstallerId] = useState(execution?.assigned_installer_id ?? "");
   const [date, setDate] = useState(execution?.scheduled_at ?? "");
@@ -2171,6 +2662,9 @@ function ExecutionPlanner({
 
   const installerName = installers.find((i) => i.id === installerId)?.name ?? "";
   const can = installerId && date;
+
+  const showPlan = mode === "plan" || !mode;
+  const showExecute = mode === "execute" || !mode;
 
   return (
     <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
@@ -2220,6 +2714,7 @@ function ExecutionPlanner({
         </div>
       </div>
 
+      {showExecute && (
       <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
         <div className="md:col-span-2">
           <Field label="Комментарий по работам (план/факт)">
@@ -2254,7 +2749,9 @@ function ExecutionPlanner({
           </button>
         </div>
       </div>
+      )}
 
+      {showExecute && (
       <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="md:col-span-1">
           <Field label="Подпись клиента">
@@ -2270,50 +2767,9 @@ function ExecutionPlanner({
           </Field>
         </div>
       </div>
+      )}
 
-      <div className="px-4 pb-4">
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <p className="text-xs font-semibold text-slate-500">Фото (до/после)</p>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPhotos((p) => [...p, ""])}
-              className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-slate-50"
-            >
-              + Фото
-            </button>
-            <button
-              onClick={() => onSavePhotos(photos.filter(Boolean))}
-              className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800"
-            >
-              Сохранить фото
-            </button>
-          </div>
-        </div>
-        {photos.length === 0 ? (
-          <p className="text-[11px] text-slate-400">Добавьте фото замера/монтажа для отчётности.</p>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {photos.map((url, idx) => (
-              <div key={idx} className="relative">
-                <ImageUpload
-                  value={url || undefined}
-                  onChange={(next) => setPhotos((p) => p.map((x, i) => (i === idx ? next : x)))}
-                  folder="misc"
-                  aspect="square"
-                  label={`Фото ${idx + 1}`}
-                />
-                <button
-                  onClick={() => setPhotos((p) => p.filter((_, i) => i !== idx))}
-                  className="absolute top-2 right-2 bg-white/90 hover:bg-red-600 hover:text-white text-slate-700 text-xs font-bold px-2 py-1 rounded-lg border border-slate-200"
-                  title="Удалить слот"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* фото/акт переехали в шаг "Закрытие" */}
     </div>
   );
 }
@@ -2363,6 +2819,7 @@ function InstallerChecklistPanel({
   const activeSupplierReqs = useMemo(() => supplierRequests.filter((r) => r.status !== "received" && r.status !== "cancelled"), [supplierRequests]);
 
   const [check, setCheck] = useState<NonNullable<NonNullable<Order["execution"]>["checklist"]>>(() => execution?.checklist ?? {});
+  const [customText, setCustomText] = useState("");
 
   useEffect(() => {
     setCheck(execution?.checklist ?? {});
@@ -2376,6 +2833,21 @@ function InstallerChecklistPanel({
       "Труборез/развальцовка",
       "Ключи/шестигранники",
       "Лестница",
+    ],
+    [],
+  );
+
+  const customPresets = useMemo(
+    () => [
+      "Согласовать время с клиентом",
+      "Подтвердить доступ/пропуск на объект",
+      "Проверить наличие всех комплектующих на складе",
+      "Забрать лестницу/стремянку",
+      "Забрать инструмент (вакуумный насос/коллектор)",
+      "Проверить трассу/штробу/условия монтажа",
+      "Предупредить клиента о пыли/шуме и времени работ",
+      "Проверить питание/автомат/кабель",
+      "Подготовить место для внешнего блока (крепёж/кронштейн)",
     ],
     [],
   );
@@ -2490,6 +2962,87 @@ function InstallerChecklistPanel({
         </div>
 
         <div className="border border-slate-200 rounded-2xl p-4">
+          <p className="text-xs font-semibold text-slate-500">Доп. действия (свой чек‑лист)</p>
+          <div className="mt-2 flex flex-col sm:flex-row gap-2">
+            <input
+              value={customText}
+              onChange={(e) => setCustomText(e.target.value)}
+              className={inputCls}
+              placeholder="Например: забрать лестницу у Петра / согласовать пропуск / предупредить клиента…"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const text = customText.trim();
+                if (!text) return;
+                const item = { id: `c_${Date.now()}_${Math.random().toString(16).slice(2)}`, text, done: false };
+                setCheck((p) => ({ ...p, custom: [...(p.custom ?? []), item] }));
+                setCustomText("");
+              }}
+              className="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
+            >
+              Добавить
+            </button>
+          </div>
+          <div className="mt-3">
+            <p className="text-[11px] text-slate-400 font-semibold mb-2">Быстро добавить:</p>
+            <div className="flex flex-wrap gap-2">
+              {customPresets.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => {
+                    setCheck((p) => {
+                      const exists = (p.custom ?? []).some((x) => (x.text || "").toLowerCase() === t.toLowerCase());
+                      if (exists) return p;
+                      const item = { id: `c_${Date.now()}_${Math.random().toString(16).slice(2)}`, text: t, done: false };
+                      return { ...p, custom: [...(p.custom ?? []), item] };
+                    });
+                  }}
+                  className="px-3 py-1.5 rounded-full border border-slate-200 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50"
+                >
+                  + {t}
+                </button>
+              ))}
+            </div>
+          </div>
+          {(check.custom ?? []).length === 0 ? (
+            <p className="text-[11px] text-slate-400 mt-2">Добавьте свои пункты — они сохранятся в ордере и будут видны всем.</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {(check.custom ?? []).map((it) => (
+                <div key={it.id} className="flex items-start justify-between gap-2 border border-slate-200 rounded-xl px-3 py-2 bg-white">
+                  <label className="flex items-start gap-2 min-w-0">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(it.done)}
+                      onChange={(e) =>
+                        setCheck((p) => ({
+                          ...p,
+                          custom: (p.custom ?? []).map((x) => (x.id === it.id ? { ...x, done: e.target.checked } : x)),
+                        }))
+                      }
+                      className="mt-1"
+                    />
+                    <span className={`text-sm font-semibold break-words ${it.done ? "text-slate-400 line-through" : "text-slate-800"}`}>
+                      {it.text}
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setCheck((p) => ({ ...p, custom: (p.custom ?? []).filter((x) => x.id !== it.id) }))}
+                    className="px-2 py-1 rounded-lg border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50"
+                    title="Удалить пункт"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="border border-slate-200 rounded-2xl p-4">
           <p className="text-xs font-semibold text-slate-500">Нужно докупить (дефицит)</p>
           {needToBuy.length === 0 ? (
             <p className="text-sm text-slate-400 mt-1">Дефицитов нет. Можно планировать выезд.</p>
@@ -2555,6 +3108,97 @@ function InstallerChecklistPanel({
               title={canDepart ? "Зафиксировать выезд на монтаж" : "Сначала соберите материалы/инструменты и уберите дефициты"}
             >
               Готов к выезду
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CloseoutPanel({
+  execution,
+  onSavePhotos,
+  onSaveSignedAct,
+}: {
+  execution?: Order["execution"];
+  onSavePhotos: (photos: string[]) => void;
+  onSaveSignedAct: (url: string | undefined) => void;
+}) {
+  const [photos, setPhotos] = useState<string[]>(execution?.photos ?? []);
+  const [signedAct, setSignedAct] = useState<string | undefined>(execution?.signed_act_url);
+
+  useEffect(() => {
+    setPhotos(execution?.photos ?? []);
+    setSignedAct(execution?.signed_act_url);
+  }, [execution?.photos, execution?.signed_act_url]);
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <p className="text-sm font-bold text-slate-800">Закрытие ордера</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Фото выполненных работ и подписанные документы.</p>
+          </div>
+        </div>
+        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
+            <p className="text-xs font-semibold text-slate-500 mb-2">Подписанный акт (фото/скан)</p>
+            <ImageUpload
+              value={signedAct}
+              onChange={(v) => setSignedAct(v)}
+              folder="misc"
+              aspect="square"
+              label="Акт"
+            />
+            <button
+              onClick={() => onSaveSignedAct(signedAct)}
+              className="mt-2 w-full px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800"
+            >
+              Сохранить акт
+            </button>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-xs font-semibold text-slate-500">Фото выполненных работ</p>
+              <button
+                onClick={() => setPhotos((p) => [...p, ""])}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-white"
+              >
+                + Фото
+              </button>
+            </div>
+            {photos.length === 0 ? (
+              <p className="text-[11px] text-slate-400">Добавьте фото (до/после) для контроля качества.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {photos.map((url, idx) => (
+                  <div key={idx} className="relative">
+                    <ImageUpload
+                      value={url || undefined}
+                      onChange={(next) => setPhotos((p) => p.map((x, i) => (i === idx ? next : x)))}
+                      folder="misc"
+                      aspect="square"
+                      label={`Фото ${idx + 1}`}
+                    />
+                    <button
+                      onClick={() => setPhotos((p) => p.filter((_, i) => i !== idx))}
+                      className="absolute top-2 right-2 bg-white/90 hover:bg-red-600 hover:text-white text-slate-700 text-xs font-bold px-2 py-1 rounded-lg border border-slate-200"
+                      title="Удалить слот"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => onSavePhotos(photos.filter(Boolean))}
+              className="mt-2 w-full px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
+            >
+              Сохранить фото
             </button>
           </div>
         </div>
@@ -2835,9 +3479,12 @@ function PartialReceiptModal({
   }, [values]);
 
   return (
-    <div className="fixed inset-0 z-[95] bg-black/40 flex items-center justify-center p-4" onMouseDown={onClose}>
-      <div className="w-full max-w-2xl bg-white rounded-3xl shadow-xl border border-slate-200" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+    <div className="fixed inset-0 z-[95] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
+      <div
+        className="w-full sm:max-w-2xl h-[92vh] sm:h-auto bg-white rounded-t-3xl sm:rounded-3xl shadow-xl border border-slate-200 flex flex-col overflow-hidden"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="px-4 sm:px-5 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
           <div className="min-w-0">
             <p className="text-base font-black text-slate-800 truncate">Приемка (частичная)</p>
             <p className="text-[11px] text-slate-400 mt-0.5 truncate">
@@ -2849,7 +3496,7 @@ function PartialReceiptModal({
           </button>
         </div>
 
-        <div className="p-5 space-y-3 max-h-[70vh] overflow-auto">
+        <div className="p-4 sm:p-5 space-y-3 overflow-auto">
           {req.lines.map((ln) => {
             const max = ln.qty;
             const name = warehouseMap[ln.item_id]?.name ?? ln.item_id;
@@ -2905,7 +3552,7 @@ function PartialReceiptModal({
           })}
         </div>
 
-        <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-end gap-2">
+        <div className="px-4 sm:px-5 py-4 border-t border-slate-100 flex items-center justify-end gap-2 bg-white">
           <button onClick={onClose} className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">
             Отмена
           </button>

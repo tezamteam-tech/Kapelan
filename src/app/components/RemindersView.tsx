@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
+import { getJson } from "../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };
@@ -101,11 +102,10 @@ export function RemindersView() {
   const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [rRes, bRes] = await Promise.all([
-        fetch(`${API}/reminders`, { headers: AH }),
-        fetch(`${API}/reminders/bot-info`, { headers: AH }),
+      const [rd, bd] = await Promise.all([
+        getJson<any>(`${API}/reminders`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API}/reminders/bot-info`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true }),
       ]);
-      const [rd, bd] = await Promise.all([rRes.json(), bRes.json()]);
       if (rd.reminders) { setReminders(rd.reminders); setStats(rd.stats); }
       if (bd !== undefined) setBotInfo(bd);
     } catch (e) { console.error("Reminders fetch:", e); showToast("Ошибка загрузки", false); }
@@ -169,8 +169,7 @@ export function RemindersView() {
 
   async function openDetail(r: ServiceReminder) {
     setDetailReminder(r);
-    const res = await fetch(`${API}/reminders/${r.id}`, { headers: AH });
-    const data = await res.json();
+    const data = await getJson<any>(`${API}/reminders/${r.id}`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true });
     if (data.notifications) setDetailNotifs(data.notifications);
   }
 

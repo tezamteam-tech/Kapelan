@@ -41,6 +41,19 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/* Responsive base typography:
+   - phone: slightly smaller to fit dense UIs
+   - tablet: medium
+   - desktop: default 16px
+*/
+@media (max-width: 640px) {
+  :root { --font-size: 14px; }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+  :root { --font-size: 15px; }
+}
+
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);

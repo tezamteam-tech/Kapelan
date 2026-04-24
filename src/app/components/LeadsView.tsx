@@ -3,6 +3,7 @@ import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
 import { useNavigate } from "react-router";
 import { copyToClipboard } from "../utils/clipboard";
+import { getJson } from "../lib/apiClient";
 import {
   Plus, Search, RefreshCw, User, Phone, MapPin, Building2,
   ChevronDown, ChevronUp, ClipboardCheck, FileText, Loader2,
@@ -73,8 +74,7 @@ export function LeadsView() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/leads`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/leads`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.leads) {
         setLeads(data.leads);
         const ids = [...new Set<string>(data.leads.map((l: Lead) => l.clientId))];
@@ -88,8 +88,8 @@ export function LeadsView() {
 
   async function fetchClient(id: string) {
     try {
-      const res = await fetch(`${API}/client/${id}`, { headers: AH });
-      const data = await res.json();
+      if (clients[id]) return;
+      const data = await getJson<any>(`${API}/client/${id}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.client) setClients(prev => ({ ...prev, [id]: data.client }));
     } catch {}
   }

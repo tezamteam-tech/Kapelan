@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, DragEvent } from "reac
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
 import { copyToClipboard } from "../utils/clipboard";
+import { getJson } from "../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -109,8 +110,7 @@ export function VentilationAnalyzer() {
   // Load history
   const loadHistory = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/ventilation/analyses`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/ventilation/analyses`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.analyses) setHistory(data.analyses);
     } catch { /* silent */ }
   }, []);
@@ -177,8 +177,7 @@ export function VentilationAnalyzer() {
 
   async function loadAnalysis(id: string) {
     try {
-      const res = await fetch(`${API}/ventilation/analyses/${id}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API}/ventilation/analyses/${id}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.analysis) {
         setAnalysis(data.analysis);
         setEditedMats(data.analysis.materials ?? []);

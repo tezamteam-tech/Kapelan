@@ -5,6 +5,7 @@ import {
   Check, Calendar, Clock, Send, Trash2, Edit2, X, Plus, Camera
 } from "lucide-react";
 import { AvatarUpload } from "./ui/ImageUpload";
+import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -19,6 +20,9 @@ export interface Installer {
   notes: string;
   active: boolean;
   photoUrl?: string;
+  teamId?: string | null;
+  teamName?: string | null;
+  isTeamLead?: boolean;
   createdAt: string;
 }
 
@@ -59,12 +63,10 @@ export function AssignInstallerModal({ leadId, clientName, onAssigned, onClose }
     (async () => {
       setLoading(true);
       try {
-        const [instRes, assignRes] = await Promise.all([
-          fetch(`${API_BASE}/installers`, { headers: AH }),
-          fetch(`${API_BASE}/assignment/lead/${leadId}`, { headers: AH }),
+        const [instData, assignData] = await Promise.all([
+          getJson<any>(`${API_BASE}/installers`, { ttlMs: 5 * 60_000, staleTtlMs: 30 * 60_000, swr: true }),
+          getJson<any>(`${API_BASE}/assignment/lead/${leadId}`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true }),
         ]);
-        const instData = await instRes.json();
-        const assignData = await assignRes.json();
         if (instData.installers) setInstallers(instData.installers);
         if (assignData.assignment) {
           setExisting(assignData.assignment);
@@ -279,7 +281,16 @@ export function InstallersManager() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", phone: "", tgChatId: "", specialization: "general", notes: "", photoUrl: "" });
+  const [form, setForm] = useState({
+    name: "",
+    phone: "",
+    tgChatId: "",
+    specialization: "general",
+    notes: "",
+    photoUrl: "",
+    teamName: "",
+    isTeamLead: false,
+  });
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
 
@@ -287,8 +298,7 @@ export function InstallersManager() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/installers`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API_BASE}/installers`, { ttlMs: 5 * 60_000, staleTtlMs: 30 * 60_000, swr: true });
       if (data.installers) setInstallers(data.installers);
     } catch (err) {
       console.error("Load installers error:", err);
@@ -299,8 +309,29 @@ export function InstallersManager() {
 
   useEffect(() => { load(); }, [load]);
 
+  const teams = React.useMemo(() => {
+    const map = new Map<string, { teamId: string; teamName: string; leadName?: string }>();
+    for (const inst of installers) {
+      const tid = String(inst.teamId || "").trim();
+      const tname = String(inst.teamName || "").trim();
+      if (!tid || !tname) continue;
+      if (!map.has(tid)) map.set(tid, { teamId: tid, teamName: tname });
+      if (inst.isTeamLead) map.get(tid)!.leadName = inst.name;
+    }
+    return Array.from(map.values()).sort((a, b) => a.teamName.localeCompare(b.teamName, "ru"));
+  }, [installers]);
+
+  const slugify = (s: string) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, "-")
+      .replace(/[^a-z0-9а-яё\-]+/gi, "")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+
   const resetForm = () => {
-    setForm({ name: "", phone: "", tgChatId: "", specialization: "general", notes: "", photoUrl: "" });
+    setForm({ name: "", phone: "", tgChatId: "", specialization: "general", notes: "", photoUrl: "", teamName: "", isTeamLead: false });
     setEditingId(null);
     setShowForm(false);
   };
@@ -309,11 +340,36 @@ export function InstallersManager() {
     if (!form.name.trim() || !form.phone.trim()) return;
     setSaving(true);
     try {
-      const body: any = { ...form };
+      const teamName = form.teamName.trim();
+      const teamId = teamName ? slugify(teamName) : null;
+      const body: any = {
+        name: form.name,
+        phone: form.phone,
+        tgChatId: form.tgChatId || null,
+        specialization: form.specialization,
+        notes: form.notes,
+        photoUrl: form.photoUrl || null,
+        teamName: teamName || null,
+        teamId,
+        isTeamLead: !!form.isTeamLead,
+      };
       if (editingId) body.id = editingId;
       const res = await fetch(`${API_BASE}/installers`, { method: "POST", headers: JH, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.installer) {
+        // Enforce single team lead per team (best-effort)
+        if (body.isTeamLead && body.teamId) {
+          const others = installers.filter(i => i.id !== data.installer.id && (i.teamId || null) === body.teamId && i.isTeamLead);
+          await Promise.all(
+            others.map(i =>
+              fetch(`${API_BASE}/installers/${i.id}`, {
+                method: "PATCH",
+                headers: JH,
+                body: JSON.stringify({ isTeamLead: false }),
+              }).catch(() => null)
+            )
+          );
+        }
         showToast(editingId ? "Обновлено ✅" : "Монтажник добавлен ✅");
         resetForm();
         load();
@@ -337,7 +393,16 @@ export function InstallersManager() {
   };
 
   const startEdit = (inst: Installer) => {
-    setForm({ name: inst.name, phone: inst.phone, tgChatId: inst.tgChatId || "", specialization: inst.specialization, notes: inst.notes, photoUrl: inst.photoUrl || "" });
+    setForm({
+      name: inst.name,
+      phone: inst.phone,
+      tgChatId: inst.tgChatId || "",
+      specialization: inst.specialization,
+      notes: inst.notes,
+      photoUrl: inst.photoUrl || "",
+      teamName: inst.teamName || "",
+      isTeamLead: !!inst.isTeamLead,
+    });
     setEditingId(inst.id);
     setShowForm(true);
   };
@@ -414,6 +479,38 @@ export function InstallersManager() {
               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
               placeholder="Опыт, район обслуживания..." />
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">Бригада</label>
+              <input
+                list="installer-teams"
+                value={form.teamName}
+                onChange={e => setForm(f => ({ ...f, teamName: e.target.value }))}
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="Напр. Бригада 1"
+              />
+              <datalist id="installer-teams">
+                {teams.map(t => (
+                  <option key={t.teamId} value={t.teamName} />
+                ))}
+              </datalist>
+              {form.teamName.trim() && (
+                <p className="text-[11px] text-slate-400 mt-1">ID: {slugify(form.teamName)}</p>
+              )}
+            </div>
+            <div className="flex items-end">
+              <label className="w-full flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
+                <span className="text-sm text-slate-700 font-semibold">Старший</span>
+                <input
+                  type="checkbox"
+                  checked={form.isTeamLead}
+                  onChange={e => setForm(f => ({ ...f, isTeamLead: e.target.checked }))}
+                  className="size-4"
+                />
+              </label>
+            </div>
+          </div>
           <div className="flex gap-2 pt-1">
             <button onClick={resetForm} className="flex-1 bg-slate-100 text-slate-600 rounded-xl py-2.5 text-sm font-semibold hover:bg-slate-200">
               Отмена
@@ -462,6 +559,11 @@ export function InstallersManager() {
                   )}
                   {inst.specialization !== "general" && (
                     <span className="bg-slate-100 px-2 py-0.5 rounded-full">{inst.specialization}</span>
+                  )}
+                  {inst.teamName && (
+                    <span className={`px-2 py-0.5 rounded-full ${inst.isTeamLead ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-700"}`}>
+                      {inst.isTeamLead ? "★ " : ""}{inst.teamName}
+                    </span>
                   )}
                 </div>
                 {inst.notes && <p className="text-xs text-slate-400 mt-1 truncate">{inst.notes}</p>}

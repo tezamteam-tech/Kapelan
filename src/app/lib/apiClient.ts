@@ -6,11 +6,21 @@ export const JH: HeadersInit = { ...AH, "Content-Type": "application/json" };
 
 type CacheEntry<T> = {
   expiresAt: number;
+  staleUntil?: number;
   data?: T;
   promise?: Promise<T>;
 };
 
 const cache = new Map<string, CacheEntry<any>>();
+const MAX_CACHE_ENTRIES = 250;
+
+function pruneCache() {
+  if (cache.size <= MAX_CACHE_ENTRIES) return;
+  // Drop oldest-by-expiry first (cheap heuristic)
+  const entries = [...cache.entries()].sort((a, b) => (a[1].expiresAt ?? 0) - (b[1].expiresAt ?? 0));
+  const drop = Math.max(0, cache.size - MAX_CACHE_ENTRIES);
+  for (let i = 0; i < drop; i++) cache.delete(entries[i]![0]);
+}
 
 function now() {
   return Date.now();
@@ -24,15 +34,28 @@ export function invalidateUrlPrefix(prefix: string) {
 
 export async function getJson<T>(
   url: string,
-  opts?: { ttlMs?: number; force?: boolean; signal?: AbortSignal },
+  opts?: { ttlMs?: number; force?: boolean; signal?: AbortSignal; swr?: boolean; staleTtlMs?: number },
 ): Promise<T> {
   const ttlMs = opts?.ttlMs ?? 30_000;
   const force = !!opts?.force;
+  const swr = opts?.swr !== false;
+  const staleTtlMs = opts?.staleTtlMs ?? Math.max(ttlMs * 3, 60_000);
   const key = url;
 
   if (!force) {
     const e = cache.get(key) as CacheEntry<T> | undefined;
-    if (e?.data !== undefined && e.expiresAt > now()) return e.data;
+    const t = now();
+    // Fresh
+    if (e?.data !== undefined && e.expiresAt > t) return e.data;
+    // Stale-while-revalidate: return stale immediately, refresh in background
+    if (swr && e?.data !== undefined && (e.staleUntil ?? 0) > t) {
+      if (!e.promise) {
+        // kick refresh without awaiting
+        void getJson<T>(url, { ...opts, force: true, swr: false }).catch(() => null);
+      }
+      return e.data;
+    }
+    // Dedupe in-flight
     if (e?.promise) return e.promise;
   }
 
@@ -45,11 +68,13 @@ export async function getJson<T>(
     return (await res.json()) as T;
   })();
 
-  cache.set(key, { expiresAt: now() + ttlMs, promise: p });
+  cache.set(key, { expiresAt: now() + ttlMs, staleUntil: now() + staleTtlMs, promise: p });
+  pruneCache();
 
   try {
     const data = await p;
-    cache.set(key, { expiresAt: now() + ttlMs, data });
+    cache.set(key, { expiresAt: now() + ttlMs, staleUntil: now() + staleTtlMs, data });
+    pruneCache();
     return data;
   } catch (err) {
     cache.delete(key);

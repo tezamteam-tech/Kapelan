@@ -4,6 +4,7 @@ import {
   FileText, Plus, Trash2, Download, ChevronDown, ChevronUp,
   Building2, User, Settings, Clock, CheckCircle2, Loader2, X, AlertCircle
 } from "lucide-react";
+import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -65,16 +66,16 @@ export function ContractPackageView() {
 
   const loadCompany = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/company-everis`, { headers: AH });
-      if (r.ok) { const d = await r.json(); setCompany(d.company); }
+      const d = await getJson<any>(`${API_BASE}/company-everis`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
+      if (d.company) setCompany(d.company);
     } catch (e) { console.error("loadCompany:", e); }
   }, []);
 
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
-      const r = await fetch(`${API_BASE}/documents/packages`, { headers: AH });
-      if (r.ok) { const d = await r.json(); setPackages(d.packages || []); }
+      const d = await getJson<any>(`${API_BASE}/documents/packages`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
+      setPackages(d.packages || []);
     } catch (e) { console.error("loadHistory:", e); }
     finally { setLoadingHistory(false); }
   }, []);

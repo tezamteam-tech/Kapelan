@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
+import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -294,7 +295,7 @@ function InstallerModal({ orderId, onClose, onDone }: { orderId: string; onClose
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_BASE}/installers`, { headers: AH }).then(r => r.json()).then(d => {
+    getJson<any>(`${API_BASE}/installers`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }).then(d => {
       setInstallers(d.installers || []);
       const avail = (d.installers || []).find((i: Installer) => i.status === "available");
       if (avail) setSelected(avail.id);
@@ -522,8 +523,8 @@ function DialogMode() {
   const loadSessions = useCallback(async () => {
     setSessionsLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/chat-sessions`, { headers: AH });
-      if (res.ok) setSessions((await res.json()).sessions || []);
+      const data = await getJson<any>(`${API_BASE}/chat-sessions`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
+      setSessions(data.sessions || []);
     } catch (e) { console.error(e); }
     finally { setSessionsLoading(false); }
   }, []);
@@ -568,15 +569,12 @@ function DialogMode() {
     setInput("");
     setHasActiveChat(true);
     try {
-      const res = await fetch(`${API_BASE}/chat-session/${sid}`, { headers: AH });
-      if (res.ok) {
-        const data = await res.json();
-        const hist: Message[] = (data.history || [])
-          .filter((m: any) => m.role === "user" || m.role === "assistant")
-          .map((m: any) => ({ role: m.role, content: m.content, actions: [] }));
-        setMessages(hist);
-        setAllActions(data.actions || []);
-      }
+      const data = await getJson<any>(`${API_BASE}/chat-session/${sid}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
+      const hist: Message[] = (data.history || [])
+        .filter((m: any) => m.role === "user" || m.role === "assistant")
+        .map((m: any) => ({ role: m.role, content: m.content, actions: [] }));
+      setMessages(hist);
+      setAllActions(data.actions || []);
     } catch (e) { console.error(e); }
     finally { setLoading(false); setSessionId(sid); }
   }

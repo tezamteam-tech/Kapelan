@@ -75,7 +75,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
   const fetchDocuments = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await getJson<{ documents?: DocumentRecord[] }>(`${API}/documents/lead/${leadId}`, { ttlMs: 30_000 });
+      const data = await getJson<{ documents?: DocumentRecord[] }>(`${API}/documents/lead/${leadId}`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.documents) setDocuments(data.documents);
     } catch (err) { console.error("Fetch documents error:", err); }
     finally { setLoading(false); }
@@ -83,7 +83,7 @@ export function DocumentsPanel({ leadId, offers }: Props) {
 
   const fetchCompany = useCallback(async () => {
     try {
-      const data = await getJson<{ config?: CompanyConfig }>(`${API}/company-config`, { ttlMs: 5 * 60_000 });
+      const data = await getJson<{ config?: CompanyConfig }>(`${API}/company-config`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.config) setCompany(data.config);
     } catch (err) { console.error("Fetch company error:", err); }
   }, []);

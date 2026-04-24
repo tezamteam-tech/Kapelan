@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { DocumentsPanel } from "./DocumentsPanel";
 import { useCurrency } from "./CurrencyContext";
+import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
@@ -110,8 +111,7 @@ export function OfferGeneratorView({ lead, client, measurement, onBack }: OfferG
 
   const loadOffers = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/offers/lead/${lead.id}`, { headers: AH });
-      const data = await res.json();
+      const data = await getJson<any>(`${API_BASE}/offers/lead/${lead.id}`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true });
       if (data.offers) {
         setOffers(data.offers);
         if (data.offers.length > 0 && !selectedOffer) setSelectedOffer(data.offers[0]);
@@ -581,8 +581,7 @@ export function OffersList({ leads, clients, onOpenOffer }: OffersListProps) {
 
   useEffect(() => {
     setLoading(true);
-    fetch(`${API_BASE}/offers`, { headers: AH })
-      .then(r => r.json())
+    getJson<any>(`${API_BASE}/offers`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true })
       .then(d => { if (d.offers) setOffers(d.offers); })
       .catch(e => console.error("Load offers error:", e))
       .finally(() => setLoading(false));

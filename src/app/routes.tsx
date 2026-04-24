@@ -1,7 +1,10 @@
 import React, { Suspense } from "react";
-import { createBrowserRouter, Navigate } from "react-router";
+import { createHashRouter, Navigate } from "react-router";
 import { RootWrapper } from "./components/RootWrapper";
 import { Layout } from "./components/Layout";
+import { RoleGuard } from "./components/RoleGuard";
+import type { UserRole } from "./components/RoleContext";
+import { RequireAuth } from "./components/RequireAuth";
 
 function PageFallback() {
   return (
@@ -21,27 +24,46 @@ function withSuspense(C: React.ComponentType) {
   };
 }
 
-export const router = createBrowserRouter([
+function withAccessGuard(C: React.ComponentType, roles: UserRole[]) {
+  return function GuardedPage() {
+    return (
+      <RoleGuard roles={roles}>
+        <C />
+      </RoleGuard>
+    );
+  };
+}
+
+// Hash router makes refresh/deep-links work on static hosting.
+export const router = createHashRouter([
   {
     path: "/",
     Component: RootWrapper,
     children: [
       {
+        path: "login",
+        lazy: async () => ({ Component: withSuspense((await import("./components/pages/LoginPage")).LoginPage) }),
+      },
+      {
         path: "/",
-        Component: Layout,
+        Component: () => (
+          <RequireAuth>
+            <Layout />
+          </RequireAuth>
+        ),
         children: [
           { index: true, element: <Navigate to="/dashboard" replace /> },
           {
             path: "dashboard",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/DashboardPage")).DashboardPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/DashboardPage")).DashboardPage, ["admin"])) }),
           },
           {
             path: "ai-chat",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/AIChatPage")).AIChatPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/AIChatPage")).AIChatPage, ["admin", "manager"])) }),
           },
           {
             path: "orders",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/OrdersPage")).OrdersPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/OrdersPage")).OrdersPage, ["admin", "manager"])) }),
           },
           // Order-first: legacy entry points redirect to Orders
           { path: "leads", element: <Navigate to="/orders" replace /> },
@@ -49,43 +71,51 @@ export const router = createBrowserRouter([
           { path: "measurements", element: <Navigate to="/orders" replace /> },
           {
             path: "tasks",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/TasksPage")).TasksPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/TasksPage")).TasksPage, ["admin", "installer"])) }),
           },
           {
             path: "calendar",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/CalendarPage")).CalendarPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/CalendarPage")).CalendarPage, ["admin", "manager"])) }),
           },
           {
             path: "warehouse",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/WarehousePage")).WarehousePage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/WarehousePage")).WarehousePage, ["admin"])) }),
           },
           {
             path: "procurement",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/ProcurementPage")).ProcurementPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/ProcurementPage")).ProcurementPage, ["admin"])) }),
           },
           {
             path: "documents",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/DocumentsPage")).DocumentsPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/DocumentsPage")).DocumentsPage, ["admin", "manager"])) }),
           },
           {
             path: "reminders",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/RemindersPage")).RemindersPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/RemindersPage")).RemindersPage, ["admin", "manager"])) }),
           },
           {
             path: "ventilation",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/VentilationPage")).VentilationPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/VentilationPage")).VentilationPage, ["admin", "manager", "installer"])) }),
           },
           {
             path: "training",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/TrainingPage")).TrainingPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/TrainingPage")).TrainingPage, ["admin", "manager", "installer"])) }),
           },
           {
             path: "users",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/UsersPage")).UsersPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/UsersPage")).UsersPage, ["admin"])) }),
+          },
+          {
+            path: "clients",
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/ClientsPage")).ClientsPage, ["admin", "manager"])) }),
           },
           {
             path: "settings",
-            lazy: async () => ({ Component: withSuspense((await import("./components/pages/SettingsPage")).SettingsPage) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/SettingsPage")).SettingsPage, ["admin"])) }),
+          },
+          {
+            path: "profile",
+            lazy: async () => ({ Component: withSuspense((await import("./components/pages/ProfilePage")).ProfilePage) }),
           },
           { path: "*", element: <Navigate to="/dashboard" replace /> },
         ],

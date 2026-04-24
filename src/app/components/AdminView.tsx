@@ -4,6 +4,7 @@ import { MaterialsPanel, MaterialsJson, TemplateEditor } from "./MaterialsPanel"
 import { OfferGeneratorView, OffersList } from "./OfferGeneratorView";
 import { AssignInstallerModal } from "./InstallerAssignment";
 import { useCurrency } from "./CurrencyContext";
+import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AUTH_HEADERS = { Authorization: `Bearer ${publicAnonKey}` };
@@ -201,15 +202,11 @@ export function AdminView() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [leadsRes, measRes, configRes] = await Promise.all([
-        fetch(`${API_BASE}/leads`, { headers: AUTH_HEADERS }),
-        fetch(`${API_BASE}/measurements`, { headers: AUTH_HEADERS }),
-        fetch(`${API_BASE}/config`, { headers: AUTH_HEADERS }),
+      const [leadsData, measData, configData] = await Promise.all([
+        getJson<any>(`${API_BASE}/leads`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API_BASE}/measurements`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true }),
+        getJson<any>(`${API_BASE}/config`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true }),
       ]);
-
-      const leadsData = await leadsRes.json();
-      const measData = await measRes.json();
-      const configData = await configRes.json();
 
       if (leadsData.leads) {
         setLeads(leadsData.leads);
@@ -237,8 +234,8 @@ export function AdminView() {
 
   async function fetchClient(clientId: string) {
     try {
-      const res = await fetch(`${API_BASE}/client/${clientId}`, { headers: AUTH_HEADERS });
-      const data = await res.json();
+      if (clients[clientId]) return;
+      const data = await getJson<any>(`${API_BASE}/client/${clientId}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.client) setClients(prev => ({ ...prev, [clientId]: data.client }));
     } catch { /* silent */ }
   }
