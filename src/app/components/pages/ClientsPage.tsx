@@ -82,16 +82,18 @@ export function ClientsPage() {
   }, [load]);
 
   const rows = useMemo(() => {
-    const byClient = new Map<string, { leads: Lead[] }>();
+    const byClient = new Map<string, Lead[]>();
     for (const l of leads) {
-      const e = byClient.get(l.clientId) ?? { leads: [] };
-      e.leads.push(l);
-      byClient.set(l.clientId, e);
+      const arr = byClient.get(l.clientId) ?? [];
+      arr.push(l);
+      byClient.set(l.clientId, arr);
     }
-    const list = [...byClient.entries()].map(([clientId, v]) => {
+
+    const list = Object.keys(clients).map((clientId) => {
       const c = clients[clientId];
-      const last = v.leads.reduce((mx, l) => Math.max(mx, new Date(l.updatedAt || l.createdAt).getTime()), 0);
-      const counts = v.leads.reduce((acc, l) => {
+      const ls = byClient.get(clientId) ?? [];
+      const last = ls.reduce((mx, l) => Math.max(mx, new Date(l.updatedAt || l.createdAt).getTime()), 0);
+      const counts = ls.reduce((acc, l) => {
         acc[l.status] = (acc[l.status] ?? 0) + 1;
         return acc;
       }, {} as Record<string, number>);
@@ -99,8 +101,8 @@ export function ClientsPage() {
         clientId,
         name: c?.name || "—",
         phone: c?.phone || "",
-        leads: v.leads,
-        lastTs: last,
+        leads: ls,
+        lastTs: last || (c?.updatedAt ? new Date(c.updatedAt).getTime() : (c?.createdAt ? new Date(c.createdAt).getTime() : 0)),
         counts,
       };
     });
@@ -120,9 +122,9 @@ export function ClientsPage() {
       return n;
     });
     const client = clients[id] ?? null;
-    const leadsForClient = rows.find((r) => r.clientId === id)?.leads ?? [];
+    const leadsForClient = leads.filter((l) => l.clientId === id);
     setSelected(client ? { client, leads: leadsForClient } : null);
-  }, [clients, rows, setSp]);
+  }, [clients, leads, setSp]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -131,7 +133,7 @@ export function ClientsPage() {
   }, [selectedId, selected, openClient]);
 
   const selectedClient = selected?.client ?? (selectedId ? clients[selectedId] : null);
-  const selectedLeads = selected?.leads ?? (selectedId ? rows.find((r) => r.clientId === selectedId)?.leads ?? [] : []);
+  const selectedLeads = selected?.leads ?? (selectedId ? leads.filter((l) => l.clientId === selectedId) : []);
 
   useEffect(() => {
     if (!selectedClient) return;
