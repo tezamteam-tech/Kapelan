@@ -113,6 +113,7 @@ interface WarehouseItem {
   stock: number;
   itemType?: "consumable" | "assembly" | "equipment";
   price?: number;
+  imageUrl?: string;
 }
 
 interface MaterialLine {
@@ -641,6 +642,100 @@ export function OrdersView() {
       showToast(e?.message || "Ошибка создания КП", false);
     }
   }
+
+  const saveOrderEquipment = useCallback(async (lines: Array<{ id: string; qty: number }>) => {
+    if (!selected) return;
+    if (orderEqSaving) return;
+    setOrderEqSaving(true);
+    try {
+      const resolveEquipmentWarehouseId = async (rawId: string): Promise<{ warehouseId: string; fallback?: { name: string; unit: string; price: number } } | null> => {
+        const v = String(rawId || "");
+        if (!v) return null;
+        if (!v.startsWith("cat:")) return { warehouseId: v };
+        const catId = v.slice(4);
+        const m = catalogEq.find((x) => String(x.id) === catId) ?? null;
+        if (!m) return null;
+        const linked = (m.warehouseItemId ?? "").trim();
+        const fb = { name: `${(m.brand ?? "").trim()} ${(m.model ?? "").trim()}`.trim() || catId, unit: "шт", price: Number(m.price ?? 0) };
+        if (linked) return { warehouseId: linked, fallback: fb };
+
+        const name = fb.name || `Оборудование ${catId}`;
+        const res = await fetch(`${API}/warehouse`, {
+          method: "POST",
+          headers: JH,
+          body: JSON.stringify({
+            name,
+            category: "Оборудование",
+            unit: "шт",
+            stock: 0,
+            price: Number(m.price ?? 0),
+            itemType: "equipment",
+            imageUrl: m.imageUrl ?? null,
+            acSpecs: { equipmentId: catId, equipmentType: m.type ?? "any" },
+          }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+        const created: WarehouseItem | undefined = d.item;
+        const wid = String(created?.id ?? "");
+        if (!wid) throw new Error("Не удалось создать складскую позицию для оборудования");
+        await loadWarehouseEquipment({ force: true });
+        return { warehouseId: wid, fallback: fb };
+      };
+
+      const resolved = (await Promise.all(
+        lines
+          .filter((x) => x.id)
+          .map(async (x) => {
+            const r = await resolveEquipmentWarehouseId(x.id);
+            if (!r) return null;
+            return { qty: Number(x.qty) || 1, warehouseId: r.warehouseId, fallback: r.fallback };
+          }),
+      )).filter(Boolean) as Array<{ qty: number; warehouseId: string; fallback?: { name: string; unit: string; price: number } }>;
+
+      if (resolved.length === 0) {
+        showToast("Выберите хотя бы одно оборудование", false);
+        return;
+      }
+
+      const prevOffer = selected.offer ?? { version: 1, status: "draft", currency: "UAH", lines: [] as any[] };
+      const otherLines = (prevOffer.lines ?? []).filter((l: any) => l?.line_type !== "equipment");
+      const eqOfferLines = resolved.map((x) => {
+        const it = warehouseMap[x.warehouseId];
+        return {
+          line_type: "equipment",
+          warehouse_item_id: x.warehouseId,
+          name: it?.name ?? x.fallback?.name ?? x.warehouseId,
+          qty: x.qty,
+          unit: it?.unit ?? x.fallback?.unit ?? "шт",
+          price: it?.price ?? x.fallback?.price ?? 0,
+        };
+      });
+
+      const patch: any = {
+        equipment_warehouse_id: resolved[0].warehouseId,
+        offer: {
+          ...prevOffer,
+          status: prevOffer.status ?? "draft",
+          currency: prevOffer.currency ?? "UAH",
+          lines: [...otherLines, ...eqOfferLines],
+        },
+      };
+
+      const res = await fetch(`${API}/orders/${selected.id}`, { method: "PATCH", headers: JH, body: JSON.stringify(patch) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setSelected(data.order);
+      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      invalidateUrlPrefix(`${API}/orders/${selected.id}`);
+      showToast("Оборудование сохранено");
+      setOrderEqOpen(false);
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось сохранить оборудование", false);
+    } finally {
+      setOrderEqSaving(false);
+    }
+  }, [catalogEq, loadWarehouseEquipment, orderEqSaving, selected, showToast, warehouseMap]);
 
   async function saveOfferLines(nextLines: NonNullable<Order["offer"]>["lines"]) {
     if (!selected) return;
@@ -1454,6 +1549,66 @@ export function OrdersView() {
                     </button>
                   </div>
 
+                  {(() => {
+                    const eqOffer = (selected.offer?.lines ?? []).filter((l: any) => l?.line_type === "equipment" && l?.warehouse_item_id);
+                    const list = eqOffer.length
+                      ? eqOffer.map((l: any) => ({ wid: String(l.warehouse_item_id), qty: Number(l.qty ?? 1) || 1 }))
+                      : (selected.equipment_warehouse_id ? [{ wid: String(selected.equipment_warehouse_id), qty: 1 }] : []);
+                    if (!list.length) return null;
+
+                    return (
+                      <div className="px-4 py-3 bg-white border-b border-slate-100">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {list.slice(0, 6).map((x) => {
+                            const it = warehouseMap[x.wid];
+                            const img = (it?.imageUrl ?? "").trim();
+                            return (
+                              <div key={x.wid} className="flex items-center gap-3 border border-slate-200 rounded-2xl p-2 bg-white">
+                                <div className="w-14 h-14 rounded-xl bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center flex-shrink-0">
+                                  {img ? (
+                                    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+                                    <img src={img} alt="" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <span className="text-xs text-slate-400">нет фото</span>
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-black text-slate-900 truncate">{it?.name ?? x.wid}</p>
+                                  <p className="text-[11px] text-slate-500 mt-0.5">Кол-во: <b>{x.qty}</b></p>
+                                </div>
+                                <button
+                                  type="button"
+                                  title="Убрать из ордера"
+                                  className="px-2.5 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold"
+                                  onClick={async () => {
+                                    const next = orderEqLines
+                                      .filter((l) => l.id)
+                                      .filter((l) => {
+                                        const v = String(l.id);
+                                        if (!v.startsWith("cat:")) return v !== x.wid;
+                                        const catId = v.slice(4);
+                                        const wid = (catalogEq.find((m) => String(m.id) === catId)?.warehouseItemId ?? "").trim();
+                                        return wid !== x.wid;
+                                      });
+                                    if (next.length === 0) {
+                                      showToast("Нельзя убрать всё оборудование. Добавьте другое и сохраните.", false);
+                                      return;
+                                    }
+                                    setOrderEqLines(next);
+                                    await saveOrderEquipment(next);
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {list.length > 6 ? <div className="text-[11px] text-slate-400 mt-2">…и ещё {list.length - 6} поз.</div> : null}
+                      </div>
+                    );
+                  })()}
+
                   {orderEqOpen && (
                     <div className="p-4 space-y-3">
                       <div className="text-[11px] text-slate-500">
@@ -1532,100 +1687,7 @@ export function OrdersView() {
                           type="button"
                           disabled={orderEqSaving || orderEqLines.filter((x) => x.id).length === 0}
                           onClick={async () => {
-                            if (!selected) return;
-                            if (orderEqSaving) return;
-                            setOrderEqSaving(true);
-                            try {
-                              const resolveEquipmentWarehouseId = async (rawId: string): Promise<{ warehouseId: string; fallback?: { name: string; unit: string; price: number } } | null> => {
-                                const v = String(rawId || "");
-                                if (!v) return null;
-                                if (!v.startsWith("cat:")) return { warehouseId: v };
-                                const catId = v.slice(4);
-                                const m = catalogEq.find((x) => String(x.id) === catId) ?? null;
-                                if (!m) return null;
-                                const linked = (m.warehouseItemId ?? "").trim();
-                                const fb = { name: `${(m.brand ?? "").trim()} ${(m.model ?? "").trim()}`.trim() || catId, unit: "шт", price: Number(m.price ?? 0) };
-                                if (linked) return { warehouseId: linked, fallback: fb };
-
-                                const name = fb.name || `Оборудование ${catId}`;
-                                const res = await fetch(`${API}/warehouse`, {
-                                  method: "POST",
-                                  headers: JH,
-                                  body: JSON.stringify({
-                                    name,
-                                    category: "Оборудование",
-                                    unit: "шт",
-                                    stock: 0,
-                                    price: Number(m.price ?? 0),
-                                    itemType: "equipment",
-                                    imageUrl: m.imageUrl ?? null,
-                                    acSpecs: { equipmentId: catId, equipmentType: m.type ?? "any" },
-                                  }),
-                                });
-                                const d = await res.json().catch(() => ({}));
-                                if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
-                                const created: WarehouseItem | undefined = d.item;
-                                const wid = String(created?.id ?? "");
-                                if (!wid) throw new Error("Не удалось создать складскую позицию для оборудования");
-
-                                // refresh warehouse snapshot so next UI steps show it immediately
-                                await loadWarehouseEquipment({ force: true });
-
-                                return { warehouseId: wid, fallback: fb };
-                              };
-
-                              const resolved = (await Promise.all(
-                                orderEqLines
-                                  .filter((x) => x.id)
-                                  .map(async (x) => {
-                                    const r = await resolveEquipmentWarehouseId(x.id);
-                                    if (!r) return null;
-                                    return { qty: Number(x.qty) || 1, warehouseId: r.warehouseId, fallback: r.fallback };
-                                  }),
-                              )).filter(Boolean) as Array<{ qty: number; warehouseId: string; fallback?: { name: string; unit: string; price: number } }>;
-
-                              if (resolved.length === 0) {
-                                showToast("Выберите хотя бы одно оборудование", false);
-                                return;
-                              }
-
-                              const prevOffer = selected.offer ?? { version: 1, status: "draft", currency: "UAH", lines: [] as any[] };
-                              const otherLines = (prevOffer.lines ?? []).filter((l: any) => l?.line_type !== "equipment");
-                              const eqLines = resolved.map((x) => {
-                                const it = warehouseMap[x.warehouseId];
-                                return {
-                                  line_type: "equipment",
-                                  warehouse_item_id: x.warehouseId,
-                                  name: it?.name ?? x.fallback?.name ?? x.warehouseId,
-                                  qty: x.qty,
-                                  unit: it?.unit ?? x.fallback?.unit ?? "шт",
-                                  price: it?.price ?? x.fallback?.price ?? 0,
-                                };
-                              });
-
-                              const patch: any = {
-                                equipment_warehouse_id: resolved[0].warehouseId,
-                                offer: {
-                                  ...prevOffer,
-                                  status: prevOffer.status ?? "draft",
-                                  currency: prevOffer.currency ?? "UAH",
-                                  lines: [...otherLines, ...eqLines],
-                                },
-                              };
-
-                              const res = await fetch(`${API}/orders/${selected.id}`, { method: "PATCH", headers: JH, body: JSON.stringify(patch) });
-                              const data = await res.json().catch(() => ({}));
-                              if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-                              setSelected(data.order);
-                              setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
-                              invalidateUrlPrefix(`${API}/orders/${selected.id}`);
-                              showToast("Оборудование сохранено");
-                              setOrderEqOpen(false);
-                            } catch (e: any) {
-                              showToast(e?.message || "Не удалось сохранить оборудование", false);
-                            } finally {
-                              setOrderEqSaving(false);
-                            }
+                            await saveOrderEquipment(orderEqLines);
                           }}
                           className={`px-3 py-2 rounded-xl text-xs font-black text-white ${orderEqSaving ? "bg-slate-400 cursor-not-allowed" : "bg-slate-900 hover:bg-slate-800"}`}
                         >
