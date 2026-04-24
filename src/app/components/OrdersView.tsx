@@ -511,6 +511,7 @@ export function OrdersView() {
     client_tax_id?: string;
     client_email?: string;
     client_doc_basis?: string;
+    offer?: any;
   }) {
     try {
       if (creating) return;
@@ -1895,6 +1896,7 @@ function CreateOrderModal({
     client_doc_basis?: string;
     equipment_warehouse_id?: string;
     trace_length_m?: number;
+    offer?: any;
   }) => void;
   creating?: boolean;
 }) {
@@ -1932,7 +1934,13 @@ function CreateOrderModal({
   });
 
   const [address, setAddress] = useState(prefill?.object_address ?? "");
-  const [eqId, setEqId] = useState<string>("");
+  const eqMap = useMemo(() => {
+    const m: Record<string, WarehouseItem> = {};
+    for (const i of warehouseEq) m[i.id] = i;
+    return m;
+  }, [warehouseEq]);
+
+  const [eqLines, setEqLines] = useState<Array<{ id: string; qty: number }>>([{ id: "", qty: 1 }]);
   const [traceLen, setTraceLen] = useState<number>(4);
 
   // New client draft
@@ -2129,15 +2137,52 @@ function CreateOrderModal({
               </Field>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Field label="Устройство (со склада, опционально)">
-                  <select value={eqId} onChange={(e) => setEqId(e.target.value)} className={inputCls}>
-                    <option value="">— не выбрано —</option>
-                    {warehouseEq.map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.name} (stock: {i.stock})
-                      </option>
+                <Field label="Оборудование (кондиционеры) — можно несколько">
+                  <div className="space-y-2">
+                    {eqLines.map((ln, idx) => (
+                      <div key={idx} className="grid grid-cols-12 gap-2">
+                        <select
+                          value={ln.id}
+                          onChange={(e) => setEqLines((p) => p.map((x, i) => (i === idx ? { ...x, id: e.target.value } : x)))}
+                          className={`col-span-12 md:col-span-9 ${inputCls}`}
+                        >
+                          <option value="">{warehouseEq.length ? "— выбрать оборудование —" : "— нет оборудования на складе —"}</option>
+                          {warehouseEq.map((i) => (
+                            <option key={i.id} value={i.id}>
+                              {i.name} (stock: {i.stock})
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          min={1}
+                          value={ln.qty}
+                          onChange={(e) => setEqLines((p) => p.map((x, i) => (i === idx ? { ...x, qty: Math.max(1, Number(e.target.value) || 1) } : x)))}
+                          className={`col-span-6 md:col-span-2 ${inputCls}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setEqLines((p) => p.filter((_, i) => i !== idx))}
+                          className="col-span-6 md:col-span-1 px-3 py-2 rounded-xl border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 text-xs font-bold"
+                          title="Удалить строку"
+                        >
+                          ✕
+                        </button>
+                      </div>
                     ))}
-                  </select>
+                    <button
+                      type="button"
+                      onClick={() => setEqLines((p) => [...p, { id: "", qty: 1 }])}
+                      className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      + Добавить оборудование
+                    </button>
+                    {warehouseEq.length === 0 ? (
+                      <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                        На складе нет позиций с типом <b>equipment</b>. Добавь кондиционеры в «Склад» как тип <b>Оборудование</b>, и они появятся здесь.
+                      </div>
+                    ) : null}
+                  </div>
                 </Field>
                 <Field label="Длина трассы (м)">
                   <input type="number" min={1} value={traceLen} onChange={(e) => setTraceLen(Number(e.target.value))} className={inputCls} />
@@ -2174,8 +2219,25 @@ function CreateOrderModal({
                     client_tax_id: selClient?.tax_id ? String(selClient.tax_id) : undefined,
                     client_email: selClient?.email ? String(selClient.email) : undefined,
                     client_doc_basis: selClient?.doc_basis ? String(selClient.doc_basis) : undefined,
-                    equipment_warehouse_id: eqId || undefined,
+                    equipment_warehouse_id: eqLines.find((x) => x.id)?.id || undefined,
                     trace_length_m: traceLen,
+                    offer: (() => {
+                      const lines = eqLines
+                        .filter((x) => x.id)
+                        .map((x) => {
+                          const it = eqMap[x.id];
+                          return {
+                            line_type: "equipment",
+                            warehouse_item_id: x.id,
+                            name: it?.name ?? x.id,
+                            qty: Number(x.qty) || 1,
+                            unit: it?.unit ?? "шт",
+                            price: it?.price ?? 0,
+                          };
+                        });
+                      if (!lines.length) return undefined;
+                      return { version: 1, status: "draft", currency: "UAH", lines };
+                    })(),
                   })
                 }
                 className={`px-4 py-2 rounded-xl font-semibold text-white ${canCreate && !creating ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"}`}
