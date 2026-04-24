@@ -83,10 +83,11 @@ export function ClientsPage() {
   }, [load]);
 
   useEffect(() => {
-    // keep local selection in sync with URL (deep-link / back button)
-    if (selectedId && selectedId !== activeId) setActiveId(selectedId);
-    if (!selectedId && activeId) setActiveId("");
-  }, [activeId, selectedId]);
+    // Keep local selection in sync with URL (deep-link / back button).
+    // IMPORTANT: do NOT depend on activeId here, otherwise we can "rollback" user clicks
+    // because URL searchParams updates are async.
+    setActiveId(selectedId || "");
+  }, [selectedId]);
 
   const rows = useMemo(() => {
     const byClient = new Map<string, Lead[]>();
