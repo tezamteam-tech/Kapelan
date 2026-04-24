@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Users, Search, RefreshCw, Phone, ClipboardCheck, Loader2, ChevronRight, Plus, Trash2, X } from "lucide-react";
-import { API_BASE, getJson } from "../../lib/apiClient";
+import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../../lib/apiClient";
 
 type LeadStatus = "new" | "measurement" | "offer" | "deal" | "done";
 
@@ -18,9 +18,13 @@ type Client = {
   name: string;
   phone: string;
   email?: string | null;
-  type?: string;
+  type?: "individual" | "company";
+  legal_name?: string;
+  tax_id?: string;
+  address?: string;
   notes?: string;
   createdAt?: string;
+  updatedAt?: string;
 };
 
 export function ClientsPage() {
@@ -38,6 +42,23 @@ export function ClientsPage() {
   const [cName, setCName] = useState("");
   const [cPhone, setCPhone] = useState("");
   const [cEmail, setCEmail] = useState("");
+  const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const [eType, setEType] = useState<Client["type"]>("individual");
+  const [eName, setEName] = useState("");
+  const [ePhone, setEPhone] = useState("");
+  const [eEmail, setEEmail] = useState("");
+  const [eLegalName, setELegalName] = useState("");
+  const [eTaxId, setETaxId] = useState("");
+  const [eAddress, setEAddress] = useState("");
+  const [eNotes, setENotes] = useState("");
+
+  const showToast = useCallback((msg: string, ok = true) => {
+    setToast({ ok, msg });
+    setTimeout(() => setToast(null), 2600);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,7 +75,7 @@ export function ClientsPage() {
     } finally {
       setLoading(false);
     }
-  }, [clients]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -111,6 +132,64 @@ export function ClientsPage() {
 
   const selectedClient = selected?.client ?? (selectedId ? clients[selectedId] : null);
   const selectedLeads = selected?.leads ?? (selectedId ? rows.find((r) => r.clientId === selectedId)?.leads ?? [] : []);
+
+  useEffect(() => {
+    if (!selectedClient) return;
+    setEType(selectedClient.type ?? "individual");
+    setEName(selectedClient.name ?? "");
+    setEPhone(selectedClient.phone ?? "");
+    setEEmail(String(selectedClient.email ?? ""));
+    setELegalName(selectedClient.legal_name ?? "");
+    setETaxId(selectedClient.tax_id ?? "");
+    setEAddress(selectedClient.address ?? "");
+    setENotes(selectedClient.notes ?? "");
+  }, [selectedClient?.id]);
+
+  const dirty = useMemo(() => {
+    if (!selectedClient) return false;
+    return (
+      (eType ?? "individual") !== (selectedClient.type ?? "individual") ||
+      eName.trim() !== (selectedClient.name ?? "") ||
+      ePhone.trim() !== (selectedClient.phone ?? "") ||
+      (eEmail.trim() || "") !== String(selectedClient.email ?? "") ||
+      (eLegalName.trim() || "") !== String(selectedClient.legal_name ?? "") ||
+      (eTaxId.trim() || "") !== String(selectedClient.tax_id ?? "") ||
+      (eAddress.trim() || "") !== String(selectedClient.address ?? "") ||
+      (eNotes.trim() || "") !== String(selectedClient.notes ?? "")
+    );
+  }, [eAddress, eEmail, eLegalName, eName, eNotes, ePhone, eTaxId, eType, selectedClient]);
+
+  const saveClient = useCallback(async () => {
+    if (!selectedClient) return;
+    if (saving) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/client/${selectedClient.id}`, {
+        method: "PATCH",
+        headers: JH,
+        body: JSON.stringify({
+          type: eType ?? "individual",
+          name: eName.trim(),
+          phone: ePhone.trim(),
+          email: eEmail.trim() ? eEmail.trim() : null,
+          legal_name: eLegalName.trim(),
+          tax_id: eTaxId.trim(),
+          address: eAddress.trim(),
+          notes: eNotes.trim(),
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+      setClients((prev) => ({ ...prev, [d.client.id]: d.client }));
+      setSelected((prev) => (prev ? { ...prev, client: d.client } : prev));
+      invalidateUrlPrefix(`${API_BASE}/clients`);
+      showToast("Карточка клиента сохранена");
+    } catch (e: any) {
+      showToast(e?.message || "Ошибка сохранения", false);
+    } finally {
+      setSaving(false);
+    }
+  }, [eAddress, eEmail, eLegalName, eName, eNotes, ePhone, eTaxId, eType, saving, selectedClient, showToast]);
 
   return (
     <div className="h-full bg-slate-50 overflow-hidden flex flex-col">
@@ -220,28 +299,52 @@ export function ClientsPage() {
                 </button>
                 <button
                   onClick={async () => {
+                    if (deleting) return;
                     const ok = confirm(
-                      `Удалить клиента "${selectedClient.name}"?\n\nВНИМАНИЕ: будет удалена вся связанная история (ордера/заявки/документы). Это действие необратимо.`,
+                      `Удалить клиента "${selectedClient.name}"?\n\nВНИМАНИЕ: будет удалена вся связанная история (ордера/заявки/документы). Это действие необратимо.\n\nЕсли данных много — удаление может занять 10–30 секунд.`,
                     );
                     if (!ok) return;
-                    const res = await fetch(`${API_BASE}/client/${selectedClient.id}`, { method: "DELETE" });
-                    const d = await res.json().catch(() => ({}));
-                    if (d.error) {
-                      alert(d.error);
-                      return;
-                    }
+
+                    setDeleting(true);
+                    // instant UI feedback
+                    showToast("Удаляем клиента…", true);
+                    const prevClient = selectedClient;
                     setSelected(null);
                     setSp((prev) => {
                       const n = new URLSearchParams(prev);
                       n.delete("id");
                       return n;
                     });
-                    await load();
+                    setClients((prev) => {
+                      const next = { ...prev };
+                      delete next[prevClient.id];
+                      return next;
+                    });
+                    setLeads((prev) => prev.filter((l) => l.clientId !== prevClient.id));
+
+                    try {
+                      const res = await fetch(`${API_BASE}/client/${prevClient.id}`, { method: "DELETE", headers: AH });
+                      const d = await res.json().catch(() => ({}));
+                      if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+                      invalidateUrlPrefix(`${API_BASE}/clients`);
+                      invalidateUrlPrefix(`${API_BASE}/leads`);
+                      showToast("Клиент удалён");
+                      void load();
+                    } catch (e: any) {
+                      showToast(e?.message || "Ошибка удаления", false);
+                      void load(); // restore
+                    } finally {
+                      setDeleting(false);
+                    }
                   }}
-                  className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-xl text-sm font-bold active:scale-95"
+                  disabled={deleting}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold active:scale-95 ${
+                    deleting ? "bg-red-300 text-white cursor-not-allowed" : "bg-red-600 text-white"
+                  }`}
                   title="Удалить клиента и связанные ордера"
                 >
-                  <Trash2 size={16} /> Удалить
+                  {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                  {deleting ? "Удаление…" : "Удалить"}
                 </button>
               </div>
             ) : null}
@@ -252,6 +355,66 @@ export function ClientsPage() {
               <div className="text-slate-400 text-sm">Выберите клиента слева, чтобы увидеть детали и связанные ордера/заявки.</div>
             ) : (
               <div className="space-y-4">
+                <div className="border border-slate-200 rounded-2xl p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Данные клиента</p>
+                      <p className="text-[12px] text-slate-500 mt-1">
+                        Эти данные используются в ордерах и документах.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => void saveClient()}
+                      disabled={!dirty || saving}
+                      className={`px-4 py-2 rounded-xl text-sm font-black ${
+                        dirty ? "bg-slate-900 text-white" : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                      }`}
+                    >
+                      {saving ? "Сохранение…" : "Сохранить"}
+                    </button>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-500">Тип</span>
+                      <select value={eType ?? "individual"} onChange={(e) => setEType(e.target.value as any)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm">
+                        <option value="individual">Физ. лицо</option>
+                        <option value="company">Юр. лицо</option>
+                      </select>
+                    </label>
+                    <div />
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-500">ФИО / Контакт</span>
+                      <input value={eName} onChange={(e) => setEName(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-500">Телефон</span>
+                      <input value={ePhone} onChange={(e) => setEPhone(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-500">Email</span>
+                      <input value={eEmail} onChange={(e) => setEEmail(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" placeholder="—" />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-500">Адрес (для документов/ордеров)</span>
+                      <input value={eAddress} onChange={(e) => setEAddress(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" placeholder="—" />
+                    </label>
+                    <label className="block md:col-span-2">
+                      <span className="text-xs font-semibold text-slate-500">Юр. название (для документов)</span>
+                      <input value={eLegalName} onChange={(e) => setELegalName(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" placeholder={eType === "company" ? "ООО «…»" : "—"} />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-semibold text-slate-500">УНП / ИНН</span>
+                      <input value={eTaxId} onChange={(e) => setETaxId(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" placeholder="—" />
+                    </label>
+                    <div />
+                    <label className="block md:col-span-2">
+                      <span className="text-xs font-semibold text-slate-500">Примечания</span>
+                      <textarea value={eNotes} onChange={(e) => setENotes(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm min-h-[90px]" placeholder="—" />
+                    </label>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                   {(["new","measurement","offer","deal","done"] as LeadStatus[]).map((s) => {
                     const v = selectedLeads.filter((l) => l.status === s).length;
@@ -320,16 +483,18 @@ export function ClientsPage() {
                     setCreating(true);
                     const res = await fetch(`${API_BASE}/clients`, {
                       method: "POST",
-                      headers: { "Content-Type": "application/json" },
+                      headers: JH,
                       body: JSON.stringify({ name: cName, phone: cPhone, email: cEmail || null }),
                     });
                     const d = await res.json();
                     if (d.error) throw new Error(d.error);
                     setCreateOpen(false);
                     setCName(""); setCPhone(""); setCEmail("");
+                    invalidateUrlPrefix(`${API_BASE}/clients`);
+                    showToast("Клиент создан");
                     await load();
                   } catch (e: any) {
-                    alert(e?.message || "Ошибка создания");
+                    showToast(e?.message || "Ошибка создания", false);
                   } finally {
                     setCreating(false);
                   }
@@ -339,6 +504,14 @@ export function ClientsPage() {
                 {creating ? "..." : "Создать"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-3 rounded-2xl shadow-xl text-white text-sm font-semibold whitespace-nowrap transition-all">
+          <div className={`${toast.ok ? "bg-emerald-600" : "bg-red-600"} px-4 py-3 rounded-2xl flex items-center gap-2`}>
+            <span className="size-2 rounded-full bg-white/80" /> {toast.msg}
           </div>
         </div>
       )}
