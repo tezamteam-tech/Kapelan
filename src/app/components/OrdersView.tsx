@@ -43,6 +43,7 @@ interface Order {
   number: string;
   type: OrderType;
   status: OrderStatus;
+  client_id?: string;
   client_name?: string;
   client_phone?: string;
   object_address?: string;
@@ -220,9 +221,14 @@ export function OrdersView() {
   const [revertingToNew, setRevertingToNew] = useState(false);
   const [statusFlash, setStatusFlash] = useState<{ from: string; to: string } | null>(null);
   const [createPrefill, setCreatePrefill] = useState<{
+    client_id?: string;
     client_name?: string;
     client_phone?: string;
     object_address?: string;
+    client_legal_name?: string;
+    client_tax_id?: string;
+    client_email?: string;
+    client_doc_basis?: string;
   } | null>(null);
 
   const applyStepStatus = useCallback(async (step: OrderStepKey) => {
@@ -401,6 +407,34 @@ export function OrdersView() {
     })();
   }, [searchParams, setSearchParams, showToast]);
 
+  // Create Order from Client (primary flow)
+  useEffect(() => {
+    const clientId = searchParams.get("fromClient");
+    if (!clientId) return;
+    (async () => {
+      try {
+        const cData = await getJson<any>(`${API}/client/${clientId}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
+        const client = cData.client;
+        if (!client) throw new Error("Клиент не найден");
+        setCreatePrefill({
+          client_id: clientId,
+          client_name: client?.name ?? "",
+          client_phone: client?.phone ?? "",
+          object_address: client?.address ?? "",
+          client_legal_name: client?.legal_name ?? "",
+          client_tax_id: client?.tax_id ?? "",
+          client_email: client?.email ?? "",
+          client_doc_basis: client?.doc_basis ?? "",
+        });
+        setCreateOpen(true);
+      } catch (e: any) {
+        showToast(e?.message || "Не удалось загрузить клиента", false);
+      } finally {
+        setSearchParams({}, { replace: true });
+      }
+    })();
+  }, [searchParams, setSearchParams, showToast]);
+
   // Open create modal explicitly (order-first flow)
   useEffect(() => {
     const create = searchParams.get("create");
@@ -467,6 +501,7 @@ export function OrdersView() {
   }, [filtered]);
 
   async function createOrder(payload: {
+    client_id?: string;
     client_name: string;
     client_phone: string;
     object_address: string;
@@ -941,6 +976,37 @@ export function OrdersView() {
     return acts;
   }, [selected, createOfferDraftFromEquipment, sendOffer, approveOffer, confirmOrder]);
 
+  const syncClientToOrder = useCallback(async () => {
+    if (!selected?.client_id) {
+      showToast("У ордера нет привязки к клиенту", false);
+      return;
+    }
+    try {
+      const cData = await getJson<any>(`${API}/client/${selected.client_id}`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
+      const client = cData.client;
+      if (!client) throw new Error("Клиент не найден");
+      const patch: any = {
+        client_id: selected.client_id,
+        client_name: client?.name ?? "",
+        client_phone: client?.phone ?? "",
+        object_address: client?.address ?? "",
+        client_legal_name: client?.legal_name ?? undefined,
+        client_tax_id: client?.tax_id ?? undefined,
+        client_email: client?.email ?? undefined,
+        client_doc_basis: client?.doc_basis ?? undefined,
+      };
+      const res = await fetch(`${API}/orders/${selected.id}`, { method: "PATCH", headers: JH, body: JSON.stringify(patch) });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setSelected(data.order);
+      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      invalidateUrlPrefix(`${API}/orders/${selected.id}`);
+      showToast("Данные клиента синхронизированы");
+    } catch (e: any) {
+      showToast(e?.message || "Ошибка синхронизации", false);
+    }
+  }, [selected, showToast]);
+
   return (
     <div className="flex h-full bg-slate-50">
       {/* Left: list */}
@@ -954,7 +1020,7 @@ export function OrdersView() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={loadOrders}
+              onClick={() => loadOrders()}
               disabled={loading}
               className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-all"
             >
@@ -1212,11 +1278,14 @@ export function OrdersView() {
               onOpenClients={
                 role === "admin" || role === "manager"
                   ? () => {
-                      const phone = selected.client_phone ? `?q=${encodeURIComponent(selected.client_phone)}` : "";
-                      navigate(`/clients${phone}`);
+                      const url = selected.client_id
+                        ? `/clients?id=${encodeURIComponent(selected.client_id)}`
+                        : (selected.client_phone ? `/clients?q=${encodeURIComponent(selected.client_phone)}` : "/clients");
+                      navigate(url);
                     }
                   : undefined
               }
+              onSyncFromClient={selected.client_id ? syncClientToOrder : undefined}
             />
 
             <OrderStepper
@@ -1804,9 +1873,19 @@ function CreateOrderModal({
   creating,
 }: {
   warehouseEq: WarehouseItem[];
-  prefill: { client_name?: string; client_phone?: string; object_address?: string } | null;
+  prefill: {
+    client_id?: string;
+    client_name?: string;
+    client_phone?: string;
+    object_address?: string;
+    client_legal_name?: string;
+    client_tax_id?: string;
+    client_email?: string;
+    client_doc_basis?: string;
+  } | null;
   onClose: () => void;
   onCreate: (payload: {
+    client_id?: string;
     client_name: string;
     client_phone: string;
     object_address: string;
@@ -1819,17 +1898,76 @@ function CreateOrderModal({
   }) => void;
   creating?: boolean;
 }) {
-  const [clientName, setClientName] = useState(prefill?.client_name ?? "");
-  const [clientPhone, setClientPhone] = useState(prefill?.client_phone ?? "");
+  type ClientLite = {
+    id: string;
+    name: string;
+    phone: string;
+    email?: string | null;
+    type?: string;
+    legal_name?: string;
+    tax_id?: string;
+    address?: string;
+    doc_basis?: string;
+  };
+
+  const [step, setStep] = useState<"client" | "order">("client");
+  const [clientQ, setClientQ] = useState("");
+  const [clients, setClients] = useState<ClientLite[]>([]);
+  const [clientsLoading, setClientsLoading] = useState(false);
+  const [createClientOpen, setCreateClientOpen] = useState(false);
+  const [clientCreating, setClientCreating] = useState(false);
+
+  const [selClient, setSelClient] = useState<ClientLite | null>(() => {
+    if (!prefill?.client_id) return null;
+    return {
+      id: prefill.client_id,
+      name: prefill.client_name || "",
+      phone: prefill.client_phone || "",
+      email: prefill.client_email || null,
+      legal_name: prefill.client_legal_name || "",
+      tax_id: prefill.client_tax_id || "",
+      address: prefill.object_address || "",
+      doc_basis: prefill.client_doc_basis || "",
+    };
+  });
+
   const [address, setAddress] = useState(prefill?.object_address ?? "");
-  const [legalName, setLegalName] = useState("");
-  const [taxId, setTaxId] = useState("");
-  const [email, setEmail] = useState("");
-  const [basis, setBasis] = useState("");
   const [eqId, setEqId] = useState<string>("");
   const [traceLen, setTraceLen] = useState<number>(4);
 
-  const canCreate = clientName.trim().length > 0 && clientPhone.trim().length > 0;
+  // New client draft
+  const [cType, setCType] = useState<"individual" | "company">("individual");
+  const [cName, setCName] = useState(prefill?.client_name ?? "");
+  const [cPhone, setCPhone] = useState(prefill?.client_phone ?? "");
+  const [cEmail, setCEmail] = useState(prefill?.client_email ?? "");
+  const [cLegalName, setCLegalName] = useState(prefill?.client_legal_name ?? "");
+  const [cTaxId, setCTaxId] = useState(prefill?.client_tax_id ?? "");
+  const [cAddress, setCAddress] = useState(prefill?.object_address ?? "");
+  const [cBasis, setCBasis] = useState(prefill?.client_doc_basis ?? "");
+
+  useEffect(() => {
+    (async () => {
+      setClientsLoading(true);
+      try {
+        const res = await fetch(`${API}/clients`, { headers: AH });
+        const data = await res.json().catch(() => ({}));
+        setClients(Array.isArray(data.clients) ? data.clients : []);
+      } catch {
+        setClients([]);
+      } finally {
+        setClientsLoading(false);
+      }
+    })();
+  }, []);
+
+  const filteredClients = useMemo(() => {
+    const qq = clientQ.trim().toLowerCase();
+    if (!qq) return clients;
+    return clients.filter((c) => (`${c.name} ${c.phone} ${c.legal_name ?? ""} ${c.tax_id ?? ""}`).toLowerCase().includes(qq));
+  }, [clientQ, clients]);
+
+  const canNext = Boolean(selClient?.id);
+  const canCreate = Boolean(selClient?.id) && address.trim().length > 0;
 
   return (
     <div className="fixed inset-0 z-[80] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
@@ -1844,55 +1982,169 @@ function CreateOrderModal({
           </button>
         </div>
         <div className="p-4 sm:p-5 space-y-4 overflow-auto">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Клиент">
-              <input value={clientName} onChange={(e) => setClientName(e.target.value)} className={inputCls} placeholder="Имя клиента" />
-            </Field>
-            <Field label="Телефон">
-              <input value={clientPhone} onChange={(e) => setClientPhone(e.target.value)} className={inputCls} placeholder="+375..." />
-            </Field>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Юр.лицо / ФИО (для документов)">
-              <input value={legalName} onChange={(e) => setLegalName(e.target.value)} className={inputCls} placeholder="ООО “...” / ФИО" />
-            </Field>
-            <Field label="ИНН / ЕГРПОУ (опц.)">
-              <input value={taxId} onChange={(e) => setTaxId(e.target.value)} className={inputCls} placeholder="1234567890" />
-            </Field>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Email (опц.)">
-              <input value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} placeholder="client@email.com" />
-            </Field>
-            <Field label="Основание (опц.)">
-              <input value={basis} onChange={(e) => setBasis(e.target.value)} className={inputCls} placeholder="Договор №..., счет №..., устно" />
-            </Field>
-          </div>
-          <Field label="Адрес объекта">
-            <input value={address} onChange={(e) => setAddress(e.target.value)} className={inputCls} placeholder="Адрес монтажа (можно уточнить)" />
-          </Field>
+          {step === "client" ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Шаг 1</p>
+                  <p className="text-sm font-black text-slate-800 mt-1">Клиент</p>
+                </div>
+                <button type="button" onClick={() => setCreateClientOpen((v) => !v)} className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold">
+                  + Новый клиент
+                </button>
+              </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Устройство (со склада, опционально)">
-              <select value={eqId} onChange={(e) => setEqId(e.target.value)} className={inputCls}>
-                <option value="">— не выбрано —</option>
-                {warehouseEq.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.name} (stock: {i.stock})
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Длина трассы (м)">
-              <input
-                type="number"
-                min={1}
-                value={traceLen}
-                onChange={(e) => setTraceLen(Number(e.target.value))}
-                className={inputCls}
-              />
-            </Field>
-          </div>
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                <Search size={14} className="text-slate-400" />
+                <input value={clientQ} onChange={(e) => setClientQ(e.target.value)} className="bg-transparent flex-1 outline-none text-sm" placeholder="Поиск по ФИО/телефону/юр.данным…" />
+                {clientsLoading ? <Loader2 size={14} className="animate-spin text-slate-300" /> : null}
+              </div>
+
+              <div className="max-h-[360px] overflow-auto border border-slate-200 rounded-2xl">
+                {filteredClients.map((c) => {
+                  const active = selClient?.id === c.id;
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => {
+                        setSelClient(c);
+                        setAddress(c.address ?? "");
+                        setCreateClientOpen(false);
+                      }}
+                      className={`w-full text-left px-4 py-3 border-b border-slate-100 hover:bg-slate-50 ${active ? "bg-indigo-50" : "bg-white"}`}
+                    >
+                      <p className="text-sm font-extrabold text-slate-900 truncate">{c.name || "—"}</p>
+                      <p className="text-xs text-slate-500 truncate mt-0.5">{c.phone || "—"}</p>
+                      {(c.legal_name || c.tax_id) ? (
+                        <p className="text-[11px] text-slate-400 truncate mt-1">
+                          {c.legal_name || "—"}{c.tax_id ? ` · УНП: ${c.tax_id}` : ""}
+                        </p>
+                      ) : null}
+                    </button>
+                  );
+                })}
+                {filteredClients.length === 0 ? <div className="p-6 text-sm text-slate-400">Клиентов не найдено</div> : null}
+              </div>
+
+              {createClientOpen && (
+                <div className="border border-slate-200 rounded-2xl p-3 bg-white">
+                  <p className="text-sm font-black text-slate-800">Создать клиента</p>
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <Field label="Тип">
+                      <select value={cType} onChange={(e) => setCType(e.target.value as any)} className={inputCls}>
+                        <option value="individual">Физ. лицо</option>
+                        <option value="company">Юр. лицо</option>
+                      </select>
+                    </Field>
+                    <div />
+                    <Field label="ФИО / Контакт">
+                      <input value={cName} onChange={(e) => setCName(e.target.value)} className={inputCls} />
+                    </Field>
+                    <Field label="Телефон">
+                      <input value={cPhone} onChange={(e) => setCPhone(e.target.value)} className={inputCls} />
+                    </Field>
+                    <Field label="Email (опц.)">
+                      <input value={cEmail} onChange={(e) => setCEmail(e.target.value)} className={inputCls} />
+                    </Field>
+                    <Field label="Адрес (опц.)">
+                      <input value={cAddress} onChange={(e) => setCAddress(e.target.value)} className={inputCls} />
+                    </Field>
+                    <Field label="Юр. название (опц.)">
+                      <input value={cLegalName} onChange={(e) => setCLegalName(e.target.value)} className={inputCls} />
+                    </Field>
+                    <Field label="УНП/ИНН (опц.)">
+                      <input value={cTaxId} onChange={(e) => setCTaxId(e.target.value)} className={inputCls} />
+                    </Field>
+                    <Field label="Основание (опц.)">
+                      <input value={cBasis} onChange={(e) => setCBasis(e.target.value)} className={inputCls} />
+                    </Field>
+                  </div>
+                  <div className="mt-3 flex items-center justify-end gap-2">
+                    <button type="button" onClick={() => setCreateClientOpen(false)} className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50">
+                      Отмена
+                    </button>
+                    <button
+                      type="button"
+                      disabled={clientCreating || !cName.trim() || !cPhone.trim()}
+                      onClick={async () => {
+                        if (clientCreating) return;
+                        setClientCreating(true);
+                        try {
+                          const res = await fetch(`${API}/clients`, {
+                            method: "POST",
+                            headers: JH,
+                            body: JSON.stringify({
+                              type: cType,
+                              name: cName.trim(),
+                              phone: cPhone.trim(),
+                              email: cEmail.trim() ? cEmail.trim() : null,
+                              legal_name: cLegalName.trim(),
+                              tax_id: cTaxId.trim(),
+                              address: cAddress.trim(),
+                              doc_basis: cBasis.trim(),
+                            }),
+                          });
+                          const d = await res.json().catch(() => ({}));
+                          if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+                          const created = d.client as ClientLite;
+                          setClients((prev) => [created, ...prev]);
+                          setSelClient(created);
+                          setAddress(created.address ?? "");
+                          setCreateClientOpen(false);
+                        } finally {
+                          setClientCreating(false);
+                        }
+                      }}
+                      className="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-black disabled:opacity-60"
+                    >
+                      {clientCreating ? "Создание…" : "Создать"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Шаг 2</p>
+                  <p className="text-sm font-black text-slate-800 mt-1">Ордер</p>
+                </div>
+                <button type="button" onClick={() => setStep("client")} className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50">
+                  ← Клиент
+                </button>
+              </div>
+
+              {selClient ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3">
+                  <p className="text-xs font-bold text-slate-500">Клиент</p>
+                  <p className="text-sm font-black text-slate-900 mt-0.5">{selClient.name}</p>
+                  <p className="text-xs text-slate-600">{selClient.phone}</p>
+                </div>
+              ) : null}
+
+              <Field label="Адрес объекта">
+                <input value={address} onChange={(e) => setAddress(e.target.value)} className={inputCls} placeholder="Адрес монтажа (можно уточнить)" />
+              </Field>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Field label="Устройство (со склада, опционально)">
+                  <select value={eqId} onChange={(e) => setEqId(e.target.value)} className={inputCls}>
+                    <option value="">— не выбрано —</option>
+                    {warehouseEq.map((i) => (
+                      <option key={i.id} value={i.id}>
+                        {i.name} (stock: {i.stock})
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Длина трассы (м)">
+                  <input type="number" min={1} value={traceLen} onChange={(e) => setTraceLen(Number(e.target.value))} className={inputCls} />
+                </Field>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="px-4 sm:px-5 py-4 border-t border-slate-100 bg-white">
@@ -1900,35 +2152,44 @@ function CreateOrderModal({
             <button onClick={onClose} className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">
               Отмена
             </button>
-            <button
-              disabled={!canCreate || Boolean(creating)}
-              onClick={() =>
-                onCreate({
-                  client_name: clientName.trim(),
-                  client_phone: clientPhone.trim(),
-                  object_address: address.trim(),
-                  client_legal_name: legalName.trim() || undefined,
-                  client_tax_id: taxId.trim() || undefined,
-                  client_email: email.trim() || undefined,
-                  client_doc_basis: basis.trim() || undefined,
-                  equipment_warehouse_id: eqId || undefined,
-                  trace_length_m: traceLen,
-                  // MVP: offer will be created later; we only create the Order container now
-                })
-              }
-              className={`px-4 py-2 rounded-xl font-semibold text-white ${
-                canCreate && !creating ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"
-              }`}
-            >
-              {creating ? (
-                <span className="inline-flex items-center gap-2">
-                  <Loader2 size={16} className="animate-spin" />
-                  Создание…
-                </span>
-              ) : (
-                "Создать"
-              )}
-            </button>
+            {step === "client" ? (
+              <button
+                type="button"
+                disabled={!canNext}
+                onClick={() => setStep("order")}
+                className={`px-4 py-2 rounded-xl font-semibold text-white ${canNext ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"}`}
+              >
+                Дальше →
+              </button>
+            ) : (
+              <button
+                disabled={!canCreate || Boolean(creating)}
+                onClick={() =>
+                  onCreate({
+                    client_id: selClient?.id,
+                    client_name: selClient?.name ?? "",
+                    client_phone: selClient?.phone ?? "",
+                    object_address: address.trim(),
+                    client_legal_name: selClient?.legal_name ? String(selClient.legal_name) : undefined,
+                    client_tax_id: selClient?.tax_id ? String(selClient.tax_id) : undefined,
+                    client_email: selClient?.email ? String(selClient.email) : undefined,
+                    client_doc_basis: selClient?.doc_basis ? String(selClient.doc_basis) : undefined,
+                    equipment_warehouse_id: eqId || undefined,
+                    trace_length_m: traceLen,
+                  })
+                }
+                className={`px-4 py-2 rounded-xl font-semibold text-white ${canCreate && !creating ? "bg-blue-600 hover:bg-blue-700" : "bg-slate-300 cursor-not-allowed"}`}
+              >
+                {creating ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 size={16} className="animate-spin" />
+                    Создание…
+                  </span>
+                ) : (
+                  "Создать"
+                )}
+              </button>
+            )}
           </div>
           <p className="mt-3 text-[11px] text-slate-400">
             После создания: добавим КП и кнопку “Подтвердить ордер” для формирования обеспечения (склад/поставщики).
@@ -2089,9 +2350,11 @@ function OrderStepper({
 function ClientSummaryCard({
   order,
   onOpenClients,
+  onSyncFromClient,
 }: {
   order: Order;
   onOpenClients?: () => void;
+  onSyncFromClient?: () => void;
 }) {
   const name = order.client_name || "Клиент";
   const phone = order.client_phone || "—";
@@ -2111,15 +2374,27 @@ function ClientSummaryCard({
             </p>
           )}
         </div>
-        {onOpenClients && (
-          <button
-            type="button"
-            onClick={onOpenClients}
-            className="px-3 py-2 rounded-xl text-xs font-semibold border border-slate-200 text-slate-700 bg-white hover:bg-slate-50"
-          >
-            Открыть клиента
-          </button>
-        )}
+        <div className="flex flex-col gap-2">
+          {onOpenClients && (
+            <button
+              type="button"
+              onClick={onOpenClients}
+              className="px-3 py-2 rounded-xl text-xs font-semibold border border-slate-200 text-slate-700 bg-white hover:bg-slate-50"
+            >
+              Открыть клиента
+            </button>
+          )}
+          {onSyncFromClient && (
+            <button
+              type="button"
+              onClick={onSyncFromClient}
+              className="px-3 py-2 rounded-xl text-xs font-semibold border border-indigo-200 text-indigo-800 bg-indigo-50 hover:bg-indigo-100"
+              title="Подтянуть актуальные данные из карточки клиента"
+            >
+              Синхронизировать
+            </button>
+          )}
+        </div>
       </div>
       <p className="text-[11px] text-slate-400 mt-2">
         Редактирование клиента делается в разделе «Клиенты», здесь данные используются для КП/акта.
