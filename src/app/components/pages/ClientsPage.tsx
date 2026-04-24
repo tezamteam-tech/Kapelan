@@ -31,6 +31,7 @@ export function ClientsPage() {
   const navigate = useNavigate();
   const [sp, setSp] = useSearchParams();
   const selectedId = sp.get("id") || "";
+  const [activeId, setActiveId] = useState<string>(selectedId);
 
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
@@ -81,6 +82,12 @@ export function ClientsPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    // keep local selection in sync with URL (deep-link / back button)
+    if (selectedId && selectedId !== activeId) setActiveId(selectedId);
+    if (!selectedId && activeId) setActiveId("");
+  }, [activeId, selectedId]);
+
   const rows = useMemo(() => {
     const byClient = new Map<string, Lead[]>();
     for (const l of leads) {
@@ -116,6 +123,7 @@ export function ClientsPage() {
   }, [leads, clients, q]);
 
   const openClient = useCallback(async (id: string) => {
+    setActiveId(id);
     setSp((prev) => {
       const n = new URLSearchParams(prev);
       n.set("id", id);
@@ -127,13 +135,13 @@ export function ClientsPage() {
   }, [clients, leads, setSp]);
 
   useEffect(() => {
-    if (!selectedId) return;
-    if (selected?.client.id === selectedId) return;
-    void openClient(selectedId);
-  }, [selectedId, selected, openClient]);
+    if (!activeId) return;
+    if (selected?.client.id === activeId) return;
+    void openClient(activeId);
+  }, [activeId, selected, openClient]);
 
-  const selectedClient = selected?.client ?? (selectedId ? clients[selectedId] : null);
-  const selectedLeads = selected?.leads ?? (selectedId ? leads.filter((l) => l.clientId === selectedId) : []);
+  const selectedClient = selected?.client ?? (activeId ? clients[activeId] : null);
+  const selectedLeads = selected?.leads ?? (activeId ? leads.filter((l) => l.clientId === activeId) : []);
 
   useEffect(() => {
     if (!selectedClient) return;
@@ -242,7 +250,7 @@ export function ClientsPage() {
           </div>
           <div className="flex-1 overflow-auto">
             {rows.map((r) => {
-              const active = r.clientId === selectedId;
+              const active = r.clientId === activeId;
               return (
                 <button
                   key={r.clientId}
@@ -317,6 +325,7 @@ export function ClientsPage() {
                       n.delete("id");
                       return n;
                     });
+                    setActiveId("");
                     setClients((prev) => {
                       const next = { ...prev };
                       delete next[prevClient.id];
