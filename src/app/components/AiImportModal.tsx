@@ -26,6 +26,7 @@ interface ParsedItem {
   supplier: string;
   notes: string;
   itemType: "consumable" | "assembly" | "equipment";
+  availability?: "in_stock_warehouse" | "order_only";
 }
 
 const CATEGORIES = ["Трубопровод", "Дренаж", "Электрика", "Крепёж", "Расходники", "Фурнитура", "Оборудование", "Прочее"];
@@ -90,8 +91,9 @@ export function AiImportModal({ onClose, onImported }: Props) {
   function acceptFile(f: File) {
     const name = f.name.toLowerCase();
     const ok = name.endsWith(".csv") || name.endsWith(".xlsx") || name.endsWith(".xls")
-             || name.endsWith(".pdf") || name.endsWith(".txt");
-    if (!ok) { setError("Поддерживаются: CSV, XLSX, XLS, PDF, TXT"); return; }
+             || name.endsWith(".pdf") || name.endsWith(".txt")
+             || name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp");
+    if (!ok) { setError("Поддерживаются: CSV, XLSX, XLS, PDF, TXT, PNG, JPG, WEBP"); return; }
     if (f.size > 10 * 1024 * 1024) { setError("Файл больше 10 МБ"); return; }
     setError("");
     setFile(f);
@@ -142,6 +144,14 @@ export function AiImportModal({ onClose, onImported }: Props) {
     for (const item of toImport) {
       try {
         const { _idx, _selected, _status, _error, ...body } = item;
+        // If AI marked item as "order_only" - keep stock=0 and annotate notes for clarity.
+        if ((body as any).availability === "order_only") {
+          body.stock = 0;
+          body.notes = String(body.notes ?? "").includes("Под заказ")
+            ? body.notes
+            : `${String(body.notes ?? "").trim()}${body.notes ? "\n" : ""}Под заказ`.trim();
+        }
+        delete (body as any).availability;
         const res = await fetch(`${API}/warehouse`, { method: "POST", headers: JH, body: JSON.stringify(body) });
         const data = await res.json();
         if (data.error) throw new Error(data.error);

@@ -28,6 +28,9 @@ interface ParsedEquipment {
   areaMax: number;
   price: number;
   warranty: number;
+  source?: "warehouse" | "supplier" | "unknown";
+  stockQty?: number;
+  availability?: "in_stock_warehouse" | "in_stock_supplier" | "order_only";
   installerNotes: string;
   installParams: {
     refrigerant: string;
@@ -99,8 +102,9 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
   function acceptFile(f: File) {
     const name = f.name.toLowerCase();
     const ok = name.endsWith(".csv") || name.endsWith(".xlsx") || name.endsWith(".xls")
-             || name.endsWith(".pdf") || name.endsWith(".txt");
-    if (!ok) { setError("Поддерживаются: CSV, XLSX, XLS, PDF, TXT"); return; }
+             || name.endsWith(".pdf") || name.endsWith(".txt")
+             || name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp");
+    if (!ok) { setError("Поддерживаются: CSV, XLSX, XLS, PDF, TXT, PNG, JPG, WEBP"); return; }
     if (f.size > 10 * 1024 * 1024) { setError("Файл больше 10 МБ"); return; }
     setError(""); setFile(f); setStep(1);
   }
@@ -145,10 +149,55 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
     let done = 0;
     for (const item of toImport) {
       try {
-        const { _idx, _selected, _status, _error, ...body } = item;
+        const { _idx, _selected, _status, _error, source, stockQty, availability, ...body } = item;
         const res = await fetch(`${API}/equipment`, { method: "POST", headers: JH, body: JSON.stringify(body) });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
+        // Optional: if AI recognized it as warehouse stock, create/update linked warehouse item qty.
+        const eq = data?.equipment ?? data?.item ?? data?.model ?? null;
+        const wid = String(eq?.warehouseItemId ?? "").trim() || String((body as any)?.warehouseItemId ?? "").trim();
+        const qty = Math.max(0, Number(stockQty) || 0);
+        const src = (source ?? "unknown");
+        const av = (availability ?? (qty > 0 ? "in_stock_warehouse" : "order_only"));
+        const shouldBeOnWarehouse = src === "warehouse" || av === "in_stock_warehouse" || qty > 0;
+        if (shouldBeOnWarehouse) {
+          // ensure warehouse item exists, then PATCH stock
+          let whId = wid;
+          if (!whId) {
+            const whRes = await fetch(`${API}/warehouse`, {
+              method: "POST",
+              headers: JH,
+              body: JSON.stringify({
+                name: `${String((body as any)?.brand ?? "").trim()} ${String((body as any)?.model ?? "").trim()}`.trim() || "Оборудование",
+                category: "Оборудование",
+                unit: "шт",
+                stock: qty,
+                minStock: 0,
+                price: Number((body as any)?.price ?? 0),
+                itemType: "equipment",
+                notes: av === "order_only" ? "Под заказ" : "",
+                acSpecs: { equipmentId: String(eq?.id ?? "") },
+              }),
+            });
+            const whData = await whRes.json().catch(() => ({}));
+            if (!whRes.ok || whData.error) throw new Error(whData.error || `HTTP ${whRes.status}`);
+            whId = String(whData?.item?.id ?? "");
+          } else {
+            await fetch(`${API}/warehouse/${encodeURIComponent(whId)}`, {
+              method: "PATCH",
+              headers: JH,
+              body: JSON.stringify({ stock: qty, itemType: "equipment" }),
+            }).catch(() => null);
+          }
+          // best-effort link back to equipment catalog
+          if (whId && eq && !String(eq?.warehouseItemId ?? "").trim()) {
+            await fetch(`${API}/equipment`, {
+              method: "POST",
+              headers: JH,
+              body: JSON.stringify({ ...eq, warehouseItemId: whId }),
+            }).catch(() => null);
+          }
+        }
         setItems(prev => prev.map(i => i._idx === _idx ? { ...i, _status: "saved" } : i));
       } catch (e: any) {
         setItems(prev => prev.map(i => i._idx === item._idx ? { ...i, _status: "error", _error: e.message } : i));
