@@ -148,10 +148,15 @@ export function WarehouseView() {
     setToast({ text, ok }); setTimeout(() => setToast(null), 3500);
   }, []);
 
+  // In this product model:
+  // - "Склад" tab holds installation materials/consumables for equipment
+  // - Equipment itself is managed in the "Оборудование" tab (catalog)
+  const stockItems = useMemo(() => items.filter((i) => (i.itemType ?? "consumable") !== "equipment"), [items]);
+
   const stats = {
-    total: items.length,
-    low: items.filter(i => i.stock < i.minStock).length,
-    value: items.reduce((s, i) => s + i.stock * i.price, 0),
+    total: stockItems.length,
+    low: stockItems.filter(i => i.stock < i.minStock).length,
+    value: stockItems.reduce((s, i) => s + i.stock * i.price, 0),
     pendingPO: orders.filter(o => o.status === "pending").length,
   };
 
@@ -246,7 +251,7 @@ export function WarehouseView() {
     if (d.movements) setDetailMovements(d.movements);
   }
 
-  const filteredItems = items.filter(item => {
+  const filteredItems = stockItems.filter(item => {
     const q = search.toLowerCase();
     const matchSearch = !q || item.name.toLowerCase().includes(q) || item.sku.toLowerCase().includes(q) || (item.category || "").toLowerCase().includes(q);
     const matchCat = catFilter === "all" || item.category === catFilter;
@@ -254,7 +259,7 @@ export function WarehouseView() {
     return matchSearch && matchCat && matchStock;
   });
 
-  const cats = ["all", ...Array.from(new Set(items.map(i => i.category))).sort()];
+  const cats = ["all", ...Array.from(new Set(stockItems.map(i => i.category))).sort()];
   const groupedItems = filteredItems.reduce((acc, item) => {
     const cat = item.category || "Прочее";
     if (!acc[cat]) acc[cat] = [];
@@ -284,7 +289,7 @@ export function WarehouseView() {
         <div className="px-5 py-3 flex items-center justify-between">
           <div>
             <h1 className="text-base font-bold text-slate-800">Склад и оборудование</h1>
-            <p className="text-xs text-slate-400 mt-0.5">{items.length} позиций · {fmtShort(stats.value)} на складе</p>
+            <p className="text-xs text-slate-400 mt-0.5">{stats.total} позиций · {fmtShort(stats.value)} на складе</p>
           </div>
           <div className="flex gap-2">
             <button onClick={fetchAll} disabled={loading} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all" title="Обновить">
@@ -849,6 +854,7 @@ export function WarehouseView() {
           item={editItem} isNew={isNewItem}
           onClose={() => setEditItem(null)}
           onSave={saveItem}
+          allowEquipmentType={false}
         />
       )}
 
@@ -2146,9 +2152,10 @@ function StockMoveModal({ item, dir, onClose, onConfirm }: {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ITEM EDIT MODAL
 // ═══════════════════════════════════════════════════════════════════════════════
-function ItemEditModal({ item, isNew, onClose, onSave }: {
+function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = false }: {
   item: Partial<WarehouseItem>; isNew: boolean; onClose: () => void;
   onSave: (body: Partial<WarehouseItem>) => Promise<void>;
+  allowEquipmentType?: boolean;
 }) {
   const [form, setForm] = useState<Partial<WarehouseItem>>({
     name: "", category: "Прочее", unit: "шт", stock: 0, minStock: 0, price: 0,
@@ -2188,7 +2195,7 @@ function ItemEditModal({ item, isNew, onClose, onSave }: {
           <div>
             <label className="text-xs font-bold text-slate-500 block mb-1">Тип позиции</label>
             <div className="grid grid-cols-3 gap-2">
-              {ITEM_TYPES.map(t => (
+              {ITEM_TYPES.filter((t) => allowEquipmentType || t.key !== "equipment").map(t => (
                 <button key={t.key} type="button" onClick={() => setForm(p => ({ ...p, itemType: t.key as any }))}
                   className={`text-xs font-bold px-2 py-2.5 rounded-xl border transition-all text-center ${form.itemType === t.key ? t.color : "border-slate-200 text-slate-400 hover:border-slate-300"}`}>
                   <p>{t.label}</p>
