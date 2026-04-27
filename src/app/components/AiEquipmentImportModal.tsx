@@ -94,6 +94,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [parseProgress, setParseProgress] = useState<{ done: number; total: number } | null>(null);
+  const [parseWarning, setParseWarning] = useState("");
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -118,7 +119,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
 
   async function runParse() {
     if (!file) return;
-    setStep(2); setParsing(true); setError("");
+    setStep(2); setParsing(true); setError(""); setParseWarning("");
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -133,25 +134,39 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
         setParseProgress({ done: 0, total: totalChunks });
         let done = 0;
         let finalItems: any[] = [];
+        const stepWarnings: string[] = [];
         for (let guard = 0; guard < Math.max(5, totalChunks + 5); guard++) {
           const stepRes = await fetch(`${API}/equipment/ai-import/step`, { method: "POST", headers: JH, body: JSON.stringify({ jobId }) });
           const stepData = await stepRes.json().catch(() => ({}));
           if (!stepRes.ok || stepData.error) throw new Error(stepData.error ?? `HTTP ${stepRes.status}`);
           done = Number(stepData.doneChunks ?? done) || done;
           setParseProgress({ done, total: totalChunks });
+          const w = String(stepData.chunkWarning ?? "").trim();
+          if (w) stepWarnings.push(w);
+          if (Array.isArray(stepData.warnings)) {
+            for (const x of stepData.warnings) {
+              const s = String(x ?? "").trim();
+              if (s) stepWarnings.push(s);
+            }
+          }
           if (stepData.done) {
             finalItems = stepData.items ?? [];
             break;
           }
           await new Promise(r => setTimeout(r, 150));
         }
+        const uniq = Array.from(new Set(stepWarnings));
+        setParseWarning(uniq.slice(0, 4).join("\n"));
         const parsed: ParsedEquipment[] = (finalItems ?? []).map((item: any, idx: number) => ({
           ...item,
           _idx: idx,
           _selected: true,
           _status: "new" as const,
         }));
-        if (!parsed.length) throw new Error("AI не нашёл моделей. Проверьте содержимое файла.");
+        if (!parsed.length) {
+          const hint = uniq.length ? `\n\n${uniq.slice(0, 2).join("\n")}` : "";
+          throw new Error(`AI не нашёл моделей. Проверьте содержимое файла.${hint}`);
+        }
         setItems(parsed);
         setParseProgress(null);
         setStep(3);
@@ -449,7 +464,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                 </div>
                 <span className="text-[11px] text-slate-400">Выбрано {selectedCount} из {items.length}</span>
                 <div className="ml-auto">
-                  <button onClick={() => { setStep(1); setItems([]); setError(""); }}
+                  <button onClick={() => { setStep(1); setItems([]); setError(""); setParseWarning(""); }}
                     className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-all">
                     <RefreshCw size={11} /> Перезагрузить
                   </button>
@@ -462,6 +477,15 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                   AI распознал <strong>{items.length} моделей</strong> из <strong>{file?.name}</strong>. Проверьте и при необходимости скорректируйте данные. Цены и параметры можно изменить.
                 </p>
               </div>
+              {parseWarning.trim() && (
+                <div className="bg-amber-50 border-b border-amber-100 px-4 py-2 flex items-start gap-2">
+                  <Info size={12} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-amber-800 whitespace-pre-wrap">
+                    <strong>Часть чанков обработалась с предупреждениями</strong> (импорт продолжился). Детали:{" "}
+                    {parseWarning}
+                  </p>
+                </div>
+              )}
 
               {/* Cards */}
               <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-3 pb-8">
