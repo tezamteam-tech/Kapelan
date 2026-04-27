@@ -268,6 +268,12 @@ export function OrderDocumentsBuilder() {
   type WorkStage = { title: string; amount: number };
   const [items, setItems] = useState<DocItem[]>([]);
   const [stages, setStages] = useState<WorkStage[]>([]);
+  const [equipMap, setEquipMap] = useState<Record<string, any>>({});
+  const [addOpen, setAddOpen] = useState(false);
+  const [addQ, setAddQ] = useState("");
+  const [addSelectedId, setAddSelectedId] = useState<string>("");
+  const [autoBom, setAutoBom] = useState(true);
+  const saveOfferTimer = useRef<any>(null);
   const [includeImages, setIncludeImages] = useState<boolean>(() => {
     try {
       return localStorage.getItem("doc.includeImages.v1") === "1";
@@ -308,6 +314,28 @@ export function OrderDocumentsBuilder() {
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await getJson<{ equipment?: any[] }>(`${API}/equipment`, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000, swr: true });
+        if (!alive) return;
+        const m: Record<string, any> = {};
+        for (const e of (data.equipment ?? [])) {
+          if (!e?.id) continue;
+          m[String(e.id)] = e;
+        }
+        setEquipMap(m);
+      } catch {
+        if (!alive) return;
+        setEquipMap({});
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!selected) return;
     const baseItems: DocItem[] = (selected.offer?.lines ?? [])
       .filter((l: any) => (l?.line_type ?? "") !== "discount")
@@ -330,6 +358,190 @@ export function OrderDocumentsBuilder() {
     setDocTitle("");
     setDocDate(new Date().toISOString().slice(0, 10));
   }, [selected?.id, warehouseMap]);
+
+  function inferLineTypeFromWarehouseItem(it: any): any {
+    const t = String(it?.itemType ?? "").trim();
+    if (t === "equipment" || t === "assembly" || t === "consumable") return t;
+    return "consumable";
+  }
+
+  function traceLenForBom(order: any) {
+    const v = (typeof order?.trace_length_m === "number" ? order.trace_length_m : undefined) ??
+      (typeof order?.survey?.trace_length_m === "number" ? order.survey.trace_length_m : undefined) ??
+      4;
+    return Math.max(0, Number(v) || 0);
+  }
+
+  async function ensureOfferExists(orderId: string) {
+    const o = orders.find((x) => x.id === orderId) as any;
+    if (o?.offer) return o.offer;
+    const offer = { version: 1, status: "draft", currency: "UAH", lines: [] as any[] };
+    const res = await fetch(`${API}/orders/${orderId}`, { method: "PATCH", headers: JH, body: JSON.stringify({ offer, status: "offer_prepared" }) });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    setOrders((prev) => prev.map((x) => (x.id === data.order.id ? data.order : x)));
+    return data.order.offer;
+  }
+
+  async function saveOfferLinesToOrder(orderId: string, nextLines: any[]) {
+    const o = orders.find((x) => x.id === orderId) as any;
+    const offer = { ...(o?.offer ?? { version: 1, status: "draft", currency: "UAH", lines: [] }), lines: nextLines };
+    const res = await fetch(`${API}/orders/${orderId}`, { method: "PATCH", headers: JH, body: JSON.stringify({ offer, status: "offer_prepared" }) });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    setOrders((prev) => prev.map((x) => (x.id === data.order.id ? data.order : x)));
+    invalidateUrlPrefix(`${API}/orders`);
+    return data.order;
+  }
+
+  function findEquipmentModelForWarehouseItemId(wid: string): any | null {
+    if (!wid) return null;
+    // 1) exact match by equipment.warehouseItemId
+    const byLink = Object.values(equipMap).find((e: any) => String(e?.warehouseItemId ?? "") === String(wid));
+    if (byLink) return byLink;
+    // 2) try from warehouse item acSpecs.equipmentId
+    const wh = warehouseMap?.[String(wid)];
+    const eqId = String(wh?.acSpecs?.equipmentId ?? "").trim();
+    if (eqId && equipMap[eqId]) return equipMap[eqId];
+    return null;
+  }
+
+  function buildBomOfferLines(eq: any, order: any): any[] {
+    const bom = Array.isArray(eq?.bom) ? eq.bom : [];
+    const trace = traceLenForBom(order);
+    const out: any[] = [];
+    for (const b of bom) {
+      const wid = String(b?.warehouseId ?? "").trim();
+      const qty = Math.ceil(Number(b?.qtyFixed ?? 0) + Number(b?.qtyPerMeter ?? 0) * trace);
+      if (qty <= 0) continue;
+      const wh = wid ? warehouseMap?.[wid] : null;
+      out.push({
+        line_type: "consumable",
+        warehouse_item_id: wid || undefined,
+        name: String(wh?.name ?? b?.name ?? "").trim(),
+        qty,
+        unit: String(wh?.unit ?? b?.unit ?? "шт"),
+        price: Number(wh?.price ?? 0),
+      });
+    }
+    return out.filter((l) => l.name);
+  }
+
+  async function addWarehouseItemToOffer() {
+    if (!selected) return;
+    const wid = String(addSelectedId || "").trim();
+    if (!wid) return;
+    const wh = warehouseMap?.[wid];
+    if (!wh) {
+      showToast("Позиция склада не найдена", false);
+      return;
+    }
+    try {
+      await ensureOfferExists(selected.id);
+      const currentOrder = orders.find((o) => o.id === selected.id) as any;
+      const curLines = Array.isArray(currentOrder?.offer?.lines) ? [...currentOrder.offer.lines] : [];
+
+      const lineType = inferLineTypeFromWarehouseItem(wh);
+      const newLine: any = {
+        line_type: lineType,
+        warehouse_item_id: wid,
+        name: String(wh.name ?? ""),
+        qty: 1,
+        unit: String(wh.unit ?? "шт"),
+        price: Number(wh.price ?? 0),
+      };
+
+      // Merge if same warehouse_item_id exists
+      const idx = curLines.findIndex((l: any) => String(l?.warehouse_item_id ?? "") === wid && String(l?.line_type ?? "") === String(lineType));
+      if (idx >= 0) curLines[idx] = { ...curLines[idx], qty: Number(curLines[idx].qty ?? 0) + 1 };
+      else curLines.push(newLine);
+
+      // Auto-add BOM for equipment
+      if (autoBom && lineType === "equipment") {
+        const eq = findEquipmentModelForWarehouseItemId(wid);
+        if (eq) {
+          const bomLines = buildBomOfferLines(eq, currentOrder);
+          for (const bl of bomLines) {
+            const bwid = String(bl?.warehouse_item_id ?? "").trim();
+            if (bwid) {
+              const j = curLines.findIndex((l: any) => String(l?.warehouse_item_id ?? "") === bwid && String(l?.line_type ?? "") !== "equipment");
+              if (j >= 0) curLines[j] = { ...curLines[j], qty: Number(curLines[j].qty ?? 0) + Number(bl.qty ?? 0) };
+              else curLines.push(bl);
+            } else {
+              curLines.push(bl);
+            }
+          }
+        }
+      }
+
+      const saved = await saveOfferLinesToOrder(selected.id, curLines);
+      // refresh local doc items from offer (source of truth)
+      const baseItems: DocItem[] = (saved.offer?.lines ?? [])
+        .filter((l: any) => (l?.line_type ?? "") !== "discount")
+        .map((l: any) => ({
+          name: String(l?.name ?? ""),
+          qty: Number(l?.qty ?? 0),
+          unit: String(l?.unit ?? ""),
+          price: Number(l?.price ?? 0),
+          warehouse_item_id: l?.warehouse_item_id ? String(l.warehouse_item_id) : undefined,
+          imageUrl: l?.warehouse_item_id ? String(warehouseMap?.[String(l.warehouse_item_id)]?.imageUrl ?? "") : undefined,
+        }))
+        .filter((i: any) => i.name);
+      setItems(baseItems.length ? baseItems : [{ name: "", qty: 1, unit: "шт", price: 0 }]);
+      setAddOpen(false);
+      setAddSelectedId("");
+      setAddQ("");
+      showToast("Позиция добавлена в ордер и КП");
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось добавить позицию", false);
+    }
+  }
+
+  function scheduleOfferAutosave(nextItems: DocItem[]) {
+    if (!selected) return;
+    if (saveOfferTimer.current) clearTimeout(saveOfferTimer.current);
+    saveOfferTimer.current = setTimeout(async () => {
+      try {
+        await ensureOfferExists(selected.id);
+        const currentOrder = orders.find((o) => o.id === selected.id) as any;
+        const prevLines = Array.isArray(currentOrder?.offer?.lines) ? currentOrder.offer.lines : [];
+
+        // Keep only non-discount lines and map by position index for now.
+        // (MVP rule: positions in documents reflect offer lines order)
+        const base = prevLines.filter((l: any) => (l?.line_type ?? "") !== "discount");
+        const nextLines = base.map((l: any, idx: number) => {
+          const it = nextItems[idx];
+          if (!it) return l;
+          return {
+            ...l,
+            name: String(it.name ?? ""),
+            qty: Number(it.qty ?? 0),
+            unit: String(it.unit ?? ""),
+            price: Number(it.price ?? 0),
+            warehouse_item_id: it.warehouse_item_id ? String(it.warehouse_item_id) : l.warehouse_item_id,
+          };
+        });
+        // If user added extra lines manually in UI table
+        if (nextItems.length > base.length) {
+          for (let i = base.length; i < nextItems.length; i++) {
+            const it = nextItems[i];
+            if (!it?.name?.trim()) continue;
+            nextLines.push({
+              line_type: "consumable",
+              warehouse_item_id: it.warehouse_item_id ? String(it.warehouse_item_id) : undefined,
+              name: String(it.name ?? ""),
+              qty: Number(it.qty ?? 0),
+              unit: String(it.unit ?? "шт"),
+              price: Number(it.price ?? 0),
+            });
+          }
+        }
+        await saveOfferLinesToOrder(selected.id, nextLines);
+      } catch {
+        // silent; user still can download
+      }
+    }, 600);
+  }
 
   const getDefaultTemplate = useCallback((t: "offer" | "contract" | "act", isLegal: boolean) => {
     if (t === "offer") {
@@ -667,6 +879,109 @@ ${stages
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
+      {addOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/30" onClick={() => setAddOpen(false)} />
+          <div className="relative w-full max-w-2xl mx-6 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-black text-slate-900">Добавить позицию из склада</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Добавленная позиция попадёт в <b>ордер</b> и в <b>КП</b>. Для оборудования можно автоматически добавить комплектующие (BOM).
+                </p>
+              </div>
+              <button
+                className="px-3 py-2 rounded-xl border border-slate-200 text-slate-700 bg-slate-50 hover:bg-slate-100 text-xs font-semibold"
+                onClick={() => setAddOpen(false)}
+              >
+                Закрыть
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="flex flex-col md:flex-row gap-2">
+                <input
+                  value={addQ}
+                  onChange={(e) => setAddQ(e.target.value)}
+                  className={inputCls}
+                  placeholder="Поиск по складу… (название / категория / sku)"
+                />
+                <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 select-none px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl">
+                  <input type="checkbox" checked={autoBom} onChange={(e) => setAutoBom(e.target.checked)} className="w-4 h-4 rounded border-slate-300" />
+                  Авто-комплектующие (BOM)
+                </label>
+              </div>
+
+              <div className="max-h-[340px] overflow-auto border border-slate-200 rounded-2xl">
+                {(() => {
+                  const qq = addQ.trim().toLowerCase();
+                  const list = Object.values(warehouseMap)
+                    .filter((it: any) => it && it.id)
+                    .filter((it: any) => {
+                      if (!qq) return true;
+                      const blob = `${it.name ?? ""} ${it.category ?? ""} ${it.sku ?? ""}`.toLowerCase();
+                      return blob.includes(qq);
+                    })
+                    .slice(0, 80) as any[];
+                  if (list.length === 0) {
+                    return <div className="p-4 text-sm text-slate-400">Ничего не найдено.</div>;
+                  }
+                  return (
+                    <div className="divide-y divide-slate-100">
+                      {list.map((it: any) => {
+                        const active = String(addSelectedId) === String(it.id);
+                        const t = String(it.itemType ?? "consumable");
+                        const stock = Number(it.stock ?? 0);
+                        return (
+                          <button
+                            key={it.id}
+                            className={[
+                              "w-full text-left px-4 py-3 flex items-start justify-between gap-3",
+                              active ? "bg-blue-50" : "bg-white hover:bg-slate-50",
+                            ].join(" ")}
+                            onClick={() => setAddSelectedId(String(it.id))}
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-slate-800 truncate">{it.name}</p>
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                {t} · {it.unit} · {it.category || "—"} {it.sku ? `· sku: ${it.sku}` : ""}
+                              </p>
+                            </div>
+                            <div className="text-right flex-shrink-0">
+                              <p className="text-sm font-black text-slate-800">{Number(it.price ?? 0)}</p>
+                              <p className={["text-[11px] font-semibold", stock > 0 ? "text-emerald-700" : "text-slate-400"].join(" ")}>
+                                остаток: {stock}
+                              </p>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setAddOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-sm font-semibold hover:bg-slate-50"
+                >
+                  Отмена
+                </button>
+                <button
+                  onClick={() => void addWarehouseItemToOffer()}
+                  disabled={!addSelectedId}
+                  className={[
+                    "px-4 py-2 rounded-xl text-sm font-semibold",
+                    addSelectedId ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-slate-200 text-slate-500 cursor-not-allowed",
+                  ].join(" ")}
+                >
+                  Добавить в ордер и КП
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <div className="size-10 rounded-2xl bg-slate-900 text-white flex items-center justify-center">
@@ -849,32 +1164,52 @@ ${stages
                       <div key={idx} className="grid grid-cols-12 gap-2">
                         <input
                           value={it.name}
-                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
+                          onChange={(e) => {
+                            const next = items.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x));
+                            setItems(next);
+                            scheduleOfferAutosave(next);
+                          }}
                           className={`col-span-12 md:col-span-6 ${inputCls}`}
                           placeholder="Наименование"
                         />
                         <input
                           type="number"
                           value={it.qty}
-                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, qty: Number(e.target.value) } : x)))}
+                          onChange={(e) => {
+                            const next = items.map((x, i) => (i === idx ? { ...x, qty: Number(e.target.value) } : x));
+                            setItems(next);
+                            scheduleOfferAutosave(next);
+                          }}
                           className={`col-span-4 md:col-span-2 ${inputCls}`}
                           placeholder="qty"
                         />
                         <input
                           value={it.unit}
-                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, unit: e.target.value } : x)))}
+                          onChange={(e) => {
+                            const next = items.map((x, i) => (i === idx ? { ...x, unit: e.target.value } : x));
+                            setItems(next);
+                            scheduleOfferAutosave(next);
+                          }}
                           className={`col-span-4 md:col-span-2 ${inputCls}`}
                           placeholder="ед."
                         />
                         <input
                           type="number"
                           value={it.price}
-                          onChange={(e) => setItems((p) => p.map((x, i) => (i === idx ? { ...x, price: Number(e.target.value) } : x)))}
+                          onChange={(e) => {
+                            const next = items.map((x, i) => (i === idx ? { ...x, price: Number(e.target.value) } : x));
+                            setItems(next);
+                            scheduleOfferAutosave(next);
+                          }}
                           className={`col-span-4 md:col-span-2 ${inputCls}`}
                           placeholder="цена"
                         />
                         <button
-                          onClick={() => setItems((p) => p.filter((_, i) => i !== idx))}
+                          onClick={() => {
+                            const next = items.filter((_, i) => i !== idx);
+                            setItems(next.length ? next : [{ name: "", qty: 1, unit: "шт", price: 0 }]);
+                            scheduleOfferAutosave(next.length ? next : [{ name: "", qty: 1, unit: "шт", price: 0 }]);
+                          }}
                           className="col-span-12 md:col-span-12 text-xs font-semibold text-red-700 bg-red-50 border border-red-200 rounded-xl px-3 py-2 hover:bg-red-100 flex items-center gap-2 justify-center"
                         >
                           <Trash2 size={14} /> Удалить строку
@@ -882,7 +1217,7 @@ ${stages
                       </div>
                     ))}
                     <button
-                      onClick={() => setItems((p) => [...p, { name: "", qty: 1, unit: "шт", price: 0 }])}
+                      onClick={() => setAddOpen(true)}
                       className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2"
                     >
                       <Plus size={14} /> Добавить позицию
