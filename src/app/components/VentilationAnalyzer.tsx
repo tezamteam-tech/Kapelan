@@ -45,6 +45,7 @@ interface ListItem {
 
 type Step = "idle" | "uploading" | "analyzing" | "done" | "error";
 type ResTab = "overview" | "ducts" | "nodes" | "estimate" | "json";
+type ToolTab = "analyze" | "generate";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmtDate = (s: string) => new Date(s).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -89,6 +90,7 @@ const STEPS = [
 export function VentilationAnalyzer() {
   const { fmtShort } = useCurrency();
   const fmt = fmtShort;
+  const [toolTab, setToolTab] = useState<ToolTab>("analyze");
   const [step, setStep]             = useState<Step>("idle");
   const [progress, setProgress]     = useState(0); // 0-3
   const [analysis, setAnalysis]     = useState<VentAnalysis | null>(null);
@@ -104,6 +106,14 @@ export function VentilationAnalyzer() {
   const [toast, setToast]           = useState<string | null>(null);
   const [jsonExpanded, setJsonExpanded] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ─── Scheme generator ───────────────────────────────────────────────────────
+  const [genPrompt, setGenPrompt] = useState<string>("");
+  const [genRef, setGenRef] = useState<File | null>(null);
+  const [genBusy, setGenBusy] = useState(false);
+  const [genErr, setGenErr] = useState<string>("");
+  const [genImages, setGenImages] = useState<Array<{ url: string }>>([]);
+  const [genSize, setGenSize] = useState<string>("1024x1024");
 
   const showToast = useCallback((t: string) => { setToast(t); setTimeout(() => setToast(null), 3500); }, []);
 
@@ -226,6 +236,31 @@ export function VentilationAnalyzer() {
     setPreview(null); setErrorMsg(""); setProgress(0);
   }
 
+  async function runGenerate() {
+    setGenBusy(true);
+    setGenErr("");
+    setGenImages([]);
+    try {
+      const fd = new FormData();
+      fd.append("prompt", genPrompt.trim());
+      fd.append("size", genSize);
+      fd.append("mode", genRef ? "edit" : "generate");
+      fd.append("count", "1");
+      if (genRef) fd.append("image", genRef);
+      const res = await fetch(`${API}/ventilation/ai-generate`, { method: "POST", headers: AH, body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+      const imgs = (data.images ?? []).map((x: any) => ({ url: String(x.url ?? "") })).filter((x: any) => x.url);
+      if (!imgs.length) throw new Error("Не удалось получить изображение");
+      setGenImages(imgs);
+      showToast("✅ Схема сгенерирована");
+    } catch (e: any) {
+      setGenErr(e?.message ?? "Ошибка генерации");
+    } finally {
+      setGenBusy(false);
+    }
+  }
+
   const totalEstimate = editedMats.reduce((s, m) => s + Math.round(m.qty * m.pricePerUnit), 0) + workCost;
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -259,10 +294,114 @@ export function VentilationAnalyzer() {
             ))}
           </div>
         )}
+        <div className="mt-4 flex gap-2">
+          <button
+            onClick={() => setToolTab("analyze")}
+            className={[
+              "px-3 py-2 rounded-xl text-sm font-black",
+              toolTab === "analyze" ? "bg-white/20 text-white" : "bg-black/10 text-white/80 hover:bg-white/10",
+            ].join(" ")}
+          >
+            Анализ чертежа
+          </button>
+          <button
+            onClick={() => setToolTab("generate")}
+            className={[
+              "px-3 py-2 rounded-xl text-sm font-black",
+              toolTab === "generate" ? "bg-white/20 text-white" : "bg-black/10 text-white/80 hover:bg-white/10",
+            ].join(" ")}
+          >
+            Генерация схемы
+          </button>
+        </div>
       </div>
 
       {/* ── Content ── */}
       <div className="flex-1 overflow-y-auto">
+
+        {toolTab === "generate" && (
+          <div className="px-4 pt-4 pb-8">
+            <div className="max-w-4xl mx-auto space-y-4">
+              <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                <p className="text-xs font-semibold text-slate-500">ТЗ для схемы</p>
+                <textarea
+                  value={genPrompt}
+                  onChange={(e) => setGenPrompt(e.target.value)}
+                  rows={5}
+                  className="mt-2 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-teal-500"
+                  placeholder="Например: Схема приточно-вытяжной вентиляции для офиса 120м2. 3 зоны: open-space, переговорная, кухня. Указать диффузоры, решетки, вентустановку. Показать легенду и условные обозначения."
+                />
+
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <div className="md:col-span-2">
+                    <p className="text-xs font-semibold text-slate-500">Референс (опц.)</p>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={(e) => setGenRef(e.target.files?.[0] ?? null)}
+                      className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Если загрузить картинку — схема будет сгенерирована на основе примера (режим edit).
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Размер</p>
+                    <select
+                      value={genSize}
+                      onChange={(e) => setGenSize(e.target.value)}
+                      className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+                    >
+                      <option value="1024x1024">1024×1024</option>
+                      <option value="1024x1536">1024×1536</option>
+                      <option value="1536x1024">1536×1024</option>
+                    </select>
+                  </div>
+                </div>
+
+                {genErr ? <div className="mt-3 text-sm text-red-600">{genErr}</div> : null}
+
+                <div className="mt-3 flex justify-end">
+                  <button
+                    disabled={genBusy || !genPrompt.trim()}
+                    onClick={() => void runGenerate()}
+                    className={[
+                      "px-4 py-2 rounded-xl text-sm font-black text-white",
+                      genBusy || !genPrompt.trim() ? "bg-slate-300 cursor-not-allowed" : "bg-teal-600 hover:bg-teal-700",
+                    ].join(" ")}
+                  >
+                    {genBusy ? "Генерация…" : "Сгенерировать схему"}
+                  </button>
+                </div>
+              </div>
+
+              {genImages.length ? (
+                <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                  <p className="text-xs font-semibold text-slate-500">Результат</p>
+                  <div className="mt-3 grid grid-cols-1 gap-3">
+                    {genImages.map((im, idx) => (
+                      <div key={idx} className="border border-slate-200 rounded-2xl overflow-hidden">
+                        <img src={im.url} className="w-full h-auto block" />
+                        <div className="p-3 flex justify-end">
+                          <a
+                            href={im.url}
+                            download={`vent_scheme_${Date.now()}.png`}
+                            className="px-3 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold"
+                          >
+                            Скачать PNG
+                          </a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )}
+
+        {toolTab === "analyze" && (
+          <>
 
         {/* ════ IDLE ════════════════════════════════════════════════════════ */}
         {(step === "idle" || step === "error") && (
@@ -683,6 +822,8 @@ export function VentilationAnalyzer() {
 
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
 
