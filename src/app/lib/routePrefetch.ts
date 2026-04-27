@@ -1,5 +1,9 @@
 type Prefetcher = () => Promise<unknown>;
 
+// Optional data warmup (fills apiClient cache via getJson SWR).
+// Kept lightweight; bootstrap covers the bulk of initial needs.
+type DataPrefetcher = () => void;
+
 const prefetchMap: Record<string, Prefetcher> = {
   "/dashboard": () => import("../components/pages/DashboardPage"),
   "/ai-chat": () => import("../components/pages/AIChatPage"),
@@ -18,10 +22,15 @@ const prefetchMap: Record<string, Prefetcher> = {
   "/profile": () => import("../components/pages/ProfilePage"),
 };
 
+const dataPrefetchMap: Record<string, DataPrefetcher> = {};
+
 export function prefetchRoute(path: string) {
   const key = Object.keys(prefetchMap).find((p) => path === p || path.startsWith(p + "/"));
   const fn = key ? prefetchMap[key] : undefined;
   if (!fn) return;
   void fn().catch(() => {});
+  // Warm data cache if mapped
+  const df = key ? dataPrefetchMap[key] : undefined;
+  if (df) df();
 }
 

@@ -32,6 +32,13 @@ export function invalidateUrlPrefix(prefix: string) {
   }
 }
 
+export function primeJson<T>(url: string, data: T, opts?: { ttlMs?: number; staleTtlMs?: number }) {
+  const ttlMs = opts?.ttlMs ?? 30_000;
+  const staleTtlMs = opts?.staleTtlMs ?? Math.max(ttlMs * 3, 60_000);
+  cache.set(url, { expiresAt: now() + ttlMs, staleUntil: now() + staleTtlMs, data });
+  pruneCache();
+}
+
 export async function getJson<T>(
   url: string,
   opts?: { ttlMs?: number; force?: boolean; signal?: AbortSignal; swr?: boolean; staleTtlMs?: number },
