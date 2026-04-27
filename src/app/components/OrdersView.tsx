@@ -2325,6 +2325,7 @@ function CreateOrderModal({
   }) => void;
   creating?: boolean;
 }) {
+  const { currency } = useCurrency();
   type ClientLite = {
     id: string;
     name: string;
