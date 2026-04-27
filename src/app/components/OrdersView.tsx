@@ -273,6 +273,13 @@ export function OrdersView() {
     };
     const nextStatus = stepToStatus[step];
     if (nextStatus === selected.status) return;
+
+    // Status transitions beyond draft flows must go through action endpoints.
+    // We keep this helper only for safe draft steps.
+    if (!["qualification", "offer_prepared"].includes(nextStatus)) {
+      showToast("Этот шаг меняется через действия внутри карточки (замер/КП/обеспечение/планирование/исполнение/закрытие).", false);
+      return;
+    }
     const states = stepStatesForOrder(selected, materials, supplierRequests);
     const st = states[step];
     if (st.blockedReason) {
@@ -764,22 +771,22 @@ export function OrdersView() {
   async function scheduleExecution(payload: { installerId: string; installerName: string; date: string }) {
     if (!selected) return;
     try {
-      const execution = {
-        ...(selected.execution ?? {}),
-        status: "scheduled",
-        scheduled_at: payload.date,
-        assigned_installer_id: payload.installerId,
-        assigned_installer_name: payload.installerName,
-      };
-      const res = await fetch(`${API}/orders/${selected.id}`, {
-        method: "PATCH",
+      const res = await fetch(`${API}/orders/${selected.id}/execution/schedule`, {
+        method: "POST",
         headers: JH,
-        body: JSON.stringify({ execution, status: "scheduled" }),
+        body: JSON.stringify({
+          installerId: payload.installerId,
+          installerName: payload.installerName,
+          scheduledAt: payload.date,
+        }),
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setSelected(data.order);
-      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      if (data.timeline) setTimeline(data.timeline);
+      if (data.order) {
+        setSelected(data.order);
+        setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      }
       showToast("Монтаж запланирован");
     } catch (e: any) {
       showToast(e?.message || "Ошибка планирования", false);
@@ -873,6 +880,23 @@ export function OrdersView() {
       showToast("Акт загружен");
     } catch (e: any) {
       showToast(e?.message || "Ошибка сохранения акта", false);
+    }
+  }
+
+  async function closeOrder() {
+    if (!selected) return;
+    try {
+      const res = await fetch(`${API}/orders/${selected.id}/close`, { method: "POST", headers: JH });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      if (data.timeline) setTimeline(data.timeline);
+      if (data.order) {
+        setSelected(data.order);
+        setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      }
+      showToast("Ордер закрыт");
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось закрыть ордер", false);
     }
   }
 
@@ -1088,6 +1112,8 @@ export function OrdersView() {
     if (!selected) return [];
     const acts: Array<{ key: string; title: string; hint?: string; enabled?: boolean; onClick?: () => void }> = [];
     const offerStatus = selected.offer?.status;
+    const hasTrace = typeof selected.trace_length_m === "number" && selected.trace_length_m > 0;
+    const hasEquipment = Boolean(selected.equipment_warehouse_id) || Boolean((selected.offer?.lines ?? []).some((l) => l.line_type === "equipment"));
 
     if (!selected.offer) {
       acts.push({
@@ -1119,8 +1145,12 @@ export function OrdersView() {
       acts.push({
         key: "confirm_order",
         title: "Подтвердить ордер (обеспечение)",
-        hint: "Сформирует материалы, резерв и заявки поставщикам",
-        enabled: true,
+        hint: !hasTrace
+          ? "Нужно указать длину трассы (после замера)"
+          : !hasEquipment
+            ? "Нужно выбрать оборудование в ордере или добавить строку оборудования в КП"
+            : "Сформирует материалы, резерв и заявки поставщикам",
+        enabled: hasTrace && hasEquipment,
         onClick: confirmOrder,
       });
     }
@@ -1729,6 +1759,18 @@ export function OrdersView() {
                 </div>
               )}
 
+              {(() => {
+                const states = stepStatesForOrder(selected, materials, supplierRequests);
+                const st = states[activeStep];
+                if (!st?.blockedReason) return null;
+                return (
+                  <div className="mt-3 bg-amber-50 border border-amber-200 rounded-2xl p-4">
+                    <p className="text-sm font-extrabold text-amber-900">Что нужно для следующего шага</p>
+                    <p className="text-[11px] text-amber-800 mt-1">{st.blockedReason}</p>
+                  </div>
+                );
+              })()}
+
               {nextActions.length === 0 ? (
                 <p className="text-sm text-slate-500 mt-1">Нет обязательных действий. Можно планировать/исполнять.</p>
               ) : (
@@ -2027,6 +2069,31 @@ export function OrdersView() {
                   onSavePhotos={saveExecutionPhotos}
                   onSaveSignedAct={saveSignedAct}
                 />
+                <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">Закрыть ордер</p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Закрытие фиксирует факт завершения работ. Обычно делается после заполнения фото и загрузки подписанного акта.
+                      </p>
+                    </div>
+                    <button
+                      onClick={closeOrder}
+                      disabled={selected.status !== "completed"}
+                      className={[
+                        "px-4 py-2 rounded-xl text-sm font-semibold",
+                        selected.status === "completed"
+                          ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                          : "bg-slate-100 text-slate-400 cursor-not-allowed",
+                      ].join(" ")}
+                    >
+                      Закрыть
+                    </button>
+                  </div>
+                  {selected.status === "closed" && (
+                    <p className="text-[11px] text-emerald-700 mt-2 font-semibold">Ордер закрыт.</p>
+                  )}
+                </div>
                 <TimelinePanel timeline={timeline} />
               </>
             )}
