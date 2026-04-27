@@ -8,7 +8,7 @@ const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
 const JH = { ...AH, "Content-Type": "application/json" };
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types  ────────────────────────────────────────────────────────────────────
 interface DuctSegment {
   id: string; type: "round" | "rectangular";
   diameter?: number; width?: number; height?: number;
