@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import {
   Search, Plus, RefreshCw, Package, ArrowDownToLine, ArrowUpFromLine,
