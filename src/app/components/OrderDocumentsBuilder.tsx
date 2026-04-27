@@ -271,6 +271,7 @@ export function OrderDocumentsBuilder() {
   const [equipMap, setEquipMap] = useState<Record<string, any>>({});
   const [addOpen, setAddOpen] = useState(false);
   const [addQ, setAddQ] = useState("");
+  const [addSource, setAddSource] = useState<"equipment" | "stock">("equipment");
   const [addSelectedId, setAddSelectedId] = useState<string>("");
   const [autoBom, setAutoBom] = useState(true);
   const saveOfferTimer = useRef<any>(null);
@@ -427,6 +428,54 @@ export function OrderDocumentsBuilder() {
     return out.filter((l) => l.name);
   }
 
+  async function ensureWarehouseItemForEquipment(eq: any): Promise<string> {
+    // Prefer existing link
+    const existing = String(eq?.warehouseItemId ?? "").trim();
+    if (existing) return existing;
+
+    // Create a hidden warehouse item (itemType=equipment) so order_core confirm can derive BOM.
+    const name = `${String(eq?.brand ?? "").trim()} ${String(eq?.model ?? "").trim()}`.trim() || String(eq?.id ?? "Оборудование");
+    const body = {
+      name,
+      category: "Оборудование",
+      unit: "шт",
+      sku: `EQ-${String(eq?.id ?? "").slice(0, 24)}`,
+      stock: 0,
+      minStock: 0,
+      price: Number(eq?.price ?? 0),
+      itemType: "equipment",
+      // keep a backlink so later we can match
+      acSpecs: { equipmentId: String(eq?.id ?? "") },
+    };
+    const res = await fetch(`${API}/warehouse`, { method: "POST", headers: JH, body: JSON.stringify(body) });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+    const wid = String(d?.item?.id ?? "");
+    if (!wid) throw new Error("Не удалось создать складскую позицию для оборудования");
+
+    // Persist link back into equipment catalog to avoid duplicates
+    try {
+      await fetch(`${API}/equipment`, {
+        method: "POST",
+        headers: JH,
+        body: JSON.stringify({ ...eq, warehouseItemId: wid }),
+      }).catch(() => null);
+    } catch {
+      // ignore
+    }
+    // Update local map
+    setEquipMap((p) => ({ ...p, [String(eq.id)]: { ...(p[String(eq.id)] ?? eq), warehouseItemId: wid } }));
+    return wid;
+  }
+
+  async function patchOrderEquipmentWarehouseId(orderId: string, wid: string) {
+    const res = await fetch(`${API}/orders/${orderId}`, { method: "PATCH", headers: JH, body: JSON.stringify({ equipment_warehouse_id: wid }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+    return data.order;
+  }
+
   async function addWarehouseItemToOffer() {
     if (!selected) return;
     const wid = String(addSelectedId || "").trim();
@@ -494,6 +543,73 @@ export function OrderDocumentsBuilder() {
       showToast("Позиция добавлена в ордер и КП");
     } catch (e: any) {
       showToast(e?.message || "Не удалось добавить позицию", false);
+    }
+  }
+
+  async function addEquipmentModelToOffer() {
+    if (!selected) return;
+    const eqId = String(addSelectedId || "").trim();
+    if (!eqId) return;
+    const eq = equipMap?.[eqId];
+    if (!eq) {
+      showToast("Модель оборудования не найдена", false);
+      return;
+    }
+
+    try {
+      await ensureOfferExists(selected.id);
+      const currentOrder = orders.find((o) => o.id === selected.id) as any;
+      const curLines = Array.isArray(currentOrder?.offer?.lines) ? [...currentOrder.offer.lines] : [];
+
+      const wid = await ensureWarehouseItemForEquipment(eq);
+      await patchOrderEquipmentWarehouseId(selected.id, wid);
+
+      const eqName = `${String(eq?.brand ?? "").trim()} ${String(eq?.model ?? "").trim()}`.trim() || String(eqId);
+      const eqLine: any = {
+        line_type: "equipment",
+        warehouse_item_id: wid,
+        name: eqName,
+        qty: 1,
+        unit: "шт",
+        price: Number(eq?.price ?? 0),
+      };
+      const idx = curLines.findIndex((l: any) => String(l?.line_type ?? "") === "equipment" && String(l?.warehouse_item_id ?? "") === wid);
+      if (idx >= 0) curLines[idx] = { ...curLines[idx], qty: Number(curLines[idx].qty ?? 0) + 1 };
+      else curLines.push(eqLine);
+
+      if (autoBom) {
+        const bomLines = buildBomOfferLines(eq, currentOrder);
+        for (const bl of bomLines) {
+          const bwid = String(bl?.warehouse_item_id ?? "").trim();
+          if (bwid) {
+            const j = curLines.findIndex((l: any) => String(l?.warehouse_item_id ?? "") === bwid && String(l?.line_type ?? "") !== "equipment");
+            if (j >= 0) curLines[j] = { ...curLines[j], qty: Number(curLines[j].qty ?? 0) + Number(bl.qty ?? 0) };
+            else curLines.push(bl);
+          } else {
+            curLines.push(bl);
+          }
+        }
+      }
+
+      const saved = await saveOfferLinesToOrder(selected.id, curLines);
+      const baseItems: DocItem[] = (saved.offer?.lines ?? [])
+        .filter((l: any) => (l?.line_type ?? "") !== "discount")
+        .map((l: any) => ({
+          name: String(l?.name ?? ""),
+          qty: Number(l?.qty ?? 0),
+          unit: String(l?.unit ?? ""),
+          price: Number(l?.price ?? 0),
+          warehouse_item_id: l?.warehouse_item_id ? String(l.warehouse_item_id) : undefined,
+          imageUrl: l?.warehouse_item_id ? String(warehouseMap?.[String(l.warehouse_item_id)]?.imageUrl ?? "") : undefined,
+        }))
+        .filter((i: any) => i.name);
+      setItems(baseItems.length ? baseItems : [{ name: "", qty: 1, unit: "шт", price: 0 }]);
+      setAddOpen(false);
+      setAddSelectedId("");
+      setAddQ("");
+      showToast("Оборудование добавлено в ордер и КП");
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось добавить оборудование", false);
     }
   }
 
@@ -885,7 +1001,7 @@ ${stages
           <div className="relative w-full max-w-2xl mx-6 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
               <div>
-                <p className="text-sm font-black text-slate-900">Добавить позицию из склада</p>
+                <p className="text-sm font-black text-slate-900">Добавить позицию</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
                   Добавленная позиция попадёт в <b>ордер</b> и в <b>КП</b>. Для оборудования можно автоматически добавить комплектующие (BOM).
                 </p>
@@ -898,12 +1014,30 @@ ${stages
               </button>
             </div>
             <div className="p-4 space-y-3">
+              <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
+                {([
+                  { key: "equipment", label: "Оборудование" },
+                  { key: "stock", label: "Склад" },
+                ] as const).map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => { setAddSource(t.key as any); setAddSelectedId(""); }}
+                    className={[
+                      "flex-1 py-2 rounded-lg text-xs font-bold transition-all",
+                      addSource === t.key ? "bg-white shadow text-slate-800" : "text-slate-500 hover:text-slate-700",
+                    ].join(" ")}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
               <div className="flex flex-col md:flex-row gap-2">
                 <input
                   value={addQ}
                   onChange={(e) => setAddQ(e.target.value)}
                   className={inputCls}
-                  placeholder="Поиск по складу… (название / категория / sku)"
+                  placeholder={addSource === "equipment" ? "Поиск по оборудованию… (бренд / модель / тип)" : "Поиск по складу… (название / категория / sku)"}
                 />
                 <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600 select-none px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl">
                   <input type="checkbox" checked={autoBom} onChange={(e) => setAutoBom(e.target.checked)} className="w-4 h-4 rounded border-slate-300" />
@@ -914,14 +1048,25 @@ ${stages
               <div className="max-h-[340px] overflow-auto border border-slate-200 rounded-2xl">
                 {(() => {
                   const qq = addQ.trim().toLowerCase();
-                  const list = Object.values(warehouseMap)
-                    .filter((it: any) => it && it.id)
-                    .filter((it: any) => {
-                      if (!qq) return true;
-                      const blob = `${it.name ?? ""} ${it.category ?? ""} ${it.sku ?? ""}`.toLowerCase();
-                      return blob.includes(qq);
-                    })
-                    .slice(0, 80) as any[];
+                  const list = (addSource === "equipment"
+                    ? Object.values(equipMap)
+                        .filter((e: any) => e && e.id && e.active !== false)
+                        .filter((e: any) => {
+                          if (!qq) return true;
+                          const blob = `${e.type ?? ""} ${e.brand ?? ""} ${e.model ?? ""} ${e.btu ?? ""} ${e.powerKw ?? ""}`.toLowerCase();
+                          return blob.includes(qq);
+                        })
+                        .slice(0, 80)
+                    : Object.values(warehouseMap)
+                        .filter((it: any) => it && it.id)
+                        .filter((it: any) => {
+                          // "Склад" в продуктовой логике = расходники/комплекты, без оборудования
+                          if (String(it.itemType ?? "consumable") === "equipment") return false;
+                          if (!qq) return true;
+                          const blob = `${it.name ?? ""} ${it.category ?? ""} ${it.sku ?? ""}`.toLowerCase();
+                          return blob.includes(qq);
+                        })
+                        .slice(0, 80)) as any[];
                   if (list.length === 0) {
                     return <div className="p-4 text-sm text-slate-400">Ничего не найдено.</div>;
                   }
@@ -929,8 +1074,8 @@ ${stages
                     <div className="divide-y divide-slate-100">
                       {list.map((it: any) => {
                         const active = String(addSelectedId) === String(it.id);
-                        const t = String(it.itemType ?? "consumable");
-                        const stock = Number(it.stock ?? 0);
+                        const t = addSource === "equipment" ? String(it.type ?? "equipment") : String(it.itemType ?? "consumable");
+                        const stock = addSource === "equipment" ? undefined : Number(it.stock ?? 0);
                         return (
                           <button
                             key={it.id}
@@ -941,16 +1086,22 @@ ${stages
                             onClick={() => setAddSelectedId(String(it.id))}
                           >
                             <div className="min-w-0">
-                              <p className="text-sm font-bold text-slate-800 truncate">{it.name}</p>
+                              <p className="text-sm font-bold text-slate-800 truncate">
+                                {addSource === "equipment" ? `${it.brand ?? ""} ${it.model ?? ""}`.trim() : it.name}
+                              </p>
                               <p className="text-[11px] text-slate-400 mt-0.5">
-                                {t} · {it.unit} · {it.category || "—"} {it.sku ? `· sku: ${it.sku}` : ""}
+                                {addSource === "equipment"
+                                  ? `${t}${it.btu ? ` · ${it.btu} BTU` : ""}${it.powerKw ? ` · ${it.powerKw} kW` : ""}`
+                                  : `${t} · ${it.unit} · ${it.category || "—"} ${it.sku ? `· sku: ${it.sku}` : ""}`}
                               </p>
                             </div>
                             <div className="text-right flex-shrink-0">
                               <p className="text-sm font-black text-slate-800">{Number(it.price ?? 0)}</p>
-                              <p className={["text-[11px] font-semibold", stock > 0 ? "text-emerald-700" : "text-slate-400"].join(" ")}>
-                                остаток: {stock}
-                              </p>
+                              {addSource === "stock" ? (
+                                <p className={["text-[11px] font-semibold", (stock ?? 0) > 0 ? "text-emerald-700" : "text-slate-400"].join(" ")}>
+                                  остаток: {stock}
+                                </p>
+                              ) : null}
                             </div>
                           </button>
                         );
@@ -968,7 +1119,7 @@ ${stages
                   Отмена
                 </button>
                 <button
-                  onClick={() => void addWarehouseItemToOffer()}
+                  onClick={() => void (addSource === "equipment" ? addEquipmentModelToOffer() : addWarehouseItemToOffer())}
                   disabled={!addSelectedId}
                   className={[
                     "px-4 py-2 rounded-xl text-sm font-semibold",
