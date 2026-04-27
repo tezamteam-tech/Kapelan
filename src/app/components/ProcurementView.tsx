@@ -1475,7 +1475,7 @@ function SupplierCard({ supplier, onEdit, onDelete }: {
           <div className="bg-slate-900 rounded-xl px-3 py-2.5">
             <p className="text-[10px] text-slate-400 mb-1 font-semibold uppercase">Mock API Endpoint</p>
             <p className="text-xs font-mono text-green-400 break-all">{supplier.apiEndpoint}</p>
-            <p className="text-[10px] text-slate-500 mt-1">Key: {supplier.apiKey.slice(0, 20)}...</p>
+            <p className="text-[10px] text-slate-500 mt-1">Key: {String(supplier.apiKey ?? "").slice(0, 20)}...</p>
           </div>
 
           {supplier.notes && <p className="text-xs text-slate-500 bg-slate-50 rounded-xl px-3 py-2">💬 {supplier.notes}</p>}
