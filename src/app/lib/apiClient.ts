@@ -14,6 +14,28 @@ type CacheEntry<T> = {
 const cache = new Map<string, CacheEntry<any>>();
 const MAX_CACHE_ENTRIES = 250;
 
+// ─── Global network activity (for UI loaders) ────────────────────────────────
+let inFlight = 0;
+const listeners = new Set<(count: number) => void>();
+function emit() {
+  for (const fn of listeners) {
+    try {
+      fn(inFlight);
+    } catch {}
+  }
+}
+export function subscribeNetworkActivity(fn: (count: number) => void) {
+  listeners.add(fn);
+  // immediate sync
+  try {
+    fn(inFlight);
+  } catch {}
+  return () => listeners.delete(fn);
+}
+export function getNetworkInFlightCount() {
+  return inFlight;
+}
+
 function pruneCache() {
   if (cache.size <= MAX_CACHE_ENTRIES) return;
   // Drop oldest-by-expiry first (cheap heuristic)
@@ -67,6 +89,8 @@ export async function getJson<T>(
   }
 
   const p = (async () => {
+    inFlight++;
+    emit();
     const res = await fetch(url, { headers: AH, signal: opts?.signal });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
@@ -86,6 +110,9 @@ export async function getJson<T>(
   } catch (err) {
     cache.delete(key);
     throw err;
+  } finally {
+    inFlight = Math.max(0, inFlight - 1);
+    emit();
   }
 }
 

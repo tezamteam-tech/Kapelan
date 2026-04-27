@@ -9,6 +9,7 @@ import {
   CalendarDays, ClipboardCheck, Ruler
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { subscribeNetworkActivity } from "../lib/apiClient";
 
 interface NavItem {
   path: string;
@@ -55,6 +56,7 @@ export function Layout() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [avatar, setAvatar] = useState<string>("");
+  const [netBusy, setNetBusy] = useState(false);
 
   useEffect(() => {
     try {
@@ -63,6 +65,30 @@ export function Layout() {
       setAvatar("");
     }
   }, [location.pathname]);
+
+  useEffect(() => {
+    let t: any = null;
+    const unsub = subscribeNetworkActivity((count) => {
+      // Avoid flicker for very fast requests
+      if (count > 0) {
+        if (t) return;
+        t = setTimeout(() => {
+          setNetBusy(true);
+          t = null;
+        }, 180);
+        return;
+      }
+      if (t) {
+        clearTimeout(t);
+        t = null;
+      }
+      setNetBusy(false);
+    });
+    return () => {
+      if (t) clearTimeout(t);
+      unsub();
+    };
+  }, []);
 
   const visibleItems = NAV_ITEMS.filter(item => hasAccess(item.roles));
 
@@ -83,6 +109,17 @@ export function Layout() {
 
   return (
     <div className="h-screen flex overflow-hidden bg-slate-50">
+      {/* Global data loader (shows while API requests in-flight) */}
+      <div
+        className={[
+          "fixed top-0 left-0 right-0 z-[9998] h-[3px] bg-transparent",
+          netBusy ? "opacity-100" : "opacity-0 pointer-events-none",
+          "transition-opacity duration-200",
+        ].join(" ")}
+      >
+        <div className="h-full w-1/2 bg-blue-600 animate-pulse" />
+      </div>
+
       {/* Mobile overlay */}
       {mobileOpen && (
         <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setMobileOpen(false)} />
