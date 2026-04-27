@@ -93,6 +93,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
   const [items, setItems] = useState<ParsedEquipment[]>([]);
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [parseProgress, setParseProgress] = useState<{ done: number; total: number } | null>(null);
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -122,17 +123,49 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch(`${API}/equipment/ai-import`, { method: "POST", headers: AH, body: fd });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      const parsed: ParsedEquipment[] = (data.items ?? []).map((item: any, idx: number) => ({
-        ...item,
-        _idx: idx,
-        _selected: true,
-        _status: "new" as const,
-      }));
-      if (!parsed.length) throw new Error("AI не нашёл моделей. Проверьте содержимое файла.");
-      setItems(parsed);
-      setStep(3);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+
+      // Chunked job flow for big files
+      if (data.chunked && data.jobId) {
+        const jobId = String(data.jobId);
+        const totalChunks = Number(data.totalChunks ?? 0) || 0;
+        setParseProgress({ done: 0, total: totalChunks });
+        let done = 0;
+        let finalItems: any[] = [];
+        for (let guard = 0; guard < Math.max(5, totalChunks + 5); guard++) {
+          const stepRes = await fetch(`${API}/equipment/ai-import/step`, { method: "POST", headers: JH, body: JSON.stringify({ jobId }) });
+          const stepData = await stepRes.json().catch(() => ({}));
+          if (!stepRes.ok || stepData.error) throw new Error(stepData.error ?? `HTTP ${stepRes.status}`);
+          done = Number(stepData.doneChunks ?? done) || done;
+          setParseProgress({ done, total: totalChunks });
+          if (stepData.done) {
+            finalItems = stepData.items ?? [];
+            break;
+          }
+          await new Promise(r => setTimeout(r, 150));
+        }
+        const parsed: ParsedEquipment[] = (finalItems ?? []).map((item: any, idx: number) => ({
+          ...item,
+          _idx: idx,
+          _selected: true,
+          _status: "new" as const,
+        }));
+        if (!parsed.length) throw new Error("AI не нашёл моделей. Проверьте содержимое файла.");
+        setItems(parsed);
+        setParseProgress(null);
+        setStep(3);
+      } else {
+        const parsed: ParsedEquipment[] = (data.items ?? []).map((item: any, idx: number) => ({
+          ...item,
+          _idx: idx,
+          _selected: true,
+          _status: "new" as const,
+        }));
+        if (!parsed.length) throw new Error("AI не нашёл моделей. Проверьте содержимое файла.");
+        setItems(parsed);
+        setStep(3);
+      }
     } catch (e: any) {
       setError(e.message); setStep(1);
     } finally {
@@ -383,7 +416,11 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
               </div>
               <div className="text-center space-y-1">
                 <p className="font-bold text-slate-800 text-lg">AI анализирует каталог…</p>
-                <p className="text-sm text-slate-400">GPT-4o распознаёт модели, BTU, технические параметры и цены</p>
+                <p className="text-sm text-slate-400">
+                  {parseProgress
+                    ? `Обработка файла: ${parseProgress.done} / ${parseProgress.total} частей`
+                    : "AI распознаёт модели, BTU, технические параметры и цены"}
+                </p>
               </div>
               <div className="flex gap-6 text-center">
                 {["Читаем таблицу", "Разбиваем серии", "Парсим цены"].map((s, i) => (
