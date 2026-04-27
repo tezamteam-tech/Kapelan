@@ -843,7 +843,7 @@ function SupplierItemsAiImportModal({
           </div>
           {err ? <div className="text-sm text-red-600">{err}</div> : null}
 
-          {preview ? (
+          {Array.isArray(preview) ? (
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-bold text-slate-800">Найдено: {preview.length}</p>
@@ -866,7 +866,7 @@ function SupplierItemsAiImportModal({
                 </label>
               </div>
               <div className="mt-2 max-h-56 overflow-auto space-y-2">
-                {preview.slice(0, 12).map((r, idx) => (
+                {(Array.isArray(preview) ? preview : []).slice(0, 12).map((r, idx) => (
                   <div key={idx} className="bg-white border border-slate-200 rounded-lg p-2">
                     <div className="text-sm font-semibold text-slate-800">{r.name}</div>
                     <div className="text-[11px] text-slate-500">
