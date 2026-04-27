@@ -5,12 +5,14 @@ import { AuthProvider } from "./AuthContext";
 import { useEffect, useMemo, useState } from "react";
 import { useRole } from "./RoleContext";
 import { API_BASE, getJson, primeJson } from "../lib/apiClient";
+import { useCurrency } from "./CurrencyContext";
 
 export function RootWrapper() {
   // Bootstrap prefetch: one request at app init to make navigation snappy.
   // We keep it in RootWrapper so it runs once after auth/role resolved.
   function Bootstrap() {
     const { role } = useRole();
+    const { setCurrency, CURRENCIES } = useCurrency();
     const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
     const [hint, setHint] = useState<string>("Подготавливаем данные…");
 
@@ -27,6 +29,15 @@ export function RootWrapper() {
 
           // Prime caches for common endpoints used across pages.
           if (data.company) primeJson(`${API_BASE}/company-config`, { config: data.company }, { ttlMs: 60_000, staleTtlMs: 10 * 60_000 });
+          // Sync global currency from server company config (single source of truth)
+          try {
+            const cc = data?.company?.currency;
+            const next =
+              cc?.name ? (CURRENCIES.find((x) => x.name === cc.name) ?? cc) : null;
+            if (next?.name && next?.symbol) setCurrency(next);
+          } catch {
+            // ignore
+          }
           if (data.ordersLite) primeJson(`${API_BASE}/orders?lite=1`, data.ordersLite, { ttlMs: 30_000, staleTtlMs: 5 * 60_000 });
           if (data.equipment) primeJson(`${API_BASE}/equipment`, data.equipment, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000 });
           if (role === "admin") {

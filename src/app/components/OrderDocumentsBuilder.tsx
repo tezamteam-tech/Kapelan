@@ -3,6 +3,7 @@ import { FileText, Loader2, RefreshCw, Search, Download, CheckCircle2, Plus, Tra
 import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { useCurrency } from "./CurrencyContext";
 
 const API = API_BASE;
 
@@ -269,12 +270,15 @@ export function OrderDocumentsBuilder() {
   const [items, setItems] = useState<DocItem[]>([]);
   const [stages, setStages] = useState<WorkStage[]>([]);
   const [equipMap, setEquipMap] = useState<Record<string, any>>({});
+  const { currency, fmt, fmtShort } = useCurrency();
   const [addOpen, setAddOpen] = useState(false);
   const [addQ, setAddQ] = useState("");
   const [addSource, setAddSource] = useState<"equipment" | "stock">("equipment");
   const [addSelectedId, setAddSelectedId] = useState<string>("");
   const [autoBom, setAutoBom] = useState(true);
   const saveOfferTimer = useRef<any>(null);
+  const [vatEnabled, setVatEnabled] = useState<boolean>(false);
+  const [vatPercent, setVatPercent] = useState<number>(20);
   const [includeImages, setIncludeImages] = useState<boolean>(() => {
     try {
       return localStorage.getItem("doc.includeImages.v1") === "1";
@@ -292,6 +296,25 @@ export function OrderDocumentsBuilder() {
   }, [includeImages]);
 
   const [warehouseMap, setWarehouseMap] = useState<Record<string, any>>({});
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await getJson<any>(`${API}/config`, { ttlMs: 60_000, staleTtlMs: 10 * 60_000, swr: true });
+        if (!alive) return;
+        const vat = data?.company?.vat;
+        if (vat && typeof vat === "object") {
+          if (typeof vat.enabledByDefault === "boolean") setVatEnabled(vat.enabledByDefault);
+          if (typeof vat.percent === "number") setVatPercent(vat.percent);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -376,7 +399,7 @@ export function OrderDocumentsBuilder() {
   async function ensureOfferExists(orderId: string) {
     const o = orders.find((x) => x.id === orderId) as any;
     if (o?.offer) return o.offer;
-    const offer = { version: 1, status: "draft", currency: "UAH", lines: [] as any[] };
+    const offer = { version: 1, status: "draft", currency: currency.name, lines: [] as any[] };
     const res = await fetch(`${API}/orders/${orderId}`, { method: "PATCH", headers: JH, body: JSON.stringify({ offer, status: "offer_prepared" }) });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
@@ -386,7 +409,7 @@ export function OrderDocumentsBuilder() {
 
   async function saveOfferLinesToOrder(orderId: string, nextLines: any[]) {
     const o = orders.find((x) => x.id === orderId) as any;
-    const offer = { ...(o?.offer ?? { version: 1, status: "draft", currency: "UAH", lines: [] }), lines: nextLines };
+    const offer = { ...(o?.offer ?? { version: 1, status: "draft", currency: currency.name, lines: [] }), currency: (o?.offer?.currency ?? currency.name), lines: nextLines };
     const res = await fetch(`${API}/orders/${orderId}`, { method: "PATCH", headers: JH, body: JSON.stringify({ offer, status: "offer_prepared" }) });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
@@ -880,13 +903,16 @@ ${stages
 <div style="margin-top:14px;display:flex;justify-content:flex-end;">
   <div style="min-width:260px;border:1px solid #e5e7eb;border-radius:10px;padding:10px;background:#f8fafc;">
     <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;">
-      <span style="color:#64748b;">Позиции</span><b>${Math.round(totalItems * 100) / 100}</b>
+      <span style="color:#64748b;">Позиции</span><b>${fmt(Math.round(totalItems * 100) / 100, 2)}</b>
     </div>
     <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;">
-      <span style="color:#64748b;">Этапы</span><b>${Math.round(totalStages * 100) / 100}</b>
+      <span style="color:#64748b;">Этапы</span><b>${fmt(Math.round(totalStages * 100) / 100, 2)}</b>
     </div>
+    ${vatEnabled ? `<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px;">
+      <span style="color:#64748b;">НДС ${Math.max(0, Number(vatPercent) || 0)}%</span><b>${fmt(Math.round(((total * (Math.max(0, Number(vatPercent) || 0))) / 100) * 100) / 100, 2)}</b>
+    </div>` : ""}
     <div style="display:flex;justify-content:space-between;font-size:13px;">
-      <span style="color:#0f172a;"><b>Итого</b></span><span style="color:#0f172a;"><b>${Math.round(total * 100) / 100}</b></span>
+      <span style="color:#0f172a;"><b>Итого${vatEnabled ? " с НДС" : ""}</b></span><span style="color:#0f172a;"><b>${fmt(Math.round((total + (vatEnabled ? (total * (Math.max(0, Number(vatPercent) || 0))) / 100 : 0)) * 100) / 100, 2)}</b></span>
     </div>
   </div>
 </div>`;
@@ -935,7 +961,7 @@ ${stages
 </body></html>`;
 
     setPreviewHtml(html);
-  }, [selected?.id, docType, docTitle, docDate, items, stages, docNotes, docNotesHtml, docBodyHtml, company, escapeHtml, totalItems, totalStages, total, includeImages]);
+  }, [selected?.id, docType, docTitle, docDate, items, stages, docNotes, docNotesHtml, docBodyHtml, company, escapeHtml, totalItems, totalStages, total, includeImages, fmt, currency, vatEnabled, vatPercent]);
 
   async function renderAndDownload() {
     if (!selected) return;
@@ -1413,9 +1439,20 @@ ${stages
 
                 <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="text-sm font-extrabold text-slate-800 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3">
-                    Итого: {total}
+                    Итого{vatEnabled ? " с НДС" : ""}: {fmtShort(total + (vatEnabled ? (total * (Math.max(0, Number(vatPercent) || 0))) / 100 : 0))}
                     <div className="text-[11px] text-slate-500 font-semibold mt-0.5">
-                      позиции: {Math.round(totalItems * 100) / 100} · этапы: {Math.round(totalStages * 100) / 100}
+                      позиции: {fmtShort(Math.round(totalItems * 100) / 100)} · этапы: {fmtShort(Math.round(totalStages * 100) / 100)}
+                    </div>
+                    <div className="mt-2 flex items-center gap-3 text-[11px] font-semibold text-slate-600">
+                      <label className="inline-flex items-center gap-2 select-none">
+                        <input
+                          type="checkbox"
+                          checked={vatEnabled}
+                          onChange={(e) => setVatEnabled(e.target.checked)}
+                          className="w-4 h-4 rounded border-slate-300"
+                        />
+                        С учётом НДС {Math.max(0, Number(vatPercent) || 0)}%
+                      </label>
                     </div>
                   </div>
                   <button

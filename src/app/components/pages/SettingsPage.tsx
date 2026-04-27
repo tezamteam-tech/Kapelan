@@ -12,6 +12,8 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [vatEnabledByDefault, setVatEnabledByDefault] = useState(false);
+  const [vatPercent, setVatPercent] = useState(20);
 
   const { currency, setCurrency, fmtShort, CURRENCIES } = useCurrency();
 
@@ -19,6 +21,16 @@ export function SettingsPage() {
     try {
       const data = await getJson<any>(`${API}/config`, { ttlMs: 10 * 60_000, staleTtlMs: 60 * 60_000, swr: true });
       if (data.tgAdminChatId) setTgChatId(String(data.tgAdminChatId));
+      const cc = data?.company?.currency as CurrencyConfig | undefined;
+      if (cc?.name) {
+        const next = CURRENCIES.find((x) => x.name === cc.name) ?? cc;
+        if (next?.name && next?.symbol) setCurrency(next);
+      }
+      const vat = data?.company?.vat;
+      if (vat && typeof vat === "object") {
+        if (typeof vat.enabledByDefault === "boolean") setVatEnabledByDefault(vat.enabledByDefault);
+        if (typeof vat.percent === "number") setVatPercent(vat.percent);
+      }
     } catch {}
   };
 
@@ -28,7 +40,17 @@ export function SettingsPage() {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await fetch(`${API}/config`, { method: "POST", headers: HEADERS, body: JSON.stringify({ tgAdminChatId: tgChatId }) });
+      const res = await fetch(`${API}/config`, {
+        method: "POST",
+        headers: HEADERS,
+        body: JSON.stringify({
+          tgAdminChatId: tgChatId,
+          company: {
+            currency,
+            vat: { enabledByDefault: vatEnabledByDefault, percent: Number(vatPercent) || 0 },
+          },
+        }),
+      });
       const data = await res.json();
       setMsg(data.success ? { text: "Настройки сохранены", ok: true } : { text: data.error || "Ошибка", ok: false });
     } catch (err: any) {
@@ -104,7 +126,46 @@ export function SettingsPage() {
 
         <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700 flex items-start gap-2">
           <Globe size={13} className="flex-shrink-0 mt-0.5" />
-          Настройка сохраняется локально в браузере. Для команды — каждый пользователь устанавливает своё значение, либо синхронизируйте через единый профиль.
+          Валюта хранится в конфигурации компании и синхронизируется для всех пользователей.
+        </div>
+      </div>
+
+      {/* ── VAT ──────────────────────────────────────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-100 p-6 space-y-4">
+        <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+          <span className="text-xl">🧾</span> НДС (опционально)
+        </h3>
+        <p className="text-sm text-slate-500">
+          Для РБ можно показывать в документах переключатель «с учётом НДС». Процент настраивается здесь.
+        </p>
+        <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-700 select-none">
+          <input
+            type="checkbox"
+            checked={vatEnabledByDefault}
+            onChange={(e) => setVatEnabledByDefault(e.target.checked)}
+            className="w-4 h-4 rounded border-slate-300"
+          />
+          Включать НДС по умолчанию в документах
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-sm font-medium text-slate-700 mb-1.5 block">Процент НДС</label>
+            <input
+              type="number"
+              value={vatPercent}
+              onChange={(e) => setVatPercent(Number(e.target.value))}
+              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="20"
+              min={0}
+              step={0.01}
+            />
+          </div>
+          <div className="bg-slate-50 rounded-xl p-4 text-sm text-slate-600">
+            <p className="font-semibold text-slate-700 mb-1">Пример:</p>
+            <div className="text-slate-800">
+              1 000 → НДС {vatPercent}% = <strong className="text-teal-700">{fmtShort((1000 * (Number(vatPercent) || 0)) / 100)}</strong>
+            </div>
+          </div>
         </div>
       </div>
 

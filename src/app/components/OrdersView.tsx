@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { ImageUpload } from "./ui/ImageUpload";
 import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
+import { useCurrency } from "./CurrencyContext";
 
 const API = API_BASE;
 
@@ -198,6 +199,7 @@ function badgeForSupply(materials: MaterialLine[]) {
 export function OrdersView() {
   const navigate = useNavigate();
   const { role, userName } = useRole();
+  const { currency } = useCurrency();
   const [searchParams, setSearchParams] = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
@@ -627,7 +629,7 @@ export function OrdersView() {
       const offer = {
         version: 1,
         status: "draft",
-        currency: "UAH",
+        currency: currency.name,
         lines: [
           {
             line_type: "equipment",
@@ -705,7 +707,7 @@ export function OrdersView() {
         return;
       }
 
-      const prevOffer = selected.offer ?? { version: 1, status: "draft", currency: "UAH", lines: [] as any[] };
+      const prevOffer = selected.offer ?? { version: 1, status: "draft", currency: currency.name, lines: [] as any[] };
       const otherLines = (prevOffer.lines ?? []).filter((l: any) => l?.line_type !== "equipment");
       const eqOfferLines = resolved.map((x) => {
         const it = warehouseMap[x.warehouseId];
@@ -724,7 +726,7 @@ export function OrdersView() {
         offer: {
           ...prevOffer,
           status: prevOffer.status ?? "draft",
-          currency: prevOffer.currency ?? "UAH",
+          currency: prevOffer.currency ?? currency.name,
           lines: [...otherLines, ...eqOfferLines],
         },
       };
@@ -750,7 +752,7 @@ export function OrdersView() {
       const nextOffer = {
         version: selected.offer?.version ?? 1,
         status: selected.offer?.status ?? "draft",
-        currency: selected.offer?.currency ?? "UAH",
+        currency: selected.offer?.currency ?? currency.name,
         lines: nextLines,
       };
       const res = await fetch(`${API}/orders/${selected.id}`, {
@@ -2765,7 +2767,7 @@ function CreateOrderModal({
                           };
                         });
                       if (!lines.length) return undefined;
-                      return { version: 1, status: "draft", currency: "UAH", lines };
+                      return { version: 1, status: "draft", currency: currency.name, lines };
                     })(),
                   });
                 }}
@@ -3238,7 +3240,7 @@ function OfferEditor({
                       {l.qty} {l.unit}
                     </p>
                     <p className="text-[11px] text-slate-400">
-                      {(l.price ?? 0) * (l.qty ?? 0)} {offer.currency ?? "UAH"}
+                      {(l.price ?? 0) * (l.qty ?? 0)} {offer.currency ?? currency.name}
                     </p>
                   </div>
                 )}
@@ -3252,7 +3254,7 @@ function OfferEditor({
         <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-between text-sm">
           <span className="text-slate-400">Итого</span>
           <span className="font-black text-slate-800">
-            {total.toLocaleString("ru-RU")} {offer.currency ?? "UAH"}
+            {total.toLocaleString("ru-RU")} {offer.currency ?? currency.name}
           </span>
         </div>
       )}
