@@ -121,6 +121,8 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
     if (!file) return;
     setStep(2); setParsing(true); setError(""); setParseWarning("");
     try {
+      // Warm up edge function to reduce cold-start latency before starting a chunked job.
+      await fetch(`${API}/health`, { method: "GET", headers: AH }).catch(() => null);
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch(`${API}/equipment/ai-import`, { method: "POST", headers: AH, body: fd });
