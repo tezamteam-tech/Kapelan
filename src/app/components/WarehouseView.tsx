@@ -123,6 +123,7 @@ export function WarehouseView() {
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [equipment, setEquipment] = useState<EquipmentModel[]>([]);
+  const [eqSel, setEqSel] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -226,8 +227,36 @@ export function WarehouseView() {
     const data = await res.json();
     if (data.error) { showToast(data.error, false); return; }
     setEquipment(prev => prev.filter(e => e.id !== id));
+    setEqSel(prev => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     if (selectedEq?.id === id) setSelectedEq(null);
     showToast("🗑️ Модель архивирована");
+  }
+
+  async function bulkArchiveEquipment(ids: string[], label: string) {
+    const uniq = Array.from(new Set(ids)).filter(Boolean);
+    if (uniq.length === 0) return;
+    if (!confirm(`Архивировать ${label}: ${uniq.length} шт?\n\nЭто скроет модели из каталога.`)) return;
+    let ok = 0;
+    for (const id of uniq) {
+      const res = await fetch(`${API}/equipment/${id}`, { method: "DELETE", headers: AH });
+      const data = await res.json().catch(() => ({}));
+      if (!data?.error) ok++;
+      setEquipment(prev => prev.filter(e => e.id !== id));
+      setEqSel(prev => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      if (selectedEq?.id === id) setSelectedEq(null);
+      await new Promise(r => setTimeout(r, 40));
+    }
+    showToast(`🗑️ Архивировано: ${ok} / ${uniq.length}`, ok === uniq.length);
   }
 
   async function deleteItem(id: string) {
@@ -274,6 +303,23 @@ export function WarehouseView() {
       || String(e.btu || "").includes(q) || String(e.price || "").includes(q);
     return matchType && matchSearch;
   });
+
+  const filteredEqIds = useMemo(() => filteredEq.map(e => e.id), [filteredEq]);
+  const selectedEqIds = useMemo(
+    () => filteredEqIds.filter(id => !!eqSel[id]),
+    [filteredEqIds, eqSel],
+  );
+  const allFilteredSelected = filteredEqIds.length > 0 && selectedEqIds.length === filteredEqIds.length;
+  function toggleEqAllFiltered(val: boolean) {
+    setEqSel(prev => {
+      const next = { ...prev };
+      for (const id of filteredEqIds) next[id] = val;
+      return next;
+    });
+  }
+  function toggleEqOne(id: string, val: boolean) {
+    setEqSel(prev => ({ ...prev, [id]: val }));
+  }
 
   const TABS = [
     { key: "stock" as WHTab,     icon: <Package size={15} />,    label: "Склад",       badge: stats.low || undefined },
@@ -569,10 +615,41 @@ export function WarehouseView() {
                 </div>
               ) : viewMode === "table" ? (
                   <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                    <div className="px-3 py-2 border-b border-slate-200 bg-slate-50 flex items-center gap-2 flex-wrap">
+                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={allFilteredSelected}
+                          onChange={(e) => toggleEqAllFiltered(e.target.checked)}
+                          className="w-3.5 h-3.5 rounded accent-blue-600"
+                        />
+                        Выбрать всё (по фильтру)
+                      </label>
+                      <span className="text-xs text-slate-400">
+                        Выбрано: {selectedEqIds.length} / {filteredEqIds.length}
+                      </span>
+                      <div className="ml-auto flex gap-2">
+                        <button
+                          onClick={() => bulkArchiveEquipment(selectedEqIds, "выбранное")}
+                          disabled={selectedEqIds.length === 0}
+                          className="px-3 py-1.5 rounded-xl bg-red-50 text-red-700 text-xs font-bold hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          Архивировать выбранное
+                        </button>
+                        <button
+                          onClick={() => bulkArchiveEquipment(filteredEqIds, "всё по фильтру")}
+                          disabled={filteredEqIds.length === 0}
+                          className="px-3 py-1.5 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          Архивировать всё (фильтр)
+                        </button>
+                      </div>
+                    </div>
                     <div className="overflow-x-auto">
                     <table className="min-w-[900px] w-full text-sm">
                       <thead className="bg-slate-50 border-b border-slate-200 sticky top-0 z-10">
                         <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
+                          <th className="w-10 px-3 py-2"></th>
                           <th className="text-left px-3 py-2">Модель</th>
                           <th className="text-left px-3 py-2">Тип</th>
                           <th className="text-right px-3 py-2">BTU</th>
@@ -583,6 +660,14 @@ export function WarehouseView() {
                       <tbody>
                         {filteredEq.map(eq => (
                           <tr key={eq.id} className="border-b border-slate-100 hover:bg-slate-50">
+                            <td className="px-3 py-2">
+                              <input
+                                type="checkbox"
+                                checked={!!eqSel[eq.id]}
+                                onChange={(e) => toggleEqOne(eq.id, e.target.checked)}
+                                className="w-3.5 h-3.5 rounded accent-blue-600"
+                              />
+                            </td>
                             <td className="px-3 py-2">
                               <button
                                 onClick={() => setSelectedEq(selectedEq?.id === eq.id ? null : eq)}
