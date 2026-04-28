@@ -527,7 +527,11 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                               {EQ_TYPES.map(t => <option key={t} value={t}>{EQ_TYPE_CFG[t].label}</option>)}
                             </select>
                             {item._status === "saved" && <CheckCircle2 size={13} className="text-green-500" />}
-                            {item._status === "error" && <AlertCircle size={13} className="text-red-400" title={item._error} />}
+                            {item._status === "error" && (
+                              <span title={item._error} className="inline-flex">
+                                <AlertCircle size={13} className="text-red-400" />
+                              </span>
+                            )}
                           </div>
                         </div>
                         <button onClick={() => setEditIdx(isEditing ? null : item._idx)}
@@ -547,9 +551,9 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                             <input type="number" value={item.btu} onChange={e => update(item._idx, "btu", Number(e.target.value))}
                               className="w-full text-center text-xs font-bold text-blue-700 border-b border-blue-300 outline-none bg-transparent" />
                           ) : (
-                            <p className="text-xs font-black text-blue-700">{item.btu.toLocaleString()}</p>
+                            <p className="text-xs font-black text-blue-700">{Number(item.btu || 0).toLocaleString("ru-RU")}</p>
                           )}
-                          <p className="text-[9px] text-slate-400">{item.powerKw} кВт</p>
+                          <p className="text-[9px] text-slate-400">{Number(item.powerKw || 0)} кВт</p>
                         </div>
 
                         {/* Area */}
@@ -557,7 +561,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                           <p className="text-[9px] text-slate-400 font-semibold flex items-center justify-center gap-0.5">
                             <AreaChart size={8} /> Площадь
                           </p>
-                          <p className="text-xs font-black text-slate-700">{item.areaMin}–{item.areaMax}</p>
+                          <p className="text-xs font-black text-slate-700">{Number(item.areaMin || 0)}–{Number(item.areaMax || 0)}</p>
                           <p className="text-[9px] text-slate-400">м²</p>
                         </div>
 
