@@ -138,7 +138,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
         let finalItems: any[] = [];
         const stepWarnings: string[] = [];
         const start = Date.now();
-        const MAX_PARSE_MS = 12 * 60 * 1000; // allow long imports; backend has per-step timeouts
+        const MAX_PARSE_MS = 30 * 60 * 1000; // allow long imports; backend has per-step timeouts + fallbacks
         for (let guard = 0; guard < 2000; guard++) {
           const stepRes = await fetch(`${API}/equipment/ai-import/step`, { method: "POST", headers: JH, body: JSON.stringify({ jobId }) });
           const stepData = await stepRes.json().catch(() => ({}));
