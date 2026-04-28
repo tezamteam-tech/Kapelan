@@ -124,6 +124,7 @@ export function WarehouseView() {
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [equipment, setEquipment] = useState<EquipmentModel[]>([]);
   const [eqSel, setEqSel] = useState<Record<string, boolean>>({});
+  const [eqBulk, setEqBulk] = useState<{ running: boolean; done: number; total: number; last?: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -223,29 +224,12 @@ export function WarehouseView() {
 
   async function deleteEquipment(id: string) {
     if (!confirm("Архивировать модель оборудования?")) return;
-    const res = await fetch(`${API}/equipment/${id}`, { method: "DELETE", headers: AH });
-    const data = await res.json();
-    if (data.error) { showToast(data.error, false); return; }
-    setEquipment(prev => prev.filter(e => e.id !== id));
-    setEqSel(prev => {
-      if (!prev[id]) return prev;
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    if (selectedEq?.id === id) setSelectedEq(null);
-    showToast("🗑️ Модель архивирована");
-  }
-
-  async function bulkArchiveEquipment(ids: string[], label: string) {
-    const uniq = Array.from(new Set(ids)).filter(Boolean);
-    if (uniq.length === 0) return;
-    if (!confirm(`Архивировать ${label}: ${uniq.length} шт?\n\nЭто скроет модели из каталога.`)) return;
-    let ok = 0;
-    for (const id of uniq) {
+    try {
       const res = await fetch(`${API}/equipment/${id}`, { method: "DELETE", headers: AH });
       const data = await res.json().catch(() => ({}));
-      if (!data?.error) ok++;
+      if (!res.ok || data?.error) {
+        throw new Error(String(data?.error ?? `HTTP ${res.status}`));
+      }
       setEquipment(prev => prev.filter(e => e.id !== id));
       setEqSel(prev => {
         if (!prev[id]) return prev;
@@ -254,8 +238,41 @@ export function WarehouseView() {
         return next;
       });
       if (selectedEq?.id === id) setSelectedEq(null);
+      showToast("🗑️ Модель архивирована");
+    } catch (e: any) {
+      showToast(`Ошибка архивирования: ${e?.message || "Failed to fetch"}`, false);
+    }
+  }
+
+  async function bulkArchiveEquipment(ids: string[], label: string) {
+    const uniq = Array.from(new Set(ids)).filter(Boolean);
+    if (uniq.length === 0) return;
+    if (!confirm(`Архивировать ${label}: ${uniq.length} шт?\n\nЭто скроет модели из каталога.`)) return;
+    let ok = 0;
+    setEqBulk({ running: true, done: 0, total: uniq.length });
+    for (const id of uniq) {
+      setEqBulk(prev => prev ? { ...prev, last: id } : prev);
+      try {
+        const res = await fetch(`${API}/equipment/${id}`, { method: "DELETE", headers: AH });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.error) throw new Error(String(data?.error ?? `HTTP ${res.status}`));
+        ok++;
+        setEquipment(prev => prev.filter(e => e.id !== id));
+        setEqSel(prev => {
+          if (!prev[id]) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        if (selectedEq?.id === id) setSelectedEq(null);
+      } catch (e: any) {
+        // keep going, show summary at the end
+      } finally {
+        setEqBulk(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + 1) } : prev);
+      }
       await new Promise(r => setTimeout(r, 40));
     }
+    setEqBulk(prev => prev ? { ...prev, running: false } : prev);
     showToast(`🗑️ Архивировано: ${ok} / ${uniq.length}`, ok === uniq.length);
   }
 
@@ -628,17 +645,23 @@ export function WarehouseView() {
                       <span className="text-xs text-slate-400">
                         Выбрано: {selectedEqIds.length} / {filteredEqIds.length}
                       </span>
+                      {eqBulk?.running && (
+                        <span className="text-xs text-slate-500 flex items-center gap-2">
+                          <Loader2 size={14} className="animate-spin text-slate-400" />
+                          Архивирование: {eqBulk.done} / {eqBulk.total}
+                        </span>
+                      )}
                       <div className="ml-auto flex gap-2">
                         <button
                           onClick={() => bulkArchiveEquipment(selectedEqIds, "выбранное")}
-                          disabled={selectedEqIds.length === 0}
+                          disabled={selectedEqIds.length === 0 || !!eqBulk?.running}
                           className="px-3 py-1.5 rounded-xl bg-red-50 text-red-700 text-xs font-bold hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           Архивировать выбранное
                         </button>
                         <button
                           onClick={() => bulkArchiveEquipment(filteredEqIds, "всё по фильтру")}
-                          disabled={filteredEqIds.length === 0}
+                          disabled={filteredEqIds.length === 0 || !!eqBulk?.running}
                           className="px-3 py-1.5 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           Архивировать всё (фильтр)
