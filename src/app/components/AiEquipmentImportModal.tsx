@@ -132,16 +132,20 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
       // Chunked job flow for big files
       if (data.chunked && data.jobId) {
         const jobId = String(data.jobId);
-        const totalChunks = Number(data.totalChunks ?? 0) || 0;
+        let totalChunks = Number(data.totalChunks ?? 0) || 0;
         setParseProgress({ done: 0, total: totalChunks });
         let done = 0;
         let finalItems: any[] = [];
         const stepWarnings: string[] = [];
-        for (let guard = 0; guard < Math.max(5, totalChunks + 5); guard++) {
+        const start = Date.now();
+        const MAX_PARSE_MS = 12 * 60 * 1000; // allow long imports; backend has per-step timeouts
+        for (let guard = 0; guard < 2000; guard++) {
           const stepRes = await fetch(`${API}/equipment/ai-import/step`, { method: "POST", headers: JH, body: JSON.stringify({ jobId }) });
           const stepData = await stepRes.json().catch(() => ({}));
           if (!stepRes.ok || stepData.error) throw new Error(stepData.error ?? `HTTP ${stepRes.status}`);
           done = Number(stepData.doneChunks ?? done) || done;
+          const tc = Number(stepData.totalChunks ?? totalChunks) || totalChunks;
+          if (tc > totalChunks) totalChunks = tc;
           setParseProgress({ done, total: totalChunks });
           const w = String(stepData.chunkWarning ?? "").trim();
           if (w) stepWarnings.push(w);
@@ -155,7 +159,11 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
             finalItems = stepData.items ?? [];
             break;
           }
-          await new Promise(r => setTimeout(r, 150));
+          if (Date.now() - start > MAX_PARSE_MS) {
+            const uniq = Array.from(new Set(stepWarnings));
+            throw new Error(`Импорт занимает слишком много времени. Попробуйте ещё раз (обработка идёт чанками).\n\n${uniq.slice(0, 3).join("\n")}`);
+          }
+          await new Promise(r => setTimeout(r, 350));
         }
         const uniq = Array.from(new Set(stepWarnings));
         setParseWarning(uniq.slice(0, 4).join("\n"));
