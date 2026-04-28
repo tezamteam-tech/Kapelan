@@ -204,65 +204,51 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
     setImporting(true);
     setProgress({ done: 0, total: toImport.length });
 
+    const BATCH = 25;
     let done = 0;
-    for (const item of toImport) {
+    const batches: ParsedEquipment[][] = [];
+    for (let i = 0; i < toImport.length; i += BATCH) batches.push(toImport.slice(i, i + BATCH));
+
+    async function postBulk(payload: any, attempt = 0): Promise<any> {
       try {
-        const { _idx, _selected, _status, _error, source, stockQty, availability, ...body } = item;
-        const res = await fetch(`${API}/equipment`, { method: "POST", headers: JH, body: JSON.stringify(body) });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        // Optional: if AI recognized it as warehouse stock, create/update linked warehouse item qty.
-        const eq = data?.equipment ?? data?.item ?? data?.model ?? null;
-        const wid = String(eq?.warehouseItemId ?? "").trim() || String((body as any)?.warehouseItemId ?? "").trim();
-        const qty = Math.max(0, Number(stockQty) || 0);
-        const src = (source ?? "unknown");
-        const av = (availability ?? (qty > 0 ? "in_stock_warehouse" : "order_only"));
-        const shouldBeOnWarehouse = src === "warehouse" || av === "in_stock_warehouse" || qty > 0;
-        if (shouldBeOnWarehouse) {
-          // ensure warehouse item exists, then PATCH stock
-          let whId = wid;
-          if (!whId) {
-            const whRes = await fetch(`${API}/warehouse`, {
-              method: "POST",
-              headers: JH,
-              body: JSON.stringify({
-                name: `${String((body as any)?.brand ?? "").trim()} ${String((body as any)?.model ?? "").trim()}`.trim() || "Оборудование",
-                category: "Оборудование",
-                unit: "шт",
-                stock: qty,
-                minStock: 0,
-                price: Number((body as any)?.price ?? 0),
-                itemType: "equipment",
-                notes: av === "order_only" ? "Под заказ" : "",
-                acSpecs: { equipmentId: String(eq?.id ?? "") },
-              }),
-            });
-            const whData = await whRes.json().catch(() => ({}));
-            if (!whRes.ok || whData.error) throw new Error(whData.error || `HTTP ${whRes.status}`);
-            whId = String(whData?.item?.id ?? "");
-          } else {
-            await fetch(`${API}/warehouse/${encodeURIComponent(whId)}`, {
-              method: "PATCH",
-              headers: JH,
-              body: JSON.stringify({ stock: qty, itemType: "equipment" }),
-            }).catch(() => null);
-          }
-          // best-effort link back to equipment catalog
-          if (whId && eq && !String(eq?.warehouseItemId ?? "").trim()) {
-            await fetch(`${API}/equipment`, {
-              method: "POST",
-              headers: JH,
-              body: JSON.stringify({ ...eq, warehouseItemId: whId }),
-            }).catch(() => null);
-          }
-        }
-        setItems(prev => prev.map(i => i._idx === _idx ? { ...i, _status: "saved" } : i));
+        const res = await fetch(`${API}/equipment/bulk`, { method: "POST", headers: JH, body: JSON.stringify(payload) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+        return data;
       } catch (e: any) {
-        setItems(prev => prev.map(i => i._idx === item._idx ? { ...i, _status: "error", _error: e.message } : i));
+        const msg = String(e?.message ?? "");
+        const retriable = msg.includes("503") || msg.toLowerCase().includes("service unavailable") || msg.toLowerCase().includes("failed to fetch");
+        if (retriable && attempt < 4) {
+          await new Promise(r => setTimeout(r, 400 * Math.pow(2, attempt)));
+          return await postBulk(payload, attempt + 1);
+        }
+        throw e;
       }
-      done++;
+    }
+
+    for (const batch of batches) {
+      // mark as saving
+      setItems(prev => prev.map(i => batch.some(b => b._idx === i._idx) ? { ...i, _status: "saving" as const } : i));
+      try {
+        const bodies = batch.map(item => {
+          const { _idx, _selected, _status, _error, source, stockQty, availability, ...body } = item as any;
+          return body;
+        });
+        const data = await postBulk({ items: bodies });
+        const saved: any[] = Array.isArray(data.saved) ? data.saved : [];
+        // Update statuses best-effort by matching brand+model+type
+        setItems(prev => prev.map(i => {
+          const isIn = batch.some(b => b._idx === i._idx);
+          if (!isIn) return i;
+          const hit = saved.find(s => String(s.brand ?? "") === String((i as any).brand ?? "") && String(s.model ?? "") === String((i as any).model ?? "") && String(s.type ?? "") === String((i as any).type ?? ""));
+          return hit ? { ...i, _status: "saved" as const } : { ...i, _status: "error" as const, _error: "Не удалось сохранить (bulk)" };
+        }));
+      } catch (e: any) {
+        setItems(prev => prev.map(i => batch.some(b => b._idx === i._idx) ? { ...i, _status: "error" as const, _error: String(e?.message ?? "bulk failed") } : i));
+      }
+      done += batch.length;
       setProgress({ done, total: toImport.length });
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 150));
     }
     setImporting(false);
     onImported(items.filter(i => i._status === "saved").length + done);
