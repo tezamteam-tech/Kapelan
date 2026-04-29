@@ -1513,6 +1513,20 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
   const [aiExtra, setAiExtra] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [aiBomLoading, setAiBomLoading] = useState(false);
+  const [aiBomError, setAiBomError] = useState("");
+  const [aiBomPreview, setAiBomPreview] = useState<Array<{
+    warehouseId: string;
+    name: string;
+    unit: string;
+    qtyFixed: number;
+    qtyPerMeter: number;
+    notes?: string;
+    matchType?: string;
+    confidence?: number;
+    sourceUrl?: string;
+    needsReview?: boolean;
+  }>>([]);
 
   // Basic fields
   const [type, setType] = useState(eq.type || "split_ac");
@@ -1585,6 +1599,68 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
     } finally {
       setAiLoading(false);
     }
+  }
+
+  function mergeBomEntries(current: EquipmentModel["bom"], incoming: EquipmentModel["bom"]): EquipmentModel["bom"] {
+    const out = [...current];
+    for (const inc of incoming) {
+      const keyName = String(inc.name || "").trim().toLowerCase();
+      const idx = out.findIndex((x) => {
+        if (inc.warehouseId && x.warehouseId && inc.warehouseId === x.warehouseId && x.unit === inc.unit) return true;
+        return !inc.warehouseId && !x.warehouseId && String(x.name || "").trim().toLowerCase() === keyName && x.unit === inc.unit;
+      });
+      if (idx >= 0) out[idx] = { ...out[idx], ...inc };
+      else out.push(inc);
+    }
+    return out;
+  }
+
+  async function runAiSuggestBom() {
+    if (!brand.trim() || !model.trim()) { alert("Сначала заполните производителя и модель"); setStep("basic"); return; }
+    setAiBomLoading(true);
+    setAiBomError("");
+    try {
+      const res = await fetch(`${API}/equipment/ai-suggest-bom`, {
+        method: "POST",
+        headers: JH,
+        body: JSON.stringify({ equipmentId: eq.id, type, brand, model }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `AI error ${res.status}`);
+      const rows = Array.isArray(data.bomSuggestions) ? data.bomSuggestions : [];
+      const normalized = rows.map((e: any) => ({
+        warehouseId: String(e.warehouseId ?? ""),
+        name: String(e.name ?? ""),
+        unit: String(e.unit ?? "шт"),
+        qtyFixed: Number(e.qtyFixed ?? 0),
+        qtyPerMeter: Number(e.qtyPerMeter ?? 0),
+        notes: String(e.notes ?? ""),
+        matchType: String(e.matchType ?? "none"),
+        confidence: Number(e.confidence ?? 0),
+        sourceUrl: String(e.sourceUrl ?? ""),
+        needsReview: Boolean(e.needsReview),
+      })).filter((e: any) => e.name);
+      setAiBomPreview(normalized);
+      setStep("bom");
+    } catch (e: any) {
+      setAiBomError(e.message);
+    } finally {
+      setAiBomLoading(false);
+    }
+  }
+
+  function applyAiBomPreview() {
+    if (!aiBomPreview.length) return;
+    const incoming = aiBomPreview.map((e) => ({
+      warehouseId: e.warehouseId || "",
+      name: e.name,
+      unit: e.unit || "шт",
+      qtyFixed: Number(e.qtyFixed || 0),
+      qtyPerMeter: Number(e.qtyPerMeter || 0),
+      notes: [e.notes || "", e.needsReview ? "Проверить вручную (AI match)." : ""].filter(Boolean).join(" | "),
+    }));
+    setBom((prev) => mergeBomEntries(prev, incoming));
+    setAiBomPreview([]);
   }
 
   function addTool() {
@@ -1710,10 +1786,44 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
                 >
                   {aiLoading ? "AI думает..." : "Заполнить"}
                 </button>
+                <button
+                  type="button"
+                  disabled={aiBomLoading}
+                  onClick={runAiSuggestBom}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-black hover:bg-indigo-700 disabled:opacity-60"
+                >
+                  {aiBomLoading ? "Подбор..." : "Подобрать расходники (web)"}
+                </button>
                 <p className="text-[11px] text-blue-700">
                   AI предложит параметры и BOM — после применения можно всё отредактировать.
                 </p>
               </div>
+              {aiBomError && (
+                <div className="text-xs font-bold text-red-700 bg-white border border-red-200 rounded-xl px-3 py-2">
+                  {aiBomError}
+                </div>
+              )}
+              {!!aiBomPreview.length && (
+                <div className="bg-white border border-indigo-200 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-black text-indigo-800">Предпросмотр BOM от AI: {aiBomPreview.length} поз.</p>
+                    <button type="button" onClick={applyAiBomPreview} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-black">
+                      Применить в BOM
+                    </button>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto space-y-1.5">
+                    {aiBomPreview.map((r, idx) => (
+                      <div key={idx} className="text-[11px] border border-slate-200 rounded-lg px-2 py-1.5">
+                        <p className="font-bold text-slate-700">{r.name} · {r.qtyFixed} + {r.qtyPerMeter}/м · {r.unit}</p>
+                        <p className="text-slate-500">
+                          match: {r.matchType || "none"} ({Math.round((r.confidence || 0) * 100)}%) {r.needsReview ? "· проверить" : "· ok"}
+                        </p>
+                        {r.sourceUrl && <p className="text-slate-400 truncate">{r.sourceUrl}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
