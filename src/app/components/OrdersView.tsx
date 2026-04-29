@@ -2395,6 +2395,18 @@ function CreateOrderModal({
   const [cBasis, setCBasis] = useState(prefill?.client_doc_basis ?? "");
 
   useEffect(() => {
+    if (cType === "individual") {
+      // For individual clients legal fields are irrelevant; hide & clear them.
+      setCLegalName("");
+      setCTaxId("");
+      setCBasis("");
+      return;
+    }
+    // Company: help with a sensible default wording for documents.
+    if (!String(cBasis || "").trim()) setCBasis("Директор действует на основании Устава");
+  }, [cType]);
+
+  useEffect(() => {
     (async () => {
       setClientsLoading(true);
       try {
@@ -2515,7 +2527,7 @@ function CreateOrderModal({
                       </select>
                     </Field>
                     <div />
-                    <Field label="ФИО / Контакт">
+                    <Field label={cType === "company" ? "ФИО директора" : "ФИО"}>
                       <input value={cName} onChange={(e) => setCName(e.target.value)} className={inputCls} />
                     </Field>
                     <Field label="Телефон">
@@ -2527,15 +2539,19 @@ function CreateOrderModal({
                     <Field label="Адрес (опц.)">
                       <input value={cAddress} onChange={(e) => setCAddress(e.target.value)} className={inputCls} />
                     </Field>
-                    <Field label="Юр. название (опц.)">
-                      <input value={cLegalName} onChange={(e) => setCLegalName(e.target.value)} className={inputCls} />
-                    </Field>
-                    <Field label="УНП/ИНН (опц.)">
-                      <input value={cTaxId} onChange={(e) => setCTaxId(e.target.value)} className={inputCls} />
-                    </Field>
-                    <Field label="Основание (опц.)">
-                      <input value={cBasis} onChange={(e) => setCBasis(e.target.value)} className={inputCls} />
-                    </Field>
+                    {cType === "company" && (
+                      <>
+                        <Field label="Юр. название">
+                          <input value={cLegalName} onChange={(e) => setCLegalName(e.target.value)} className={inputCls} placeholder="ООО «Компания»" />
+                        </Field>
+                        <Field label="УНП/ИНН">
+                          <input value={cTaxId} onChange={(e) => setCTaxId(e.target.value)} className={inputCls} placeholder="123456789" />
+                        </Field>
+                        <Field label="Основание (для документов)">
+                          <input value={cBasis} onChange={(e) => setCBasis(e.target.value)} className={inputCls} placeholder="Директор действует на основании Устава" />
+                        </Field>
+                      </>
+                    )}
                   </div>
                   <div className="mt-3 flex items-center justify-end gap-2">
                     <button type="button" onClick={() => setCreateClientOpen(false)} className="px-3 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-semibold hover:bg-slate-50">
@@ -2543,7 +2559,12 @@ function CreateOrderModal({
                     </button>
                     <button
                       type="button"
-                      disabled={clientCreating || !cName.trim() || !cPhone.trim()}
+                      disabled={
+                        clientCreating ||
+                        !cName.trim() ||
+                        !cPhone.trim() ||
+                        (cType === "company" && (!cLegalName.trim() || !cTaxId.trim()))
+                      }
                       onClick={async () => {
                         if (clientCreating) return;
                         setClientCreating(true);
@@ -2556,10 +2577,10 @@ function CreateOrderModal({
                               name: cName.trim(),
                               phone: cPhone.trim(),
                               email: cEmail.trim() ? cEmail.trim() : null,
-                              legal_name: cLegalName.trim(),
-                              tax_id: cTaxId.trim(),
-                              address: cAddress.trim(),
-                              doc_basis: cBasis.trim(),
+                              legal_name: cType === "company" ? cLegalName.trim() : null,
+                              tax_id: cType === "company" ? cTaxId.trim() : null,
+                              address: cAddress.trim() ? cAddress.trim() : null,
+                              doc_basis: cType === "company" ? (cBasis.trim() ? cBasis.trim() : null) : null,
                             }),
                           });
                           const d = await res.json().catch(() => ({}));
