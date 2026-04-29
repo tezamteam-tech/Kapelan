@@ -111,20 +111,69 @@ export function AiImportModal({ onClose, onImported }: Props) {
     if (!file) return;
     setStep(2); setParsing(true); setError("");
     try {
+      async function fetchJsonWithRetry(url: string, init: RequestInit, maxAttempts = 5): Promise<any> {
+        let lastErr: any = null;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          try {
+            const res = await fetch(url, init);
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && !data?.error) return data;
+            const retriable = res.status >= 500;
+            if (!retriable || attempt === maxAttempts - 1) throw new Error(String(data?.error ?? `HTTP ${res.status}`));
+            await new Promise(r => setTimeout(r, 400 * Math.pow(2, attempt)));
+          } catch (e: any) {
+            lastErr = e;
+            const m = String(e?.message ?? "").toLowerCase();
+            const retriable = m.includes("failed to fetch") || m.includes("network") || m.includes("io_suspended");
+            if (!retriable || attempt === maxAttempts - 1) throw e;
+            await new Promise(r => setTimeout(r, 400 * Math.pow(2, attempt)));
+          }
+        }
+        throw lastErr ?? new Error("network error");
+      }
+
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API}/warehouse/ai-import`, { method: "POST", headers: AH, body: fd });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      const items: ParsedItem[] = (data.items ?? []).map((item: any, idx: number) => ({
-        ...item,
-        _idx: idx,
-        _selected: true,
-        _status: "new" as const,
-      }));
-      if (!items.length) throw new Error("AI не нашёл позиций. Проверьте содержимое файла.");
-      setParsedItems(items);
-      setStep(3);
+      const data = await fetchJsonWithRetry(`${API}/warehouse/ai-import`, { method: "POST", headers: AH, body: fd }, 5);
+      if (data.chunked && data.jobId) {
+        const jobId = String(data.jobId);
+        let finalItems: any[] = [];
+        let total = Number(data.totalChunks ?? 0) || 0;
+        const started = Date.now();
+        for (let guard = 0; guard < 2000; guard++) {
+          const stepData = await fetchJsonWithRetry(
+            `${API}/warehouse/ai-import/step`,
+            { method: "POST", headers: JH, body: JSON.stringify({ jobId }) },
+            5,
+          );
+          total = Number(stepData.totalChunks ?? total) || total;
+          if (stepData.done) {
+            finalItems = stepData.items ?? [];
+            break;
+          }
+          if (Date.now() - started > 30 * 60 * 1000) throw new Error("Импорт склада занимает слишком много времени. Попробуйте ещё раз.");
+          await new Promise(r => setTimeout(r, 350));
+        }
+        const items: ParsedItem[] = (finalItems ?? []).map((item: any, idx: number) => ({
+          ...item,
+          _idx: idx,
+          _selected: true,
+          _status: "new" as const,
+        }));
+        if (!items.length) throw new Error("AI не нашёл позиций. Проверьте содержимое файла.");
+        setParsedItems(items);
+        setStep(3);
+      } else {
+        const items: ParsedItem[] = (data.items ?? []).map((item: any, idx: number) => ({
+          ...item,
+          _idx: idx,
+          _selected: true,
+          _status: "new" as const,
+        }));
+        if (!items.length) throw new Error("AI не нашёл позиций. Проверьте содержимое файла.");
+        setParsedItems(items);
+        setStep(3);
+      }
     } catch (e: any) {
       setError(e.message);
       setStep(1);
