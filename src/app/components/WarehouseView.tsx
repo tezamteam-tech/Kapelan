@@ -21,7 +21,10 @@ const JH = { ...AH, "Content-Type": "application/json" };
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface WarehouseItem {
   id: string; name: string; category: string; unit: string;
-  stock: number; minStock: number; price: number; buyPrice?: number; sku: string;
+  stock: number; minStock: number; price: number;
+  priceNoVat?: number; priceWithVat?: number;
+  buyPrice?: number; buyPricePeriod?: string;
+  sku: string;
   supplier?: string;
   availability?: "in_stock_supplier" | "order_only";
   notes?: string; imageUrl?: string;
@@ -2132,10 +2135,16 @@ function ItemDetailModal({ item, movements, onClose, onEdit, onStockIn, onStockO
           ) : null}
 
           {/* Info */}
-          {(item.supplier || item.availability || item.notes) && (
+          {(item.supplier || item.availability || item.priceNoVat || item.priceWithVat || item.buyPrice || item.notes) && (
             <div className="bg-slate-50 rounded-2xl p-3 space-y-1.5 text-sm text-slate-600">
               {item.supplier && <p>🏭 Поставщик: <b>{item.supplier}</b></p>}
               {item.availability && <p>📦 Наличие: <b>{item.availability === "order_only" ? "Под заказ" : "В наличии"}</b></p>}
+              {(item.priceNoVat || item.priceWithVat) && (
+                <p>💰 Продажа: <b>{fmtShort(item.priceNoVat || 0)}</b> без НДС · <b>{fmtShort(item.priceWithVat || item.price || 0)}</b> с НДС</p>
+              )}
+              {!!item.buyPrice && (
+                <p>🧾 Входная: <b>{fmtShort(item.buyPrice || 0)}</b>{item.buyPricePeriod ? ` (${item.buyPricePeriod})` : ""}</p>
+              )}
               {item.notes && <p className="text-xs text-slate-500 italic">{item.notes}</p>}
             </div>
           )}
@@ -2270,6 +2279,7 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
 }) {
   const [form, setForm] = useState<Partial<WarehouseItem>>({
     name: "", category: "Прочее", unit: "шт", stock: 0, minStock: 0, price: 0,
+    priceNoVat: 0, priceWithVat: 0, buyPrice: 0, buyPricePeriod: "",
     sku: "", supplier: "", availability: "in_stock_supplier", notes: "", imageUrl: "", itemType: "consumable", ...item,
   });
   const [saving, setSaving] = useState(false);
@@ -2296,11 +2306,32 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
     return () => { alive = false; };
   }, []);
 
+  useEffect(() => {
+    setForm((p) => {
+      const withVat = Number((p.priceWithVat ?? p.price) || 0);
+      const noVat = Number(p.priceNoVat ?? (withVat ? withVat / 1.2 : 0));
+      if (p.priceWithVat !== undefined && p.priceNoVat !== undefined) return p;
+      return { ...p, priceWithVat: withVat, priceNoVat: noVat };
+    });
+  }, []);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name) return;
     setSaving(true);
-    await onSave({ ...form, stock: +((form.stock as any) || 0), minStock: +((form.minStock as any) || 0), price: +((form.price as any) || 0) });
+    const withVat = +((form.priceWithVat as any) || (form.price as any) || 0);
+    const noVat = +((form.priceNoVat as any) || (withVat ? (withVat / 1.2) : 0));
+    await onSave({
+      ...form,
+      stock: +((form.stock as any) || 0),
+      minStock: +((form.minStock as any) || 0),
+      // Keep legacy field for existing calculations/documents.
+      price: withVat,
+      priceNoVat: noVat,
+      priceWithVat: withVat,
+      buyPrice: +((form.buyPrice as any) || 0),
+      buyPricePeriod: String(form.buyPricePeriod || "").trim(),
+    });
     setSaving(false);
   }
 
@@ -2354,7 +2385,9 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
             </div>
             <FormNum label="Нач. остаток" value={form.stock} onChange={v => setForm(p => ({ ...p, stock: +v }))} />
             <FormNum label="Минимум (алерт)" value={form.minStock} onChange={v => setForm(p => ({ ...p, minStock: +v }))} />
-            <FormNum label="Цена за ед." value={form.price} onChange={v => setForm(p => ({ ...p, price: +v }))} />
+            <FormNum label="Цена без НДС" value={form.priceNoVat} onChange={v => setForm(p => ({ ...p, priceNoVat: +v }))} />
+            <FormNum label="Цена с НДС 20%" value={form.priceWithVat} onChange={v => setForm(p => ({ ...p, priceWithVat: +v }))} />
+            <FormNum label="Входная цена (закупка)" value={form.buyPrice} onChange={v => setForm(p => ({ ...p, buyPrice: +v }))} />
             <div>
               <label className="text-xs font-bold text-slate-500 block mb-1">Артикул / SKU</label>
               <input value={form.sku || ""} onChange={f("sku")} placeholder="PIPE-14" className={INPUT} />
@@ -2372,6 +2405,10 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
                 <option value="in_stock_supplier">В наличии</option>
                 <option value="order_only">Под заказ</option>
               </select>
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs font-bold text-slate-500 block mb-1">Период входной цены (например, март 2026)</label>
+              <input value={form.buyPricePeriod || ""} onChange={f("buyPricePeriod" as any)} placeholder="март 2026" className={INPUT} />
             </div>
             <div className="col-span-2">
               <label className="text-xs font-bold text-slate-500 block mb-1">Примечания</label>
