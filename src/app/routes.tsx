@@ -95,7 +95,7 @@ export const router = createHashRouter([
           },
           {
             path: "ventilation",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/VentilationPage")).VentilationPage, ["admin", "manager", "installer"])) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/VentilationPage")).VentilationPage, ["admin", "manager"])) }),
           },
           {
             path: "training",
