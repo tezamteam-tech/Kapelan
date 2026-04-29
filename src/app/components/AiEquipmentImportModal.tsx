@@ -121,13 +121,37 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
     if (!file) return;
     setStep(2); setParsing(true); setError(""); setParseWarning("");
     try {
+      async function fetchJsonWithRetry(url: string, init: RequestInit, maxAttempts = 5): Promise<{ res: Response; data: any }> {
+        let lastErr: any = null;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          try {
+            const res = await fetch(url, init);
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && !data?.error) return { res, data };
+            const msg = String(data?.error ?? `HTTP ${res.status}`);
+            const retriable = res.status >= 500 || msg.toLowerCase().includes("service unavailable");
+            if (!retriable || attempt === maxAttempts - 1) throw new Error(msg);
+            await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+          } catch (e: any) {
+            lastErr = e;
+            const m = String(e?.message ?? "");
+            const retriable =
+              m.toLowerCase().includes("failed to fetch") ||
+              m.toLowerCase().includes("network") ||
+              m.toLowerCase().includes("io_suspended") ||
+              m.toLowerCase().includes("service unavailable");
+            if (!retriable || attempt === maxAttempts - 1) throw e;
+            await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+          }
+        }
+        throw lastErr ?? new Error("network error");
+      }
+
       // Warm up edge function to reduce cold-start latency before starting a chunked job.
       await fetch(`${API}/health`, { method: "GET", headers: AH }).catch(() => null);
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API}/equipment/ai-import`, { method: "POST", headers: AH, body: fd });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+      const { data } = await fetchJsonWithRetry(`${API}/equipment/ai-import`, { method: "POST", headers: AH, body: fd }, 5);
 
       // Chunked job flow for big files
       if (data.chunked && data.jobId) {
@@ -140,9 +164,11 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
         const start = Date.now();
         const MAX_PARSE_MS = 30 * 60 * 1000; // allow long imports; backend has per-step timeouts + fallbacks
         for (let guard = 0; guard < 2000; guard++) {
-          const stepRes = await fetch(`${API}/equipment/ai-import/step`, { method: "POST", headers: JH, body: JSON.stringify({ jobId }) });
-          const stepData = await stepRes.json().catch(() => ({}));
-          if (!stepRes.ok || stepData.error) throw new Error(stepData.error ?? `HTTP ${stepRes.status}`);
+          const { data: stepData } = await fetchJsonWithRetry(
+            `${API}/equipment/ai-import/step`,
+            { method: "POST", headers: JH, body: JSON.stringify({ jobId }) },
+            5,
+          );
           done = Number(stepData.doneChunks ?? done) || done;
           const tc = Number(stepData.totalChunks ?? totalChunks) || totalChunks;
           if (tc > totalChunks) totalChunks = tc;
@@ -192,7 +218,13 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
         setStep(3);
       }
     } catch (e: any) {
-      setError(e.message); setStep(1);
+      const msg = String(e?.message ?? "");
+      if (msg.toLowerCase().includes("io_suspended") || msg.toLowerCase().includes("failed to fetch")) {
+        setError("Сеть временно недоступна (браузер/вкладка приостановила запрос). Повторите импорт — запросы теперь идут с автоповторами.");
+      } else {
+        setError(msg || "Ошибка запуска импорта");
+      }
+      setStep(1);
     } finally {
       setParsing(false);
     }
