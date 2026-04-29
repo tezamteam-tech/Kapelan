@@ -22,7 +22,9 @@ const JH = { ...AH, "Content-Type": "application/json" };
 interface WarehouseItem {
   id: string; name: string; category: string; unit: string;
   stock: number; minStock: number; price: number; buyPrice?: number; sku: string;
-  supplier?: string; notes?: string; imageUrl?: string;
+  supplier?: string;
+  availability?: "in_stock_supplier" | "order_only";
+  notes?: string; imageUrl?: string;
   itemType?: "consumable" | "assembly" | "equipment";
   assemblyComponents?: { warehouseId: string; name: string; qty: number; unit: string }[];
   updatedAt: string; createdAt: string;
@@ -2130,9 +2132,10 @@ function ItemDetailModal({ item, movements, onClose, onEdit, onStockIn, onStockO
           ) : null}
 
           {/* Info */}
-          {(item.supplier || item.notes) && (
+          {(item.supplier || item.availability || item.notes) && (
             <div className="bg-slate-50 rounded-2xl p-3 space-y-1.5 text-sm text-slate-600">
               {item.supplier && <p>🏭 Поставщик: <b>{item.supplier}</b></p>}
+              {item.availability && <p>📦 Наличие: <b>{item.availability === "order_only" ? "Под заказ" : "В наличии"}</b></p>}
               {item.notes && <p className="text-xs text-slate-500 italic">{item.notes}</p>}
             </div>
           )}
@@ -2267,12 +2270,31 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
 }) {
   const [form, setForm] = useState<Partial<WarehouseItem>>({
     name: "", category: "Прочее", unit: "шт", stock: 0, minStock: 0, price: 0,
-    sku: "", supplier: "", notes: "", imageUrl: "", itemType: "consumable", ...item,
+    sku: "", supplier: "", availability: "in_stock_supplier", notes: "", imageUrl: "", itemType: "consumable", ...item,
   });
   const [saving, setSaving] = useState(false);
+  const [supplierOptions, setSupplierOptions] = useState<string[]>([]);
 
   const f = (k: keyof WarehouseItem) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
     setForm(p => ({ ...p, [k]: e.target.value }));
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/suppliers`, { headers: AH });
+        const data = await res.json().catch(() => ({}));
+        if (!alive) return;
+        const names = Array.isArray(data?.suppliers)
+          ? data.suppliers.map((s: any) => String(s?.name ?? "").trim()).filter(Boolean)
+          : [];
+        setSupplierOptions(Array.from(new Set(names)));
+      } catch {
+        if (alive) setSupplierOptions([]);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -2339,7 +2361,17 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
             </div>
             <div className="col-span-2">
               <label className="text-xs font-bold text-slate-500 block mb-1">Поставщик</label>
-              <input value={form.supplier || ""} onChange={f("supplier")} placeholder="МедьОпт" className={INPUT} />
+              <select value={form.supplier || ""} onChange={f("supplier") as any} className={INPUT}>
+                <option value="">— Не выбран —</option>
+                {supplierOptions.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className="text-xs font-bold text-slate-500 block mb-1">Наличие у поставщика</label>
+              <select value={form.availability || "in_stock_supplier"} onChange={f("availability") as any} className={INPUT}>
+                <option value="in_stock_supplier">В наличии</option>
+                <option value="order_only">Под заказ</option>
+              </select>
             </div>
             <div className="col-span-2">
               <label className="text-xs font-bold text-slate-500 block mb-1">Примечания</label>
