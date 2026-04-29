@@ -16,6 +16,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { ImageUpload } from "./ui/ImageUpload";
+import { RightSideCard } from "./ui/RightSideCard";
 import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
 import { useCurrency } from "./CurrencyContext";
 
@@ -2441,11 +2442,16 @@ function CreateOrderModal({
   const canCreate = Boolean(selClient?.id) && address.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-[80] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
-      <div
-        className="w-full sm:max-w-xl h-[92vh] sm:h-auto bg-white rounded-t-3xl sm:rounded-3xl shadow-xl border border-slate-200 flex flex-col overflow-hidden"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-hidden">
         <div className="px-4 sm:px-5 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
           <p className="text-base font-black text-slate-800">Новый Order (услуга)</p>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">
@@ -2790,7 +2796,7 @@ function CreateOrderModal({
           </p>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -3130,6 +3136,7 @@ function OfferEditor({
   onCreateDraft: () => void;
   onSaveLines: (lines: NonNullable<Order["offer"]>["lines"]) => void;
 }) {
+  const { currency } = useCurrency();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draftLines, setDraftLines] = useState<NonNullable<Order["offer"]>["lines"]>(offer?.lines ?? []);
@@ -3304,11 +3311,16 @@ function AddOfferLineModal({
   const canAdd = (mode === "warehouse" || mode === "supplier") ? !!warehouseId : name.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-[90] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
-      <div
-        className="w-full sm:max-w-xl h-[92vh] sm:h-auto bg-white rounded-t-3xl sm:rounded-3xl shadow-xl border border-slate-200 flex flex-col overflow-hidden"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-hidden">
         <div className="px-4 sm:px-5 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
           <p className="text-base font-black text-slate-800">Добавить строку КП</p>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">
@@ -3397,7 +3409,7 @@ function AddOfferLineModal({
           </button>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -4356,11 +4368,16 @@ function PartialReceiptModal({
   }, [values]);
 
   return (
-    <div className="fixed inset-0 z-[95] bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onMouseDown={onClose}>
-      <div
-        className="w-full sm:max-w-2xl h-[92vh] sm:h-auto bg-white rounded-t-3xl sm:rounded-3xl shadow-xl border border-slate-200 flex flex-col overflow-hidden"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-hidden">
         <div className="px-4 sm:px-5 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
           <div className="min-w-0">
             <p className="text-base font-black text-slate-800 truncate">Приемка (частичная)</p>
@@ -4454,7 +4471,7 @@ function PartialReceiptModal({
           </button>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 

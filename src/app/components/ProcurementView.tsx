@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useCurrency } from "./CurrencyContext";
+import { RightSideCard } from "./ui/RightSideCard";
 import { getJson } from "../lib/apiClient";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
@@ -807,8 +808,16 @@ function SupplierItemsAiImportModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-hidden border border-slate-200">
         <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
           <div>
             <h3 className="font-black text-slate-800">AI импорт прайса поставщика</h3>
@@ -817,7 +826,7 @@ function SupplierItemsAiImportModal({
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">✕</button>
         </div>
 
-        <div className="p-5 space-y-3">
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="flex flex-col md:flex-row gap-2">
             <select
               className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 bg-white"
@@ -880,7 +889,7 @@ function SupplierItemsAiImportModal({
           ) : null}
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -897,13 +906,21 @@ function NewSupplierItemModal({
   const [err, setErr] = useState("");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-hidden border border-slate-200">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <h3 className="font-black text-slate-800">Новая позиция поставщика</h3>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">✕</button>
         </div>
-        <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="flex-1 overflow-y-auto p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
           <select
             className="border border-slate-200 rounded-xl px-3 py-2"
             value={v.supplierId}
@@ -934,7 +951,7 @@ function NewSupplierItemModal({
           <div />
           {err ? <div className="text-sm text-red-600 md:col-span-2">{err}</div> : null}
         </div>
-        <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-end gap-2">
+        <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-end gap-2 flex-shrink-0">
           <button onClick={onClose} className="px-4 py-2 rounded-xl bg-slate-100 text-slate-700 font-bold">Отмена</button>
           <button
             disabled={busy || !v.name.trim()}
@@ -956,7 +973,7 @@ function NewSupplierItemModal({
           </button>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -1031,9 +1048,17 @@ function SupplierItemsImportModal({
   const rows = parseRows();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-hidden border border-slate-200">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
           <div>
             <h3 className="font-black text-slate-800">Импорт прайса поставщика (CSV)</h3>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -1043,7 +1068,7 @@ function SupplierItemsImportModal({
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">✕</button>
         </div>
 
-        <div className="p-5 space-y-3">
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="flex flex-col md:flex-row gap-2">
             <select
               className="border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 bg-white"
@@ -1110,7 +1135,7 @@ function SupplierItemsImportModal({
           </button>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -1249,8 +1274,16 @@ function OrderDetailModal({ order, sending, onClose, onSend }: {
   const r = order.mockApiResponse;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-end" onClick={onClose}>
-      <div className="bg-white rounded-t-3xl w-full max-w-md mx-auto pb-8 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full bg-white overflow-y-auto">
         {/* Header */}
         <div className="sticky top-0 bg-white px-5 pt-5 pb-3 border-b border-slate-100">
           <div className="flex items-start justify-between gap-2">
@@ -1361,7 +1394,7 @@ function OrderDetailModal({ order, sending, onClose, onSend }: {
           </div>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -1378,8 +1411,16 @@ function BuildOrderModal({ suppliers, pendingPOs, onClose, onBuild }: {
   const sel = suppliers.find(s => s.id === supId);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-end" onClick={onClose}>
-      <div className="bg-white rounded-t-3xl w-full max-w-md mx-auto p-5 pb-8 space-y-4" onClick={e => e.stopPropagation()}>
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full bg-white overflow-y-auto p-5 pb-8 space-y-4">
         <p className="font-black text-slate-800 text-lg">📋 Сформировать заказ</p>
 
         <div>
@@ -1419,7 +1460,7 @@ function BuildOrderModal({ suppliers, pendingPOs, onClose, onBuild }: {
           </button>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -1532,8 +1573,16 @@ function SupplierFormModal({ supplier, onClose, onSave }: {
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-end" onClick={onClose}>
-      <div className="bg-white rounded-t-3xl w-full max-w-md mx-auto pb-8 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full bg-white overflow-y-auto">
         <div className="sticky top-0 bg-white px-5 pt-5 pb-3 border-b border-slate-100">
           <p className="font-bold text-slate-800 text-lg">{supplier ? "Редактировать поставщика" : "Новый поставщик"}</p>
         </div>
@@ -1633,7 +1682,7 @@ function SupplierFormModal({ supplier, onClose, onSave }: {
           </div>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 

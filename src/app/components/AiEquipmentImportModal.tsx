@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useCurrency } from "./CurrencyContext";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
+import { RightSideCard } from "./ui/RightSideCard";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };
@@ -299,8 +300,16 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="backdrop-blur-sm"
+    >
+      <div className="w-full h-full flex flex-col overflow-hidden">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-blue-600 to-teal-600">
@@ -703,6 +712,6 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
           </div>
         )}
       </div>
-    </div>
+    </RightSideCard>
   );
 }

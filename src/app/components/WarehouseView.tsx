@@ -9,6 +9,7 @@ import {
   Check, Save, Sparkles, Upload
 } from "lucide-react";
 import { ImageUpload } from "./ui/ImageUpload";
+import { RightSideCard } from "./ui/RightSideCard";
 import { AiImportModal } from "./AiImportModal";
 import { AiEquipmentImportModal } from "./AiEquipmentImportModal";
 import { useCurrency } from "./CurrencyContext";
@@ -1072,8 +1073,16 @@ function CsvImportModal({ onClose, onImported }: { onClose: () => void; onImport
   const rows = parseRows();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40 backdrop-blur-sm"
+    >
+      <div className="w-full h-full flex flex-col overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
           <div>
             <h3 className="font-black text-slate-800">Импорт склада из CSV</h3>
@@ -1145,7 +1154,7 @@ function CsvImportModal({ onClose, onImported }: { onClose: () => void; onImport
           </button>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -1311,9 +1320,16 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
   }));
 
   return (
-    <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-black/40" onClick={onClose} />
-      <div className="w-full max-w-lg bg-white h-full flex flex-col shadow-2xl overflow-hidden">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/40"
+    >
+      <div className="w-full h-full max-w-none max-h-none flex flex-col overflow-hidden">
         {/* Header */}
         <div className="relative h-44 bg-slate-100 flex-shrink-0">
           <img src={eq.imageUrl} alt={eq.model} className="w-full h-full object-cover" />
@@ -1455,7 +1471,7 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
           )}
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -1720,8 +1736,15 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-2">
-      <div className="bg-white rounded-2xl w-full max-w-xl max-h-[95vh] flex flex-col shadow-2xl overflow-hidden">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+    >
+      <div className="w-full h-full max-w-none max-h-none flex flex-col overflow-hidden bg-transparent rounded-none shadow-none">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3.5 flex-shrink-0 bg-gradient-to-r from-blue-700 to-blue-500 text-white">
@@ -2190,7 +2213,7 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
           </div>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -2205,8 +2228,16 @@ function ItemDetailModal({ item, movements, onClose, onEdit, onStockIn, onStockO
   const level = stockLevel(item);
   const img = item.imageUrl || DEFAULT_IMG[item.category] || DEFAULT_IMG["Прочее"];
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg max-h-[88vh] flex flex-col shadow-2xl overflow-hidden">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full flex flex-col overflow-hidden bg-transparent">
         {/* Header image */}
         <div className="relative h-36 flex-shrink-0">
           <img src={img} className="w-full h-full object-cover" alt={item.name} />
@@ -2302,7 +2333,7 @@ function ItemDetailModal({ item, movements, onClose, onEdit, onStockIn, onStockO
           </button>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -2335,8 +2366,15 @@ function StockMoveModal({ item, dir, onClose, onConfirm }: {
   const img = item.imageUrl || DEFAULT_IMG[item.category] || DEFAULT_IMG["Прочее"];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+    >
+      <div className="w-full h-full max-w-none max-h-none bg-transparent rounded-none shadow-none flex flex-col overflow-hidden">
         <div className="relative h-28 flex-shrink-0">
           <img src={img} className="w-full h-full object-cover" alt={item.name} />
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
@@ -2380,7 +2418,7 @@ function StockMoveModal({ item, dir, onClose, onConfirm }: {
           </button>
         </form>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -2451,8 +2489,15 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg max-h-[92vh] flex flex-col shadow-2xl">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+    >
+      <div className="w-full h-full max-w-none max-h-none flex flex-col bg-transparent rounded-none shadow-none">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 flex-shrink-0">
           <h2 className="font-bold text-slate-800">{isNew ? "Новая позиция" : "Редактировать"}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100"><X size={20} /></button>
@@ -2538,7 +2583,7 @@ function ItemEditModal({ item, isNew, onClose, onSave, allowEquipmentType = fals
           </button>
         </form>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 

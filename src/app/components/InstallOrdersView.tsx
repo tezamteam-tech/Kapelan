@@ -4,6 +4,7 @@ import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { useRole } from "./RoleContext";
 import { useCurrency } from "./CurrencyContext";
 import { getJson } from "../lib/apiClient";
+import { RightSideCard } from "./ui/RightSideCard";
 import {
   Plus, Search, ArrowLeft, Package, User, MapPin, Thermometer,
   Calendar, ClipboardCheck, Zap, CheckCircle2, AlertCircle, Clock,
@@ -835,8 +836,16 @@ function CreateOrderModal({ onClose, onCreated, prefillLeadId }: {
 }) {
   const [mode, setMode] = useState<null | "ai" | "manual">(prefillLeadId ? "manual" : null);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 flex-shrink-0">
           <div>
             <h2 className="font-bold text-slate-800 text-base">
@@ -858,7 +867,7 @@ function CreateOrderModal({ onClose, onCreated, prefillLeadId }: {
           )}
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
