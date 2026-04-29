@@ -25,7 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/orders",         label: "Ордера",          icon: <ClipboardCheck size={20} />,  roles: ["admin", "manager"] },
   // Order-first: hide legacy modules from navigation
   { path: "/tasks",          label: "Мои задачи",      icon: <Wrench size={20} />,           roles: ["admin", "installer"] },
-  { path: "/calendar",       label: "Календарь",       icon: <CalendarDays size={20} />,     roles: ["admin", "manager"] },
+  { path: "/calendar",       label: "Календарь",       icon: <CalendarDays size={20} />,     roles: ["admin", "manager", "installer"] },
   { path: "/warehouse",      label: "Склад",           icon: <Package size={20} />,          roles: ["admin"] },
   { path: "/procurement",    label: "Закупки",         icon: <ShoppingCart size={20} />,      roles: ["admin"] },
   { path: "/documents",      label: "Документы",       icon: <FileText size={20} />,          roles: ["admin", "manager"] },

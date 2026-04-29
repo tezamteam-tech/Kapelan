@@ -5,6 +5,7 @@ import { SignatureCanvas, SignatureCanvasHandle } from "./SignatureCanvas";
 import { MaterialsPanel, MaterialsJson } from "./MaterialsPanel";
 import { useRole } from "./RoleContext";
 import { getJson } from "../lib/apiClient";
+import { useNavigate } from "react-router";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AUTH_HEADERS = { Authorization: `Bearer ${publicAnonKey}` };
@@ -64,6 +65,20 @@ interface Measurement {
   updatedAt: string;
 }
 
+interface Assignment {
+  id: string;
+  leadId: string;
+  installerId: string;
+  installerName: string;
+  clientName: string;
+  clientPhone: string;
+  scheduledDate: string | null;
+  scheduledTime: string | null;
+  notes: string;
+  status: string;
+  createdAt: string;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 const CABLE_OPTIONS = [
   "3×1.5 мм² (стандарт)",
@@ -103,6 +118,7 @@ function StatusBadge({ status }: { status: string }) {
 export function InstallerView() {
   const { fmtShort, currency } = useCurrency();
   const { userName } = useRole();
+  const navigate = useNavigate();
   const [screen, setScreen] = useState<"list" | "form">("list");
   const [leads, setLeads] = useState<Lead[]>([]);
   const [clients, setClients] = useState<Record<string, Client>>({});
@@ -113,6 +129,9 @@ export function InstallerView() {
   const [saving, setSaving] = useState(false);
   const [installers, setInstallers] = useState<Installer[]>([]);
   const [me, setMe] = useState<Installer | null>(null);
+
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
 
   // Form state
   const [traceLength, setTraceLength] = useState("");
@@ -168,6 +187,22 @@ export function InstallerView() {
     return new Set([me.id]);
   }, [installers, me]);
 
+  const fetchAssignments = useCallback(async () => {
+    if (!me) { setAssignments([]); return; }
+    setAssignmentsLoading(true);
+    try {
+      const data = await getJson<any>(`${API_BASE}/assignments`, { ttlMs: 30_000, staleTtlMs: 10 * 60_000, swr: true });
+      const all: Assignment[] = Array.isArray(data.assignments) ? data.assignments : [];
+      const scoped = all.filter(a => scopeInstallerIds.has(String(a.installerId)));
+      setAssignments(scoped);
+    } catch {
+      // silent (dashboard is auxiliary)
+      setAssignments([]);
+    } finally {
+      setAssignmentsLoading(false);
+    }
+  }, [me, scopeInstallerIds]);
+
   // ─ Fetch leads ─
   const fetchLeads = useCallback(async () => {
     setLoading(true);
@@ -198,6 +233,25 @@ export function InstallerView() {
   }, [me, scopeInstallerIds, showToast]);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
+  useEffect(() => { fetchAssignments(); }, [fetchAssignments]);
+
+  const dashboard = useMemo(() => {
+    const today = new Date();
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    const tomorrowKey = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+
+    const completed = assignments.filter(a => a.status === "completed").length;
+    const upcoming = assignments.filter(a => a.status !== "completed" && a.status !== "cancelled").length;
+    const todayItems = assignments
+      .filter(a => a.scheduledDate === todayKey && a.status !== "cancelled")
+      .sort((a, b) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+    const tomorrowItems = assignments
+      .filter(a => a.scheduledDate === tomorrowKey && a.status !== "cancelled")
+      .sort((a, b) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
+
+    return { completed, upcoming, todayKey, todayItems, tomorrowKey, tomorrowItems };
+  }, [assignments]);
 
   async function fetchClient(clientId: string) {
     try {
@@ -661,6 +715,81 @@ export function InstallerView() {
             <span className={`text-lg block ${loading ? "animate-spin" : ""}`}>🔄</span>
           </button>
         </div>
+
+        {/* Dashboard quick stats */}
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <div className="bg-white/10 border border-white/15 rounded-2xl p-3">
+            <p className="text-[10px] text-blue-100 font-bold uppercase tracking-widest">Предстоит</p>
+            <p className="text-2xl font-black">{assignmentsLoading ? "…" : dashboard.upcoming}</p>
+            <p className="text-[11px] text-blue-100/80 mt-0.5">активных задач</p>
+          </div>
+          <div className="bg-white/10 border border-white/15 rounded-2xl p-3">
+            <p className="text-[10px] text-blue-100 font-bold uppercase tracking-widest">Выполнено</p>
+            <p className="text-2xl font-black">{assignmentsLoading ? "…" : dashboard.completed}</p>
+            <p className="text-[11px] text-blue-100/80 mt-0.5">закрытых задач</p>
+          </div>
+        </div>
+
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => navigate("/calendar")}
+            className="flex-1 bg-white/10 border border-white/15 hover:bg-white/15 rounded-xl py-2.5 text-xs font-bold"
+          >
+            📅 Календарь задач
+          </button>
+          <button
+            onClick={() => { fetchLeads(); fetchAssignments(); }}
+            className="bg-white/10 border border-white/15 hover:bg-white/15 rounded-xl px-3 py-2.5 text-xs font-bold"
+            title="Обновить"
+          >
+            ↻
+          </button>
+        </div>
+
+        {/* Today / tomorrow */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="bg-white/10 border border-white/15 rounded-2xl p-3">
+            <p className="text-[10px] text-blue-100 font-bold uppercase tracking-widest">Сегодня</p>
+            {assignmentsLoading ? (
+              <p className="text-sm text-blue-100/80 mt-1">Загрузка…</p>
+            ) : dashboard.todayItems.length === 0 ? (
+              <p className="text-sm text-blue-100/80 mt-1">Нет задач по расписанию</p>
+            ) : (
+              <div className="mt-1 space-y-1">
+                {dashboard.todayItems.slice(0, 3).map((a) => (
+                  <div key={a.id} className="text-xs text-white/90 flex items-center justify-between gap-2">
+                    <span className="truncate">{a.clientName}</span>
+                    <span className="text-white/70 font-mono">{a.scheduledTime || "—"}</span>
+                  </div>
+                ))}
+                {dashboard.todayItems.length > 3 && (
+                  <p className="text-[11px] text-blue-100/80">+{dashboard.todayItems.length - 3} ещё</p>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="bg-white/10 border border-white/15 rounded-2xl p-3">
+            <p className="text-[10px] text-blue-100 font-bold uppercase tracking-widest">Завтра</p>
+            {assignmentsLoading ? (
+              <p className="text-sm text-blue-100/80 mt-1">Загрузка…</p>
+            ) : dashboard.tomorrowItems.length === 0 ? (
+              <p className="text-sm text-blue-100/80 mt-1">Нет задач по расписанию</p>
+            ) : (
+              <div className="mt-1 space-y-1">
+                {dashboard.tomorrowItems.slice(0, 3).map((a) => (
+                  <div key={a.id} className="text-xs text-white/90 flex items-center justify-between gap-2">
+                    <span className="truncate">{a.clientName}</span>
+                    <span className="text-white/70 font-mono">{a.scheduledTime || "—"}</span>
+                  </div>
+                ))}
+                {dashboard.tomorrowItems.length > 3 && (
+                  <p className="text-[11px] text-blue-100/80">+{dashboard.tomorrowItems.length - 3} ещё</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="flex gap-2">
           {FILTER_TABS.map(tab => (
             <button

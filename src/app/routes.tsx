@@ -75,7 +75,7 @@ export const router = createHashRouter([
           },
           {
             path: "calendar",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/CalendarPage")).CalendarPage, ["admin", "manager"])) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/CalendarPage")).CalendarPage, ["admin", "manager", "installer"])) }),
           },
           {
             path: "warehouse",

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { projectId, publicAnonKey } from "../../../../utils/supabase/info";
 import { getJson } from "../../lib/apiClient";
+import { useRole } from "../RoleContext";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ChevronLeft, ChevronRight, Loader2, Calendar as CalendarIcon,
@@ -34,6 +35,10 @@ interface Installer {
   phone: string;
   tgChatId: string | null;
   specialization: string;
+  teamId?: string | null;
+  teamName?: string | null;
+  isTeamLead?: boolean;
+  active?: boolean;
 }
 
 const STATUS_CFG: Record<string, { label: string; bg: string; text: string; dot: string; icon: typeof CheckCircle2 }> = {
@@ -141,6 +146,7 @@ function useToast() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export function CalendarPage() {
+  const { role, userName } = useRole();
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [installers, setInstallers] = useState<Installer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -174,6 +180,33 @@ export function CalendarPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const isInstallerRole = role === "installer";
+
+  const me = useMemo(() => {
+    const name = String(userName || "").trim().toLowerCase();
+    if (!name) return null;
+    return installers.find(i => String(i.name || "").trim().toLowerCase() === name) ?? null;
+  }, [installers, userName]);
+
+  const scopeInstallerIds = useMemo(() => {
+    if (!me) return new Set<string>();
+    if (me.isTeamLead && me.teamId) {
+      const ids = installers
+        .filter(i => (i.teamId || null) === me.teamId && (i.active ?? true) !== false)
+        .map(i => i.id);
+      return new Set(ids);
+    }
+    return new Set([me.id]);
+  }, [installers, me]);
+
+  const scopedAssignments = useMemo(() => {
+    if (!isInstallerRole) return assignments;
+    if (!me) return [];
+    return assignments.filter(a => scopeInstallerIds.has(a.installerId));
+  }, [assignments, isInstallerRole, me, scopeInstallerIds]);
+
+  const canDrag = !isInstallerRole;
 
   // ─── Update assignment (date or status) ─────────────────────────────────────
   const updateAssignment = useCallback(async (id: string, patch: Record<string, any>) => {
@@ -479,7 +512,7 @@ export function CalendarPage() {
 
   const byDate = useMemo(() => {
     const map: Record<string, Assignment[]> = {};
-    for (const a of assignments) {
+    for (const a of scopedAssignments) {
       if (!a.scheduledDate) continue;
       if (filterInstaller !== "all" && a.installerId !== filterInstaller) continue;
       if (filterStatus !== "all" && a.status !== filterStatus) continue;
@@ -490,11 +523,11 @@ export function CalendarPage() {
       map[key].sort((a, b) => (a.scheduledTime || "").localeCompare(b.scheduledTime || ""));
     }
     return map;
-  }, [assignments, filterInstaller, filterStatus]);
+  }, [scopedAssignments, filterInstaller, filterStatus]);
 
   const unscheduled = useMemo(() => {
-    return assignments.filter(a => !a.scheduledDate && (filterInstaller === "all" || a.installerId === filterInstaller) && (filterStatus === "all" || a.status === filterStatus));
-  }, [assignments, filterInstaller, filterStatus]);
+    return scopedAssignments.filter(a => !a.scheduledDate && (filterInstaller === "all" || a.installerId === filterInstaller) && (filterStatus === "all" || a.status === filterStatus));
+  }, [scopedAssignments, filterInstaller, filterStatus]);
 
   const monthGrid = useMemo(() => {
     const year = currentDate.getFullYear();
@@ -537,7 +570,7 @@ export function CalendarPage() {
 
   const stats = useMemo(() => {
     const thisMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, "0")}`;
-    const monthAssignments = assignments.filter(a => a.scheduledDate?.startsWith(thisMonth));
+    const monthAssignments = scopedAssignments.filter(a => a.scheduledDate?.startsWith(thisMonth));
     const byInstaller: Record<string, number> = {};
     monthAssignments.forEach(a => {
       byInstaller[a.installerName] = (byInstaller[a.installerName] || 0) + 1;
@@ -549,7 +582,7 @@ export function CalendarPage() {
       pending: monthAssignments.filter(a => a.status === "assigned").length,
       byInstaller,
     };
-  }, [assignments, currentDate]);
+  }, [scopedAssignments, currentDate]);
 
   if (loading) {
     return (
@@ -592,19 +625,21 @@ export function CalendarPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="relative">
-              <select
-                value={filterInstaller}
-                onChange={e => setFilterInstaller(e.target.value)}
-                className="appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-8 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
-              >
-                <option value="all">Все монтажники</option>
-                {installers.map(inst => (
-                  <option key={inst.id} value={inst.id}>{inst.name}</option>
-                ))}
-              </select>
-              <Filter className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-slate-400 pointer-events-none" />
-            </div>
+            {!isInstallerRole && (
+              <div className="relative">
+                <select
+                  value={filterInstaller}
+                  onChange={e => setFilterInstaller(e.target.value)}
+                  className="appearance-none bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-8 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
+                >
+                  <option value="all">Все монтажники</option>
+                  {installers.map(inst => (
+                    <option key={inst.id} value={inst.id}>{inst.name}</option>
+                  ))}
+                </select>
+                <Filter className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-slate-400 pointer-events-none" />
+              </div>
+            )}
 
             {/* Status filter */}
             <div className="relative">
@@ -653,9 +688,11 @@ export function CalendarPage() {
         </div>
 
         {/* Drag hint */}
-        <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
-          <GripVertical className="size-3" /> Перетащите назначение на другой день для переноса даты
-        </p>
+        {canDrag && (
+          <p className="text-[10px] text-slate-400 mt-2 flex items-center gap-1">
+            <GripVertical className="size-3" /> Перетащите назначение на другой день для переноса даты
+          </p>
+        )}
       </div>
 
       {/* Calendar body */}
@@ -669,6 +706,7 @@ export function CalendarPage() {
               selectedDate={selectedDate}
               onSelectDate={setSelectedDate}
               installerColorMap={installerColorMap}
+              canDrag={canDrag}
               onDragStart={handleDragStart}
               onDrop={handleDrop}
               onDragOver={handleDragOver}
@@ -683,6 +721,7 @@ export function CalendarPage() {
               selectedDate={selectedDate}
               onSelectDate={setSelectedDate}
               installerColorMap={installerColorMap}
+              canDrag={canDrag}
               onDragStart={handleDragStart}
               onDrop={handleDrop}
               onDragOver={handleDragOver}
@@ -703,6 +742,7 @@ export function CalendarPage() {
             unscheduled={!selectedDate ? unscheduled : []}
             onChangeStatus={changeStatus}
             updatingId={updatingId}
+            canDrag={canDrag}
             onDragStart={handleDragStart}
             onChangeTime={changeTime}
             onChangeNotes={changeNotes}
@@ -854,23 +894,24 @@ function StatusBadge({ status }: { status: string }) {
 // ─── Draggable Assignment Chip (for month view) ──────────────────────────────
 
 function DraggableChip({
-  assignment, col, onDragStart,
+  assignment, col, onDragStart, canDrag,
 }: {
   assignment: Assignment;
   col: typeof INSTALLER_COLORS[0];
   onDragStart: (e: React.DragEvent, a: Assignment) => void;
+  canDrag: boolean;
 }) {
   const statusDot = STATUS_CFG[assignment.status]?.dot || "bg-blue-500";
   return (
     <div
-      draggable
-      onDragStart={e => {
+      draggable={canDrag}
+      onDragStart={canDrag ? (e => {
         e.stopPropagation();
         onDragStart(e, assignment);
-      }}
-      className={`${col.bg} ${col.text} rounded px-1.5 py-0.5 text-[9px] font-medium truncate border-l-2 ${col.border} cursor-grab active:cursor-grabbing hover:shadow-sm transition-shadow flex items-center gap-1`}
+      }) : undefined}
+      className={`${col.bg} ${col.text} rounded px-1.5 py-0.5 text-[9px] font-medium truncate border-l-2 ${col.border} ${canDrag ? "cursor-grab active:cursor-grabbing" : ""} hover:shadow-sm transition-shadow flex items-center gap-1`}
     >
-      <GripVertical className="size-2.5 opacity-40 flex-shrink-0" />
+      {canDrag && <GripVertical className="size-2.5 opacity-40 flex-shrink-0" />}
       <span className={`w-1.5 h-1.5 rounded-full ${statusDot} flex-shrink-0`} />
       {assignment.scheduledTime && <span className="opacity-70">{assignment.scheduledTime}</span>}
       <span className="truncate">{assignment.clientName}</span>
@@ -886,6 +927,7 @@ interface GridViewProps {
   selectedDate: string | null;
   onSelectDate: (d: string) => void;
   installerColorMap: Record<string, typeof INSTALLER_COLORS[0]>;
+  canDrag: boolean;
   onDragStart: (e: React.DragEvent, a: Assignment) => void;
   onDrop: (e: React.DragEvent, date: string) => void;
   onDragOver: (e: React.DragEvent, date: string) => void;
@@ -895,7 +937,7 @@ interface GridViewProps {
 
 function MonthView({
   days, byDate, today, selectedDate, onSelectDate, installerColorMap,
-  onDragStart, onDrop, onDragOver, onDragLeave, dragOverDate,
+  canDrag, onDragStart, onDrop, onDragOver, onDragLeave, dragOverDate,
 }: GridViewProps & { days: { date: Date; inMonth: boolean }[] }) {
   return (
     <div className="flex-1 flex flex-col">
@@ -918,9 +960,9 @@ function MonthView({
             <div
               key={idx}
               onClick={() => onSelectDate(key)}
-              onDrop={e => onDrop(e, key)}
-              onDragOver={e => onDragOver(e, key)}
-              onDragLeave={onDragLeave}
+              onDrop={canDrag ? (e => onDrop(e, key)) : undefined}
+              onDragOver={canDrag ? (e => onDragOver(e, key)) : undefined}
+              onDragLeave={canDrag ? onDragLeave : undefined}
               className={`relative border-b border-r border-slate-100 p-1.5 text-left transition-all min-h-[80px] cursor-pointer ${
                 !inMonth ? "bg-slate-50/50" : isWeekend ? "bg-slate-50/30" : "bg-white"
               } ${isSelected ? "ring-2 ring-blue-500 ring-inset z-10" : ""} ${
@@ -928,7 +970,7 @@ function MonthView({
               }`}
             >
               {/* Drop indicator */}
-              {isDragOver && (
+              {canDrag && isDragOver && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
                   <div className="bg-blue-500 text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-lg">
                     Перенести сюда
@@ -945,7 +987,7 @@ function MonthView({
               <div className="mt-0.5 space-y-0.5">
                 {dayAssignments.slice(0, 3).map(a => {
                   const col = installerColorMap[a.installerId] || INSTALLER_COLORS[0];
-                  return <DraggableChip key={a.id} assignment={a} col={col} onDragStart={onDragStart} />;
+                  return <DraggableChip key={a.id} assignment={a} col={col} onDragStart={onDragStart} canDrag={canDrag} />;
                 })}
                 {dayAssignments.length > 3 && (
                   <div className="text-[9px] text-slate-400 font-semibold pl-1">
@@ -965,7 +1007,7 @@ function MonthView({
 
 function WeekView({
   days, byDate, today, selectedDate, onSelectDate, installerColorMap,
-  onDragStart, onDrop, onDragOver, onDragLeave, dragOverDate,
+  canDrag, onDragStart, onDrop, onDragOver, onDragLeave, dragOverDate,
 }: GridViewProps & { days: Date[] }) {
   return (
     <div className="flex-1 flex flex-col">
@@ -997,16 +1039,16 @@ function WeekView({
             <div
               key={i}
               onClick={() => onSelectDate(key)}
-              onDrop={e => onDrop(e, key)}
-              onDragOver={e => onDragOver(e, key)}
-              onDragLeave={onDragLeave}
+              onDrop={canDrag ? (e => onDrop(e, key)) : undefined}
+              onDragOver={canDrag ? (e => onDragOver(e, key)) : undefined}
+              onDragLeave={canDrag ? onDragLeave : undefined}
               className={`border-r border-slate-100 p-2 text-left transition-all overflow-auto cursor-pointer ${
                 isToday ? "bg-blue-50/30" : "bg-white"
               } ${isSelected ? "ring-2 ring-blue-500 ring-inset z-10" : ""} ${
                 isDragOver ? "bg-blue-50 ring-2 ring-blue-400 ring-dashed ring-inset" : "hover:bg-blue-50/30"
               }`}
             >
-              {isDragOver && (
+              {canDrag && isDragOver && (
                 <div className="flex justify-center mb-2">
                   <div className="bg-blue-500 text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-lg">
                     Перенести сюда
@@ -1019,12 +1061,12 @@ function WeekView({
                   return (
                     <div
                       key={a.id}
-                      draggable
-                      onDragStart={e => { e.stopPropagation(); onDragStart(e, a); }}
-                      className={`${col.bg} rounded-lg p-2 border-l-3 ${col.border} cursor-grab active:cursor-grabbing hover:shadow-sm transition-shadow`}
+                      draggable={canDrag}
+                      onDragStart={canDrag ? (e => { e.stopPropagation(); onDragStart(e, a); }) : undefined}
+                      className={`${col.bg} rounded-lg p-2 border-l-3 ${col.border} ${canDrag ? "cursor-grab active:cursor-grabbing" : ""} hover:shadow-sm transition-shadow`}
                     >
                       <div className="flex items-center gap-1 mb-1">
-                        <GripVertical className="size-3 opacity-40" />
+                        {canDrag && <GripVertical className="size-3 opacity-40" />}
                         {a.scheduledTime && (
                           <span className={`text-[10px] font-bold ${col.text}`}>{a.scheduledTime}</span>
                         )}
@@ -1065,6 +1107,7 @@ function DayDetail({
   unscheduled: Assignment[];
   onChangeStatus: (id: string, status: string) => void;
   updatingId: string | null;
+  canDrag: boolean;
   onDragStart: (e: React.DragEvent, a: Assignment) => void;
   onChangeTime: (id: string, time: string) => void;
   onChangeNotes: (id: string, notes: string) => void;
@@ -1131,8 +1174,8 @@ function DayDetail({
             return (
               <div
                 key={a.id}
-                draggable
-                onDragStart={e => onDragStart(e, a)}
+                draggable={canDrag}
+                onDragStart={canDrag ? (e => onDragStart(e, a)) : undefined}
                 className={`rounded-xl border ${isExpanded ? "border-slate-300 shadow-sm" : "border-slate-100"} overflow-hidden transition-all ${isUpdating ? "opacity-60" : ""}`}
               >
                 <button
