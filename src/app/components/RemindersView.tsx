@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { projectId, publicAnonKey } from "../../../utils/supabase/info";
 import { getJson } from "../lib/apiClient";
+import { RightSideCard } from "./ui/RightSideCard";
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };
@@ -537,8 +538,16 @@ function ReminderDetailModal({ reminder: r, notifications, sending, onClose, onS
   const isDone = r.status === "done" || r.status === "cancelled";
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-end" onClick={onClose}>
-      <div className="bg-white rounded-t-3xl w-full max-w-md mx-auto pb-8 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-y-auto">
 
         {/* Header */}
         <div className="sticky top-0 bg-white px-5 pt-5 pb-3 border-b border-slate-100">
@@ -659,7 +668,7 @@ function ReminderDetailModal({ reminder: r, notifications, sending, onClose, onS
           </div>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 
@@ -682,8 +691,16 @@ function NewReminderModal({ onClose, onSave }: {
   })();
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-end" onClick={onClose}>
-      <div className="bg-white rounded-t-3xl w-full max-w-md mx-auto pb-8 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full bg-white flex flex-col overflow-y-auto">
         <div className="sticky top-0 bg-white px-5 pt-5 pb-3 border-b border-slate-100">
           <p className="font-black text-slate-800 text-lg">🔔 Новое напоминание о ТО</p>
         </div>
@@ -736,7 +753,7 @@ function NewReminderModal({ onClose, onSave }: {
           </div>
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 

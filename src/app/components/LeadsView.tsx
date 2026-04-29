@@ -4,6 +4,7 @@ import { useCurrency } from "./CurrencyContext";
 import { useNavigate } from "react-router";
 import { copyToClipboard } from "../utils/clipboard";
 import { getJson } from "../lib/apiClient";
+import { RightSideCard } from "./ui/RightSideCard";
 import {
   Plus, Search, RefreshCw, User, Phone, MapPin, Building2,
   ChevronDown, ChevronUp, ClipboardCheck, FileText, Loader2,
@@ -464,8 +465,16 @@ function CreateLeadModal({ onClose, onCreated }: {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg max-h-[92vh] flex flex-col shadow-2xl">
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 flex-shrink-0">
           <h2 className="font-bold text-slate-800 text-base">Создать заявку вручную</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-all">
@@ -545,7 +554,7 @@ function CreateLeadModal({ onClose, onCreated }: {
           </button>
         </form>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 

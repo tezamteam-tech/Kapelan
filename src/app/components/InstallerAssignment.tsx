@@ -5,6 +5,7 @@ import {
   Check, Calendar, Clock, Send, Trash2, Edit2, X, Plus, Camera
 } from "lucide-react";
 import { AvatarUpload } from "./ui/ImageUpload";
+import { RightSideCard } from "./ui/RightSideCard";
 import { getJson } from "../lib/apiClient";
 
 const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`;
@@ -108,8 +109,16 @@ export function AssignInstallerModal({ leadId, clientName, onAssigned, onClose }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+    <RightSideCard
+      open={true}
+      onClose={onClose}
+      showHeader={false}
+      defaultWidth={640}
+      minWidth={640}
+      maxWidth={940}
+      overlayClassName="bg-black/50"
+    >
+      <div className="w-full h-full bg-white rounded-none shadow-none max-h-none overflow-auto flex flex-col" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <div>
@@ -271,7 +280,7 @@ export function AssignInstallerModal({ leadId, clientName, onAssigned, onClose }
           )}
         </div>
       </div>
-    </div>
+    </RightSideCard>
   );
 }
 

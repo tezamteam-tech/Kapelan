@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileText, Loader2, RefreshCw, Search, Download, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
+import { RightSideCard } from "./ui/RightSideCard";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCurrency } from "./CurrencyContext";
@@ -1022,9 +1023,16 @@ ${stages
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
       {addOpen && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setAddOpen(false)} />
-          <div className="relative w-full max-w-2xl mx-6 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
+        <RightSideCard
+          open={true}
+          onClose={() => setAddOpen(false)}
+          showHeader={false}
+          defaultWidth={640}
+          minWidth={640}
+          maxWidth={940}
+          overlayClassName="bg-black/30"
+        >
+          <div className="w-full h-full flex flex-col overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
               <div>
                 <p className="text-sm font-black text-slate-900">Добавить позицию</p>
@@ -1039,7 +1047,7 @@ ${stages
                 Закрыть
               </button>
             </div>
-            <div className="p-4 space-y-3">
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
               <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
                 {([
                   { key: "equipment", label: "Оборудование" },
@@ -1157,7 +1165,7 @@ ${stages
               </div>
             </div>
           </div>
-        </div>
+        </RightSideCard>
       )}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
