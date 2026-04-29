@@ -1651,7 +1651,12 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
 
   function applyAiBomPreview() {
     if (!aiBomPreview.length) return;
-    const incoming = aiBomPreview.map((e) => ({
+    const matched = aiBomPreview.filter((e) => !!e.warehouseId);
+    if (!matched.length) {
+      alert("AI не смог сопоставить ни одну позицию BOM со складом. Попробуйте повторить с другой ссылкой/описанием.");
+      return;
+    }
+    const incoming = matched.map((e) => ({
       warehouseId: e.warehouseId || "",
       name: e.name,
       unit: e.unit || "шт",
