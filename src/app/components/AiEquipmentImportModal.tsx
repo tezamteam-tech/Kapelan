@@ -94,6 +94,8 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
   const [items, setItems] = useState<ParsedEquipment[]>([]);
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [autoEnrich, setAutoEnrich] = useState(true);
+  const [enriching, setEnriching] = useState<{ running: boolean; done: number; total: number } | null>(null);
   const [parseProgress, setParseProgress] = useState<{ done: number; total: number } | null>(null);
   const [parseWarning, setParseWarning] = useState("");
   const [editIdx, setEditIdx] = useState<number | null>(null);
@@ -241,6 +243,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
     let done = 0;
     const batches: ParsedEquipment[][] = [];
     for (let i = 0; i < toImport.length; i += BATCH) batches.push(toImport.slice(i, i + BATCH));
+    const savedIds: string[] = [];
 
     async function postBulk(payload: any, attempt = 0): Promise<any> {
       try {
@@ -269,6 +272,10 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
         });
         const data = await postBulk({ items: bodies });
         const saved: any[] = Array.isArray(data.saved) ? data.saved : [];
+        for (const s of saved) {
+          const id = String(s?.id ?? "").trim();
+          if (id) savedIds.push(id);
+        }
         // Update statuses best-effort by matching brand+model+type
         setItems(prev => prev.map(i => {
           const isIn = batch.some(b => b._idx === i._idx);
@@ -284,6 +291,31 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
       await new Promise(r => setTimeout(r, 150));
     }
     setImporting(false);
+
+    // Optional bulk enrichment right after import (best-effort)
+    if (autoEnrich && savedIds.length) {
+      setEnriching({ running: true, done: 0, total: savedIds.length });
+      try {
+        const B2 = 10; // server limit
+        for (let i = 0; i < savedIds.length; i += B2) {
+          const batch = savedIds.slice(i, i + B2);
+          const res = await fetch(`${API}/equipment/enrich`, {
+            method: "POST",
+            headers: JH,
+            body: JSON.stringify({ items: batch.map((id) => ({ equipmentId: id })) }),
+          });
+          const d = await res.json().catch(() => ({}));
+          if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+          setEnriching(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
+          await new Promise(r => setTimeout(r, 250));
+        }
+      } catch (e: any) {
+        setParseWarning(String(e?.message ?? "AI enrichment failed"));
+      } finally {
+        setEnriching(prev => prev ? { ...prev, running: false } : prev);
+      }
+    }
+
     onImported(items.filter(i => i._status === "saved").length + done);
     setStep(4);
   }
@@ -423,6 +455,16 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                   <strong>AI понимает:</strong> таблицы с сериями моделей, артикулы, BTU из названия (RK-09, 12000 BTU), трубы (1/4", 3/8"), цены в BYN/руб. Картинки для моделей можно добавить вручную после импорта.
                 </p>
               </div>
+
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 px-1">
+                <input
+                  type="checkbox"
+                  checked={autoEnrich}
+                  onChange={(e) => setAutoEnrich(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded accent-teal-600"
+                />
+                Автозаполнять карточки после импорта (фото, PDF, расходники)
+              </label>
             </div>
           )}
 
@@ -678,7 +720,12 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                 {items.filter(i => i._status === "error").length > 0 && (
                   <p className="text-orange-500 text-xs">{items.filter(i => i._status === "error").length} моделей не удалось добавить</p>
                 )}
-                <p className="text-xs text-slate-400 mt-2">Картинки для моделей можно загрузить вручную через редактирование карточки.</p>
+                {enriching && (
+                  <p className="text-xs text-teal-700 mt-2">
+                    AI-автозаполнение: {enriching.running ? "в процессе" : "готово"} {enriching.done} / {enriching.total}
+                  </p>
+                )}
+                <p className="text-xs text-slate-400 mt-2">Если что-то не нашлось — откройте модель и нажмите “Спросить AI”.</p>
               </div>
               <button onClick={onClose}
                 className="flex items-center gap-2 bg-blue-600 text-white font-bold px-6 py-3 rounded-2xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-200">

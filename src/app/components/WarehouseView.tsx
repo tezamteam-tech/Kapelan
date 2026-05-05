@@ -131,6 +131,7 @@ export function WarehouseView() {
   const [equipment, setEquipment] = useState<EquipmentModel[]>([]);
   const [eqSel, setEqSel] = useState<Record<string, boolean>>({});
   const [eqBulk, setEqBulk] = useState<{ running: boolean; done: number; total: number; last?: string } | null>(null);
+  const [eqEnrichBulk, setEqEnrichBulk] = useState<{ running: boolean; done: number; total: number; last?: string } | null>(null);
   const [loading, setLoading] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -280,6 +281,36 @@ export function WarehouseView() {
     }
     setEqBulk(prev => prev ? { ...prev, running: false } : prev);
     showToast(`🗑️ Архивировано: ${ok} / ${uniq.length}`, ok === uniq.length);
+  }
+
+  async function bulkEnrichEquipment(ids: string[], label: string) {
+    const uniq = Array.from(new Set(ids.filter(Boolean)));
+    if (!uniq.length) return;
+    setEqEnrichBulk({ running: true, done: 0, total: uniq.length });
+    try {
+      // API limit: max 10 per request
+      const BATCH = 10;
+      for (let i = 0; i < uniq.length; i += BATCH) {
+        const batch = uniq.slice(i, i + BATCH);
+        setEqEnrichBulk(prev => prev ? { ...prev, last: batch[batch.length - 1] } : prev);
+        const res = await fetch(`${API}/equipment/enrich`, {
+          method: "POST",
+          headers: JH,
+          body: JSON.stringify({ items: batch.map((id) => ({ equipmentId: id })) }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+        setEqEnrichBulk(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
+        await new Promise(r => setTimeout(r, 250));
+      }
+      showToast(`✅ AI-автозаполнение выполнено (${label})`);
+    } catch (e: any) {
+      showToast(String(e?.message ?? "Ошибка AI-автозаполнения"), false);
+    } finally {
+      setEqEnrichBulk(prev => prev ? { ...prev, running: false } : prev);
+      // refresh equipment list because KV BOM may be updated
+      fetchAll();
+    }
   }
 
   async function deleteItem(id: string) {
@@ -657,17 +688,30 @@ export function WarehouseView() {
                           Архивирование: {eqBulk.done} / {eqBulk.total}
                         </span>
                       )}
+                      {eqEnrichBulk?.running && (
+                        <span className="text-xs text-slate-500 flex items-center gap-2">
+                          <Loader2 size={14} className="animate-spin text-slate-400" />
+                          AI-заполнение: {eqEnrichBulk.done} / {eqEnrichBulk.total}
+                        </span>
+                      )}
                       <div className="ml-auto flex gap-2">
                         <button
+                          onClick={() => bulkEnrichEquipment(selectedEqIds, "выбранное")}
+                          disabled={selectedEqIds.length === 0 || !!eqEnrichBulk?.running || !!eqBulk?.running}
+                          className="px-3 py-1.5 rounded-xl bg-teal-600 text-white text-xs font-bold hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          AI-заполнить выбранное
+                        </button>
+                        <button
                           onClick={() => bulkArchiveEquipment(selectedEqIds, "выбранное")}
-                          disabled={selectedEqIds.length === 0 || !!eqBulk?.running}
+                          disabled={selectedEqIds.length === 0 || !!eqBulk?.running || !!eqEnrichBulk?.running}
                           className="px-3 py-1.5 rounded-xl bg-red-50 text-red-700 text-xs font-bold hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           Архивировать выбранное
                         </button>
                         <button
                           onClick={() => bulkArchiveEquipment(filteredEqIds, "всё по фильтру")}
-                          disabled={filteredEqIds.length === 0 || !!eqBulk?.running}
+                          disabled={filteredEqIds.length === 0 || !!eqBulk?.running || !!eqEnrichBulk?.running}
                           className="px-3 py-1.5 rounded-xl bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           Архивировать всё (фильтр)
@@ -1732,6 +1776,53 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
           notes: String(e.notes ?? ""),
         })).filter((e: any) => e.name);
         if (normalized.length) setBom(normalized);
+      }
+
+      // Native enrichment: fetch from web, store manual/photo, match BOM and apply back to card.
+      // If model is not saved yet, run by natural key; otherwise by equipmentId.
+      try {
+        const enrichRes = await fetch(`${API}/equipment/enrich`, {
+          method: "POST",
+          headers: JH,
+          body: JSON.stringify({
+            items: [
+              eq.id
+                ? { equipmentId: eq.id }
+                : { type, brand, model },
+            ],
+          }),
+        });
+        const enrichData = await enrichRes.json().catch(() => ({}));
+        if (!enrichRes.ok || enrichData.error) throw new Error(enrichData.error || `HTTP ${enrichRes.status}`);
+
+        // Pull enrichment + assets and apply imageUrl + BOM (matched)
+        const qs = eq.id
+          ? `equipmentId=${encodeURIComponent(String(eq.id))}`
+          : `type=${encodeURIComponent(String(type))}&brand=${encodeURIComponent(String(brand))}&model=${encodeURIComponent(String(model))}`;
+        const enr = await fetch(`${API}/equipment/enrichment?${qs}`, { method: "GET", headers: AH });
+        const enrJson = await enr.json().catch(() => ({}));
+        if (enr.ok && !enrJson.error) {
+          const assets = Array.isArray(enrJson.assets) ? enrJson.assets : [];
+          const primaryImage = assets.find((a: any) => a.kind === "image" && a.is_primary) ?? assets.find((a: any) => a.kind === "image");
+          const srcUrl = String(primaryImage?.source_url ?? "").trim();
+          if (srcUrl) setImageUrl(srcUrl);
+
+          const ebom = enrJson.enrichment?.bom;
+          if (Array.isArray(ebom) && ebom.length) {
+            const matched = ebom.filter((x: any) => String(x?.warehouseId ?? "").trim());
+            const normalized2 = (matched.length ? matched : ebom).map((e: any) => ({
+              warehouseId: String(e.warehouseId ?? ""),
+              name: String(e.name ?? ""),
+              unit: String(e.unit ?? "шт"),
+              qtyFixed: Number(e.qtyFixed ?? 0),
+              qtyPerMeter: Number(e.qtyPerMeter ?? 0),
+              notes: String(e.notes ?? ""),
+            })).filter((e: any) => e.name);
+            if (normalized2.length) setBom((prev) => mergeBomEntries(prev, normalized2));
+          }
+        }
+      } catch {
+        // best-effort; card still has ai-fill data
       }
 
       setAiOpen(false);
