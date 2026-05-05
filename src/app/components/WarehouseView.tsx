@@ -1390,7 +1390,8 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eq.id]);
 
-  async function runEnrich() {
+  // Single unified handler: "Спросить AI" should do everything without any external URL.
+  async function runAutoFill() {
     try {
       setEnrichErr("");
       setEnrichLoading(true);
@@ -1399,11 +1400,11 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
         headers: JH,
         body: JSON.stringify({ items: [{ equipmentId: eq.id }] }),
       });
-      const d = await res.json();
-      if (d.error) throw new Error(d.error);
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
       await fetchEnrichment();
     } catch (e: any) {
-      setEnrichErr(String(e?.message ?? "Ошибка enrichment"));
+      setEnrichErr(String(e?.message ?? "Ошибка автозаполнения"));
     } finally {
       setEnrichLoading(false);
     }
@@ -1442,6 +1443,14 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
           <img src={eq.imageUrl} alt={eq.model} className="w-full h-full object-cover" />
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
           <div className="absolute top-3 right-3 flex gap-2">
+            <button
+              onClick={runAutoFill}
+              disabled={enrichLoading}
+              className={`bg-white/20 hover:bg-white/40 text-white p-1.5 rounded-full transition-all flex items-center gap-1.5 text-xs font-bold px-3 ${enrichLoading ? "opacity-60" : ""}`}
+              title="Автозаполнить из интернета"
+            >
+              <Sparkles size={13} /> {enrichLoading ? "AI…" : "Спросить AI"}
+            </button>
             {onEdit && (
               <button onClick={onEdit}
                 className="bg-white/20 hover:bg-white/40 text-white p-1.5 rounded-full transition-all flex items-center gap-1.5 text-xs font-bold px-3">
@@ -1503,13 +1512,6 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
                   className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50"
                 >
                   Обновить
-                </button>
-                <button
-                  onClick={runEnrich}
-                  disabled={enrichLoading}
-                  className={`px-3 py-2 rounded-xl text-xs font-bold text-white ${enrichLoading ? "bg-slate-400" : "bg-teal-600 hover:bg-teal-700"}`}
-                >
-                  {enrichLoading ? "Выполняется…" : "Запустить"}
                 </button>
               </div>
             </div>
@@ -1692,7 +1694,8 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
   const [step, setStep] = useState<EqStep>("basic");
   const [saving, setSaving] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [aiUrl, setAiUrl] = useState("");
+  // Link input removed: system searches the web itself.
+  const [aiUrl] = useState("");
   const [aiExtra, setAiExtra] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
@@ -2030,10 +2033,6 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
                 <button type="button" onClick={() => setAiOpen(false)} className="text-blue-700 text-xs font-black hover:underline">Закрыть</button>
               </div>
               <div className="grid grid-cols-1 gap-2">
-                <div>
-                  <label className={LBL}>Ссылка на страницу товара (опционально)</label>
-                  <input value={aiUrl} onChange={(e) => setAiUrl(e.target.value)} placeholder="https://..." className={INP} />
-                </div>
                 <div>
                   <label className={LBL}>Комментарий / требования (опционально)</label>
                   <textarea value={aiExtra} onChange={(e) => setAiExtra(e.target.value)} rows={3} className={INP} placeholder="Например: монтаж с насосом, трасса до 25м, питание 380В…" />
