@@ -1313,11 +1313,74 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
   const { fmtShort } = useCurrency();
   const [detailTab, setDetailTab] = useState<"params" | "bom" | "notes">("params");
   const cfg = EQ_TYPE_CFG[eq.type] || EQ_TYPE_CFG.split_ac;
+  const [enrichLoading, setEnrichLoading] = useState(false);
+  const [enrichData, setEnrichData] = useState<any | null>(null);
+  const [enrichAssets, setEnrichAssets] = useState<any[]>([]);
+  const [enrichErr, setEnrichErr] = useState<string>("");
 
   const bomWithStock = (eq.bom || []).map(entry => ({
     ...entry,
     warehouseItem: warehouseItems.find(i => i.id === entry.warehouseId),
   }));
+
+  async function fetchEnrichment() {
+    try {
+      setEnrichErr("");
+      const res = await fetch(`${API}/equipment/enrichment?equipmentId=${encodeURIComponent(eq.id)}`, {
+        method: "GET",
+        headers: AH,
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      setEnrichData(d.enrichment ?? null);
+      setEnrichAssets(Array.isArray(d.assets) ? d.assets : []);
+    } catch (e: any) {
+      setEnrichErr(String(e?.message ?? "Не удалось загрузить enrichment"));
+      setEnrichData(null);
+      setEnrichAssets([]);
+    }
+  }
+
+  useEffect(() => {
+    fetchEnrichment();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eq.id]);
+
+  async function runEnrich() {
+    try {
+      setEnrichErr("");
+      setEnrichLoading(true);
+      const res = await fetch(`${API}/equipment/enrich`, {
+        method: "POST",
+        headers: JH,
+        body: JSON.stringify({ items: [{ equipmentId: eq.id }] }),
+      });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      await fetchEnrichment();
+    } catch (e: any) {
+      setEnrichErr(String(e?.message ?? "Ошибка enrichment"));
+    } finally {
+      setEnrichLoading(false);
+    }
+  }
+
+  async function openAsset(asset: any) {
+    try {
+      const path = String(asset?.storage_path ?? asset?.storagePath ?? "").trim();
+      const bucket = String(asset?.storage_bucket ?? "").trim();
+      if (!path) return;
+      const qs = new URLSearchParams({ path });
+      if (bucket) qs.set("bucket", bucket);
+      const res = await fetch(`${API}/equipment/asset-url?${qs.toString()}`, { method: "GET", headers: AH });
+      const d = await res.json();
+      if (d.error) throw new Error(d.error);
+      const url = String(d.url ?? "");
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      // ignore
+    }
+  }
 
   return (
     <RightSideCard
@@ -1370,6 +1433,66 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
+          <div className="mb-3 rounded-2xl border border-slate-200 bg-white p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">AI enrichment</p>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <InfoBadge>
+                    статус: {String(enrichData?.enrichment_status ?? (enrichErr ? "error" : "—"))}
+                  </InfoBadge>
+                  {Number(enrichData?.confidence ?? 0) > 0 && (
+                    <InfoBadge>confidence: {Math.round(Number(enrichData.confidence) * 100)}%</InfoBadge>
+                  )}
+                  {enrichData?.manufacturer_name && <InfoBadge>{String(enrichData.manufacturer_name)}</InfoBadge>}
+                </div>
+                {Array.isArray(enrichData?.needs_review_reasons) && enrichData.needs_review_reasons.length > 0 && (
+                  <p className="text-[11px] text-orange-700 font-semibold mt-1">
+                    Требует проверки: {enrichData.needs_review_reasons.join(", ")}
+                  </p>
+                )}
+                {enrichErr && <p className="text-[11px] text-red-600 font-semibold mt-1">{enrichErr}</p>}
+              </div>
+              <div className="flex gap-2 flex-shrink-0">
+                <button
+                  onClick={fetchEnrichment}
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                >
+                  Обновить
+                </button>
+                <button
+                  onClick={runEnrich}
+                  disabled={enrichLoading}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold text-white ${enrichLoading ? "bg-slate-400" : "bg-teal-600 hover:bg-teal-700"}`}
+                >
+                  {enrichLoading ? "Выполняется…" : "Запустить"}
+                </button>
+              </div>
+            </div>
+
+            {enrichAssets.length > 0 && (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                {enrichAssets.slice(0, 6).map((a, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => openAsset(a)}
+                    className="text-left rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-bold text-slate-800 truncate">
+                        {String(a.kind ?? "asset").toUpperCase()} {a.title ? `• ${String(a.title)}` : ""}
+                      </p>
+                      <span className="text-[10px] font-bold text-slate-500">
+                        {Math.round(Number(a.confidence ?? 0) * 100)}%
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 truncate mt-0.5">{String(a.source_url ?? "")}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {detailTab === "params" && (
             <div className="space-y-3">
               <ParamSection title="Хладагент и трубопровод">
@@ -1531,6 +1654,9 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
   const [aiError, setAiError] = useState("");
   const [aiBomLoading, setAiBomLoading] = useState(false);
   const [aiBomError, setAiBomError] = useState("");
+  const [idPhotoLoading, setIdPhotoLoading] = useState(false);
+  const [idPhotoError, setIdPhotoError] = useState("");
+  const idPhotoRef = useRef<HTMLInputElement>(null);
   const [aiBomPreview, setAiBomPreview] = useState<Array<{
     warehouseId: string;
     name: string;
@@ -1614,6 +1740,28 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
       setAiError(e.message);
     } finally {
       setAiLoading(false);
+    }
+  }
+
+  async function identifyFromPhoto(file: File) {
+    setIdPhotoError("");
+    setIdPhotoLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${API}/equipment/identify`, { method: "POST", headers: AH, body: fd });
+      const d = await res.json();
+      if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+      const b = String(d.brand ?? "").trim();
+      const m = String(d.model ?? "").trim();
+      if (b) setBrand(b);
+      if (m) setModel(m);
+      if (!b && !m) setIdPhotoError("Не удалось распознать бренд/модель. Попробуйте более чёткое фото шильдика.");
+    } catch (e: any) {
+      setIdPhotoError(String(e?.message ?? "Ошибка распознавания"));
+    } finally {
+      setIdPhotoLoading(false);
+      if (idPhotoRef.current) idPhotoRef.current.value = "";
     }
   }
 
@@ -1888,6 +2036,33 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
               <div className="col-span-2">
                 <label className={LBL}>Модель *</label>
                 <input value={model} onChange={e => setModel(e.target.value)} placeholder="AR12TXHQASINUA WindFree" className={INP} />
+              </div>
+              <div className="col-span-2">
+                <p className="text-[11px] font-bold text-slate-500 mb-1">Распознать по фото шильдика/коробки (fallback)</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={idPhotoRef}
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) identifyFromPhoto(f);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => idPhotoRef.current?.click()}
+                    disabled={idPhotoLoading}
+                    className={`px-3 py-2 rounded-xl text-xs font-black text-white ${idPhotoLoading ? "bg-slate-400" : "bg-slate-800 hover:bg-slate-900"}`}
+                  >
+                    {idPhotoLoading ? "Распознаю…" : "Загрузить фото"}
+                  </button>
+                  <p className="text-[11px] text-slate-500">
+                    Лучше всего видно brand/model на шильдике.
+                  </p>
+                </div>
+                {idPhotoError && <p className="text-[11px] text-red-600 font-semibold mt-1">{idPhotoError}</p>}
               </div>
               <div>
                 <label className={LBL}>Мощность (кВт) *</label>
