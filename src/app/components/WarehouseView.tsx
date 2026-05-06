@@ -26,7 +26,13 @@ async function fetchWith404Fallback(
 ): Promise<Response> {
   const res = await fetch(`${API}${path}`, init);
   if (res.status !== 404) return res;
-  return await fetch(`${API}${altPath}`, init);
+  // Some callers used absolute app routes like "/make-server-1df47c03/..." which would
+  // double-prefix because API already includes "/make-server-1df47c03".
+  const normalizedAlt = String(altPath || "")
+    .replace(/^\/make-server-1df47c03\b/i, "")
+    .trim();
+  if (!normalizedAlt || normalizedAlt === path) return res;
+  return await fetch(`${API}${normalizedAlt}`, init);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
