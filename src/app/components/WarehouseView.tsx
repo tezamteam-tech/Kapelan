@@ -19,6 +19,16 @@ const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`
 const AH = { Authorization: `Bearer ${publicAnonKey}` };
 const JH = { ...AH, "Content-Type": "application/json" };
 
+async function fetchWith404Fallback(
+  path: string,
+  init: RequestInit,
+  altPath: string,
+): Promise<Response> {
+  const res = await fetch(`${API}${path}`, init);
+  if (res.status !== 404) return res;
+  return await fetch(`${API}${altPath}`, init);
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface WarehouseItem {
   id: string; name: string; category: string; unit: string;
@@ -293,11 +303,11 @@ export function WarehouseView() {
       for (let i = 0; i < uniq.length; i += BATCH) {
         const batch = uniq.slice(i, i + BATCH);
         setEqEnrichBulk(prev => prev ? { ...prev, last: batch[batch.length - 1] } : prev);
-        const res = await fetch(`${API}/equipment/enrich`, {
+        const res = await fetchWith404Fallback(`/equipment/enrich`, {
           method: "POST",
           headers: JH,
           body: JSON.stringify({ items: batch.map((id) => ({ equipmentId: id })) }),
-        });
+        }, `/make-server-1df47c03/equipment/enrich`);
         const d = await res.json().catch(() => ({}));
         if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
         setEqEnrichBulk(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
@@ -1370,10 +1380,10 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
   async function fetchEnrichment() {
     try {
       setEnrichErr("");
-      const res = await fetch(`${API}/equipment/enrichment?equipmentId=${encodeURIComponent(eq.id)}`, {
+      const res = await fetchWith404Fallback(`/equipment/enrichment?equipmentId=${encodeURIComponent(eq.id)}`, {
         method: "GET",
         headers: AH,
-      });
+      }, `/make-server-1df47c03/equipment/enrichment?equipmentId=${encodeURIComponent(eq.id)}`);
       if (res.status === 404) {
         throw new Error("Enrichment API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
       }
@@ -1403,11 +1413,11 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
     try {
       setEnrichErr("");
       setEnrichLoading(true);
-      const res = await fetch(`${API}/equipment/enrich`, {
+      const res = await fetchWith404Fallback(`/equipment/enrich`, {
         method: "POST",
         headers: JH,
         body: JSON.stringify({ items: [{ equipmentId: eq.id }] }),
-      });
+      }, `/make-server-1df47c03/equipment/enrich`);
       if (res.status === 404) {
         throw new Error("Autofill API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
       }
@@ -1433,7 +1443,7 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
       if (!path) return;
       const qs = new URLSearchParams({ path });
       if (bucket) qs.set("bucket", bucket);
-      const res = await fetch(`${API}/equipment/asset-url?${qs.toString()}`, { method: "GET", headers: AH });
+      const res = await fetchWith404Fallback(`/equipment/asset-url?${qs.toString()}`, { method: "GET", headers: AH }, `/make-server-1df47c03/equipment/asset-url?${qs.toString()}`);
       const d = await res.json();
       if (d.error) throw new Error(d.error);
       const url = String(d.url ?? "");
@@ -1800,7 +1810,7 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
       // Native enrichment: fetch from web, store manual/photo, match BOM and apply back to card.
       // If model is not saved yet, run by natural key; otherwise by equipmentId.
       try {
-        const enrichRes = await fetch(`${API}/equipment/enrich`, {
+        const enrichRes = await fetchWith404Fallback(`/equipment/enrich`, {
           method: "POST",
           headers: JH,
           body: JSON.stringify({
@@ -1810,7 +1820,7 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
                 : { type, brand, model },
             ],
           }),
-        });
+        }, `/make-server-1df47c03/equipment/enrich`);
         const enrichData = await enrichRes.json().catch(() => ({}));
         if (!enrichRes.ok || enrichData.error) throw new Error(enrichData.error || `HTTP ${enrichRes.status}`);
 
@@ -1818,7 +1828,7 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
         const qs = eq.id
           ? `equipmentId=${encodeURIComponent(String(eq.id))}`
           : `type=${encodeURIComponent(String(type))}&brand=${encodeURIComponent(String(brand))}&model=${encodeURIComponent(String(model))}`;
-        const enr = await fetch(`${API}/equipment/enrichment?${qs}`, { method: "GET", headers: AH });
+        const enr = await fetchWith404Fallback(`/equipment/enrichment?${qs}`, { method: "GET", headers: AH }, `/make-server-1df47c03/equipment/enrichment?${qs}`);
         const enrJson = await enr.json().catch(() => ({}));
         if (enr.ok && !enrJson.error) {
           const assets = Array.isArray(enrJson.assets) ? enrJson.assets : [];
@@ -1859,7 +1869,7 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API}/equipment/identify`, { method: "POST", headers: AH, body: fd });
+      const res = await fetchWith404Fallback(`/equipment/identify`, { method: "POST", headers: AH, body: fd }, `/make-server-1df47c03/equipment/identify`);
       const d = await res.json();
       if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
       const b = String(d.brand ?? "").trim();

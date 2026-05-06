@@ -13,6 +13,12 @@ const API = `https://${projectId}.supabase.co/functions/v1/make-server-1df47c03`
 const AH  = { Authorization: `Bearer ${publicAnonKey}` };
 const JH  = { ...AH, "Content-Type": "application/json" };
 
+async function fetchWith404Fallback(path: string, init: RequestInit, altPath: string): Promise<Response> {
+  const res = await fetch(`${API}${path}`, init);
+  if (res.status !== 404) return res;
+  return await fetch(`${API}${altPath}`, init);
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface ParsedEquipment {
   _idx: number;
@@ -299,11 +305,11 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
         const B2 = 10; // server limit
         for (let i = 0; i < savedIds.length; i += B2) {
           const batch = savedIds.slice(i, i + B2);
-          const res = await fetch(`${API}/equipment/enrich`, {
+          const res = await fetchWith404Fallback(`/equipment/enrich`, {
             method: "POST",
             headers: JH,
             body: JSON.stringify({ items: batch.map((id) => ({ equipmentId: id })) }),
-          });
+          }, `/make-server-1df47c03/equipment/enrich`);
           if (res.status === 404) throw new Error("Autofill API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
           const d = await res.json().catch(() => ({}));
           if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
