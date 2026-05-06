@@ -75,6 +75,14 @@ interface EquipmentModel {
   installerNotes: string; createdAt: string; updatedAt: string;
 }
 
+type EnrichMini = {
+  enrichment_status: "pending" | "running" | "done" | "needs_review" | "error";
+  confidence: number;
+  needs_review_reasons?: any[];
+  manufacturer_name?: string | null;
+  updated_at?: string | null;
+};
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 type WHTab = "stock" | "equipment" | "movements" | "orders";
 
@@ -148,6 +156,8 @@ export function WarehouseView() {
   const [eqSel, setEqSel] = useState<Record<string, boolean>>({});
   const [eqBulk, setEqBulk] = useState<{ running: boolean; done: number; total: number; last?: string } | null>(null);
   const [eqEnrichBulk, setEqEnrichBulk] = useState<{ running: boolean; done: number; total: number; last?: string } | null>(null);
+  const [eqEnrichById, setEqEnrichById] = useState<Record<string, EnrichMini | undefined>>({});
+  const [eqEnrichLoading, setEqEnrichLoading] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -201,6 +211,42 @@ export function WarehouseView() {
     } catch { showToast("Ошибка загрузки", false); }
     finally { setLoading(false); }
   }, [showToast]);
+
+  async function fetchEnrichStatuses(ids: string[]) {
+    const uniq = Array.from(new Set(ids.filter(Boolean)));
+    if (!uniq.length) return;
+    setEqEnrichLoading(true);
+    try {
+      const B = 250;
+      const out: Record<string, EnrichMini | undefined> = {};
+      for (let i = 0; i < uniq.length; i += B) {
+        const batch = uniq.slice(i, i + B);
+        const res = await fetchWith404Fallback(
+          `/equipment/enrichment/bulk`,
+          { method: "POST", headers: JH, body: JSON.stringify({ equipmentIds: batch }) },
+          `/make-server-1df47c03/equipment/enrichment/bulk`,
+        );
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+        const byId = (d?.byId && typeof d.byId === "object") ? d.byId : {};
+        for (const id of batch) {
+          const row = byId[id];
+          if (row) out[id] = row as EnrichMini;
+        }
+      }
+      setEqEnrichById((prev) => ({ ...prev, ...out }));
+    } catch {
+      // silent: status badges are best-effort
+    } finally {
+      setEqEnrichLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // refresh enrichment badges when equipment list changes
+    if (equipment.length) fetchEnrichStatuses(equipment.map((e) => e.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [equipment.length]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -304,22 +350,33 @@ export function WarehouseView() {
     if (!uniq.length) return;
     setEqEnrichBulk({ running: true, done: 0, total: uniq.length });
     try {
-      // API limit: max 10 per request
-      const BATCH = 10;
-      for (let i = 0; i < uniq.length; i += BATCH) {
-        const batch = uniq.slice(i, i + BATCH);
-        setEqEnrichBulk(prev => prev ? { ...prev, last: batch[batch.length - 1] } : prev);
-        const res = await fetchWith404Fallback(`/equipment/enrich`, {
-          method: "POST",
-          headers: JH,
-          body: JSON.stringify({ items: batch.map((id) => ({ equipmentId: id })) }),
-        }, `/make-server-1df47c03/equipment/enrich`);
-        const d = await res.json().catch(() => ({}));
-        if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
-        setEqEnrichBulk(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
-        await new Promise(r => setTimeout(r, 250));
+      const startRes = await fetchWith404Fallback(
+        `/equipment/autofill/start`,
+        { method: "POST", headers: JH, body: JSON.stringify({ equipmentIds: uniq }) },
+        `/make-server-1df47c03/equipment/autofill/start`,
+      );
+      const startData = await startRes.json().catch(() => ({}));
+      if (!startRes.ok || startData.error) throw new Error(startData.error || `HTTP ${startRes.status}`);
+      const jobId = String(startData.jobId ?? "").trim();
+      if (!jobId) throw new Error("jobId не получен");
+
+      for (let guard = 0; guard < 5000; guard++) {
+        const stepRes = await fetchWith404Fallback(
+          `/equipment/autofill/step`,
+          { method: "POST", headers: JH, body: JSON.stringify({ jobId }) },
+          `/make-server-1df47c03/equipment/autofill/step`,
+        );
+        const stepData = await stepRes.json().catch(() => ({}));
+        if (!stepRes.ok || stepData.error) throw new Error(stepData.error || `HTTP ${stepRes.status}`);
+        const job = stepData.job;
+        const done = Number(job?.done ?? 0) || 0;
+        const total = Number(job?.total ?? uniq.length) || uniq.length;
+        setEqEnrichBulk(prev => prev ? { ...prev, done, total, last: String(job?.current_equipment_id ?? prev.last ?? "") } : prev);
+        if (stepData.done || String(job?.status) === "done") break;
+        if (String(job?.status) === "error") throw new Error(String(job?.error ?? "Ошибка автозаполнения"));
+        await new Promise(r => setTimeout(r, 350));
       }
-      showToast(`✅ AI-автозаполнение выполнено (${label})`);
+      showToast(`✅ Заполнение AI выполнено (${label})`);
     } catch (e: any) {
       showToast(String(e?.message ?? "Ошибка AI-автозаполнения"), false);
     } finally {
@@ -707,7 +764,7 @@ export function WarehouseView() {
                       {eqEnrichBulk?.running && (
                         <span className="text-xs text-slate-500 flex items-center gap-2">
                           <Loader2 size={14} className="animate-spin text-slate-400" />
-                          AI-заполнение: {eqEnrichBulk.done} / {eqEnrichBulk.total}
+                          Заполнение AI: {eqEnrichBulk.done} / {eqEnrichBulk.total}
                         </span>
                       )}
                       <div className="ml-auto flex gap-2">
@@ -716,7 +773,7 @@ export function WarehouseView() {
                           disabled={selectedEqIds.length === 0 || !!eqEnrichBulk?.running || !!eqBulk?.running}
                           className="px-3 py-1.5 rounded-xl bg-teal-600 text-white text-xs font-bold hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          AI-заполнить выбранное
+                          Заполнить AI (выбранное)
                         </button>
                         <button
                           onClick={() => bulkArchiveEquipment(selectedEqIds, "выбранное")}
@@ -740,6 +797,7 @@ export function WarehouseView() {
                         <tr className="text-[11px] text-slate-500 uppercase tracking-wider">
                           <th className="w-10 px-3 py-2"></th>
                           <th className="text-left px-3 py-2">Модель</th>
+                          <th className="text-left px-3 py-2">AI</th>
                           <th className="text-left px-3 py-2">Тип</th>
                           <th className="text-right px-3 py-2">BTU</th>
                           <th className="text-right px-3 py-2">Цена</th>
@@ -764,6 +822,9 @@ export function WarehouseView() {
                               >
                                 {eq.brand} {eq.model}
                               </button>
+                            </td>
+                            <td className="px-3 py-2">
+                              <EnrichBadge v={eqEnrichById[eq.id]} />
                             </td>
                             <td className="px-3 py-2 text-slate-600">{EQ_TYPE_CFG[eq.type]?.label ?? eq.type}</td>
                             <td className="px-3 py-2 text-right text-slate-600">{eq.btu ?? "—"}</td>
@@ -793,7 +854,7 @@ export function WarehouseView() {
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">
                   {filteredEq.map(eq => (
-                    <EquipmentCard key={eq.id} eq={eq} warehouseItems={items}
+                    <EquipmentCard key={eq.id} eq={eq} warehouseItems={items} enrich={eqEnrichById[eq.id]}
                       onClick={() => setSelectedEq(selectedEq?.id === eq.id ? null : eq)}
                       isSelected={selectedEq?.id === eq.id}
                       onEdit={e => { e.stopPropagation(); setIsNewEq(false); setEditEq({ ...eq }); }}
@@ -1291,9 +1352,10 @@ function WarehouseItemCard({ item, onDetail, onStockIn, onStockOut, onEdit, onDe
 // ═══════════════════════════════════════════════════════════════════════════════
 // EQUIPMENT CARD
 // ═══════════════════════════════════════════════════════════════════════════════
-function EquipmentCard({ eq, warehouseItems, onClick, isSelected, onEdit, onDelete }: {
+function EquipmentCard({ eq, warehouseItems, onClick, isSelected, onEdit, onDelete, enrich }: {
   eq: EquipmentModel; warehouseItems: WarehouseItem[]; onClick: () => void; isSelected: boolean;
   onEdit?: (e: React.MouseEvent) => void; onDelete?: (e: React.MouseEvent) => void;
+  enrich?: EnrichMini;
 }) {
   const cfg = EQ_TYPE_CFG[eq.type] || EQ_TYPE_CFG.split_ac;
   return (
@@ -1304,6 +1366,9 @@ function EquipmentCard({ eq, warehouseItems, onClick, isSelected, onEdit, onDele
         <img src={eq.imageUrl} alt={`${eq.brand} ${eq.model}`} className="w-full h-full object-cover" />
         <div className={`absolute top-2 left-2 flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-full ${cfg.bg} ${cfg.color}`}>
           {cfg.icon} {cfg.label}
+        </div>
+        <div className="absolute bottom-2 left-2">
+          <EnrichBadge v={enrich} />
         </div>
         <div className="absolute top-2 right-2 bg-black/60 text-white text-[10px] font-bold px-2 py-1 rounded-full">
           {eq.warranty} лет
@@ -1364,6 +1429,17 @@ function InfoBadge({ children }: { children: React.ReactNode }) {
   return <span className="bg-slate-100 text-slate-600 text-[10px] font-semibold px-1.5 py-0.5 rounded-full">{children}</span>;
 }
 
+function EnrichBadge({ v }: { v?: EnrichMini }) {
+  const st = String(v?.enrichment_status ?? "pending");
+  const pct = Math.round(Number(v?.confidence ?? 0) * 100);
+  const base = "text-[10px] font-black px-2 py-0.5 rounded-full border";
+  if (st === "done") return <span className={`${base} bg-emerald-50 text-emerald-700 border-emerald-200`}>AI ✓ {pct}%</span>;
+  if (st === "needs_review") return <span className={`${base} bg-amber-50 text-amber-700 border-amber-200`}>AI ⚠ {pct}%</span>;
+  if (st === "error") return <span className={`${base} bg-red-50 text-red-700 border-red-200`}>AI ✕</span>;
+  if (st === "running") return <span className={`${base} bg-slate-50 text-slate-700 border-slate-200`}>AI…</span>;
+  return <span className={`${base} bg-slate-50 text-slate-600 border-slate-200`}>AI</span>;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // EQUIPMENT DETAIL PANEL
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1391,14 +1467,14 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
         headers: AH,
       }, `/make-server-1df47c03/equipment/enrichment?equipmentId=${encodeURIComponent(eq.id)}`);
       if (res.status === 404) {
-        throw new Error("Enrichment API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
+        throw new Error("API автозаполнения не найден (404). Проверьте деплой Supabase Edge Function make-server-1df47c03.");
       }
       const d = await res.json();
       if (d.error) throw new Error(d.error);
       setEnrichData(d.enrichment ?? null);
       setEnrichAssets(Array.isArray(d.assets) ? d.assets : []);
     } catch (e: any) {
-      const msg = String(e?.message ?? "Не удалось загрузить enrichment");
+      const msg = String(e?.message ?? "Не удалось загрузить результат автозаполнения");
       if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("network")) {
         setEnrichErr("Нет подключения к интернету/серверу. Проверьте сеть и повторите.");
       } else {
@@ -1414,21 +1490,38 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eq.id]);
 
-  // Single unified handler: "Спросить AI" should do everything without any external URL.
+  // Single unified handler: one button should do everything.
   async function runAutoFill() {
     try {
       setEnrichErr("");
       setEnrichLoading(true);
-      const res = await fetchWith404Fallback(`/equipment/enrich`, {
-        method: "POST",
-        headers: JH,
-        body: JSON.stringify({ items: [{ equipmentId: eq.id }] }),
-      }, `/make-server-1df47c03/equipment/enrich`);
-      if (res.status === 404) {
-        throw new Error("Autofill API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
+      const startRes = await fetchWith404Fallback(
+        `/equipment/autofill/start`,
+        { method: "POST", headers: JH, body: JSON.stringify({ equipmentId: eq.id }) },
+        `/make-server-1df47c03/equipment/autofill/start`,
+      );
+      const startData = await startRes.json().catch(() => ({}));
+      if (!startRes.ok || startData.error) throw new Error(startData.error || `HTTP ${startRes.status}`);
+      const jobId = String(startData.jobId ?? "").trim();
+      if (!jobId) throw new Error("jobId не получен");
+
+      // Step until done (short job: single equipment)
+      for (let guard = 0; guard < 30; guard++) {
+        const stepRes = await fetchWith404Fallback(
+          `/equipment/autofill/step`,
+          { method: "POST", headers: JH, body: JSON.stringify({ jobId }) },
+          `/make-server-1df47c03/equipment/autofill/step`,
+        );
+        const stepData = await stepRes.json().catch(() => ({}));
+        if (!stepRes.ok || stepData.error) throw new Error(stepData.error || `HTTP ${stepRes.status}`);
+        const job = stepData.job;
+        const msg = String(job?.progress_message ?? "").trim();
+        if (msg) setEnrichErr(msg); // show progress in the same area
+        if (stepData.done || String(job?.status) === "done") break;
+        if (String(job?.status) === "error") throw new Error(String(job?.error ?? "Ошибка автозаполнения"));
+        await new Promise(r => setTimeout(r, 350));
       }
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
+
       await fetchEnrichment();
     } catch (e: any) {
       const msg = String(e?.message ?? "Ошибка автозаполнения");
@@ -1481,7 +1574,7 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
               className={`bg-white/20 hover:bg-white/40 text-white p-1.5 rounded-full transition-all flex items-center gap-1.5 text-xs font-bold px-3 ${enrichLoading ? "opacity-60" : ""}`}
               title="Автозаполнить из интернета"
             >
-              <Sparkles size={13} /> {enrichLoading ? "AI…" : "Спросить AI"}
+              <Sparkles size={13} /> {enrichLoading ? "AI…" : "Заполнить AI"}
             </button>
             {onEdit && (
               <button onClick={onEdit}
@@ -1521,13 +1614,11 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
           <div className="mb-3 rounded-2xl border border-slate-200 bg-white p-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">AI enrichment</p>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Результат автозаполнения</p>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <InfoBadge>
-                    статус: {String(enrichData?.enrichment_status ?? (enrichErr ? "error" : "—"))}
-                  </InfoBadge>
+                  <InfoBadge>статус: {String(enrichData?.enrichment_status ?? (enrichErr ? "error" : "—"))}</InfoBadge>
                   {Number(enrichData?.confidence ?? 0) > 0 && (
-                    <InfoBadge>confidence: {Math.round(Number(enrichData.confidence) * 100)}%</InfoBadge>
+                    <InfoBadge>уверенность: {Math.round(Number(enrichData.confidence) * 100)}%</InfoBadge>
                   )}
                   {enrichData?.manufacturer_name && <InfoBadge>{String(enrichData.manufacturer_name)}</InfoBadge>}
                 </div>
@@ -1725,29 +1816,9 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
 }) {
   const [step, setStep] = useState<EqStep>("basic");
   const [saving, setSaving] = useState(false);
-  const [aiOpen, setAiOpen] = useState(false);
-  // Link input removed: system searches the web itself.
-  const [aiUrl] = useState("");
-  const [aiExtra, setAiExtra] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState("");
-  const [aiBomLoading, setAiBomLoading] = useState(false);
-  const [aiBomError, setAiBomError] = useState("");
   const [idPhotoLoading, setIdPhotoLoading] = useState(false);
   const [idPhotoError, setIdPhotoError] = useState("");
   const idPhotoRef = useRef<HTMLInputElement>(null);
-  const [aiBomPreview, setAiBomPreview] = useState<Array<{
-    warehouseId: string;
-    name: string;
-    unit: string;
-    qtyFixed: number;
-    qtyPerMeter: number;
-    notes?: string;
-    matchType?: string;
-    confidence?: number;
-    sourceUrl?: string;
-    needsReview?: boolean;
-  }>>([]);
 
   // Basic fields
   const [type, setType] = useState(eq.type || "split_ac");
@@ -1778,96 +1849,8 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
 
   const pSet = (k: string, v: any) => setParams((p: any) => ({ ...p, [k]: v }));
 
-  async function runAiFill() {
-    if (!brand.trim() || !model.trim()) { alert("Сначала заполните производителя и модель"); setStep("basic"); return; }
-    setAiLoading(true);
-    setAiError("");
-    try {
-      const res = await fetch(`${API}/equipment/ai-fill`, {
-        method: "POST",
-        headers: JH,
-        body: JSON.stringify({ type, brand, model, url: aiUrl, extraText: aiExtra }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || `AI error ${res.status}`);
-      const s = data.suggested ?? {};
-
-      if (typeof s.powerKw === "number" && s.powerKw > 0) setPowerKw(s.powerKw);
-      if (typeof s.btu === "number" && s.btu > 0) setBtu(s.btu);
-      if (typeof s.areaMin === "number" && s.areaMin > 0) setAreaMin(s.areaMin);
-      if (typeof s.areaMax === "number" && s.areaMax > 0) setAreaMax(s.areaMax);
-      if (typeof s.installerNotes === "string" && s.installerNotes.trim()) setInstallerNotes(s.installerNotes);
-
-      if (s.installParams && typeof s.installParams === "object") {
-        setParams((p: any) => ({ ...p, ...s.installParams }));
-      }
-      if (Array.isArray(s.bom)) {
-        const normalized = s.bom.map((e: any) => ({
-          warehouseId: String(e.warehouseId ?? ""),
-          name: String(e.name ?? ""),
-          unit: String(e.unit ?? "шт"),
-          qtyFixed: Number(e.qtyFixed ?? 0),
-          qtyPerMeter: Number(e.qtyPerMeter ?? 0),
-          notes: String(e.notes ?? ""),
-        })).filter((e: any) => e.name);
-        if (normalized.length) setBom(normalized);
-      }
-
-      // Native enrichment: fetch from web, store manual/photo, match BOM and apply back to card.
-      // If model is not saved yet, run by natural key; otherwise by equipmentId.
-      try {
-        const enrichRes = await fetchWith404Fallback(`/equipment/enrich`, {
-          method: "POST",
-          headers: JH,
-          body: JSON.stringify({
-            items: [
-              eq.id
-                ? { equipmentId: eq.id }
-                : { type, brand, model },
-            ],
-          }),
-        }, `/make-server-1df47c03/equipment/enrich`);
-        const enrichData = await enrichRes.json().catch(() => ({}));
-        if (!enrichRes.ok || enrichData.error) throw new Error(enrichData.error || `HTTP ${enrichRes.status}`);
-
-        // Pull enrichment + assets and apply imageUrl + BOM (matched)
-        const qs = eq.id
-          ? `equipmentId=${encodeURIComponent(String(eq.id))}`
-          : `type=${encodeURIComponent(String(type))}&brand=${encodeURIComponent(String(brand))}&model=${encodeURIComponent(String(model))}`;
-        const enr = await fetchWith404Fallback(`/equipment/enrichment?${qs}`, { method: "GET", headers: AH }, `/make-server-1df47c03/equipment/enrichment?${qs}`);
-        const enrJson = await enr.json().catch(() => ({}));
-        if (enr.ok && !enrJson.error) {
-          const assets = Array.isArray(enrJson.assets) ? enrJson.assets : [];
-          const primaryImage = assets.find((a: any) => a.kind === "image" && a.is_primary) ?? assets.find((a: any) => a.kind === "image");
-          const srcUrl = String(primaryImage?.source_url ?? "").trim();
-          if (srcUrl) setImageUrl(srcUrl);
-
-          const ebom = enrJson.enrichment?.bom;
-          if (Array.isArray(ebom) && ebom.length) {
-            const matched = ebom.filter((x: any) => String(x?.warehouseId ?? "").trim());
-            const normalized2 = (matched.length ? matched : ebom).map((e: any) => ({
-              warehouseId: String(e.warehouseId ?? ""),
-              name: String(e.name ?? ""),
-              unit: String(e.unit ?? "шт"),
-              qtyFixed: Number(e.qtyFixed ?? 0),
-              qtyPerMeter: Number(e.qtyPerMeter ?? 0),
-              notes: String(e.notes ?? ""),
-            })).filter((e: any) => e.name);
-            if (normalized2.length) setBom((prev) => mergeBomEntries(prev, normalized2));
-          }
-        }
-      } catch {
-        // best-effort; card still has ai-fill data
-      }
-
-      setAiOpen(false);
-      setStep("params");
-    } catch (e: any) {
-      setAiError(e.message);
-    } finally {
-      setAiLoading(false);
-    }
-  }
+  // Note: AI autofill is triggered from the equipment detail panel ("Заполнить AI")
+  // and from bulk actions. Edit modal keeps manual editing only.
 
   async function identifyFromPhoto(file: File) {
     setIdPhotoError("");
@@ -1903,59 +1886,6 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
       else out.push(inc);
     }
     return out;
-  }
-
-  async function runAiSuggestBom() {
-    if (!brand.trim() || !model.trim()) { alert("Сначала заполните производителя и модель"); setStep("basic"); return; }
-    setAiBomLoading(true);
-    setAiBomError("");
-    try {
-      const res = await fetch(`${API}/equipment/ai-suggest-bom`, {
-        method: "POST",
-        headers: JH,
-        body: JSON.stringify({ equipmentId: eq.id, type, brand, model }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || `AI error ${res.status}`);
-      const rows = Array.isArray(data.bomSuggestions) ? data.bomSuggestions : [];
-      const normalized = rows.map((e: any) => ({
-        warehouseId: String(e.warehouseId ?? ""),
-        name: String(e.name ?? ""),
-        unit: String(e.unit ?? "шт"),
-        qtyFixed: Number(e.qtyFixed ?? 0),
-        qtyPerMeter: Number(e.qtyPerMeter ?? 0),
-        notes: String(e.notes ?? ""),
-        matchType: String(e.matchType ?? "none"),
-        confidence: Number(e.confidence ?? 0),
-        sourceUrl: String(e.sourceUrl ?? ""),
-        needsReview: Boolean(e.needsReview),
-      })).filter((e: any) => e.name);
-      setAiBomPreview(normalized);
-      setStep("bom");
-    } catch (e: any) {
-      setAiBomError(e.message);
-    } finally {
-      setAiBomLoading(false);
-    }
-  }
-
-  function applyAiBomPreview() {
-    if (!aiBomPreview.length) return;
-    const matched = aiBomPreview.filter((e) => !!e.warehouseId);
-    if (!matched.length) {
-      alert("AI не смог сопоставить ни одну позицию BOM со складом. Попробуйте повторить с другой ссылкой/описанием.");
-      return;
-    }
-    const incoming = matched.map((e) => ({
-      warehouseId: e.warehouseId || "",
-      name: e.name,
-      unit: e.unit || "шт",
-      qtyFixed: Number(e.qtyFixed || 0),
-      qtyPerMeter: Number(e.qtyPerMeter || 0),
-      notes: [e.notes || "", e.needsReview ? "Проверить вручную (AI match)." : ""].filter(Boolean).join(" | "),
-    }));
-    setBom((prev) => mergeBomEntries(prev, incoming));
-    setAiBomPreview([]);
   }
 
   function addTool() {
@@ -2029,14 +1959,6 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
             </h2>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => { setAiOpen(true); setAiError(""); }}
-              className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-xs font-black flex items-center gap-1.5"
-              title="Заполнить параметры монтажа и BOM через AI"
-            >
-              <Sparkles size={14} /> Спросить AI
-            </button>
             <button onClick={onClose} className="bg-white/20 hover:bg-white/30 p-1.5 rounded-full">
               <X size={18} />
             </button>
@@ -2058,73 +1980,6 @@ function EquipmentEditModal({ eq, isNew, warehouseItems, onClose, onSave }: {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {aiOpen && (
-            <div className="border border-blue-200 bg-blue-50 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-black text-blue-800 flex items-center gap-2"><Sparkles size={14} /> AI-заполнение карточки</p>
-                <button type="button" onClick={() => setAiOpen(false)} className="text-blue-700 text-xs font-black hover:underline">Закрыть</button>
-              </div>
-              <div className="grid grid-cols-1 gap-2">
-                <div>
-                  <label className={LBL}>Комментарий / требования (опционально)</label>
-                  <textarea value={aiExtra} onChange={(e) => setAiExtra(e.target.value)} rows={3} className={INP} placeholder="Например: монтаж с насосом, трасса до 25м, питание 380В…" />
-                </div>
-              </div>
-              {aiError && (
-                <div className="text-xs font-bold text-red-700 bg-white border border-red-200 rounded-xl px-3 py-2">
-                  {aiError}
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={aiLoading}
-                  onClick={runAiFill}
-                  className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-black hover:bg-blue-700 disabled:opacity-60"
-                >
-                  {aiLoading ? "AI думает..." : "Заполнить"}
-                </button>
-                <button
-                  type="button"
-                  disabled={aiBomLoading}
-                  onClick={runAiSuggestBom}
-                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-black hover:bg-indigo-700 disabled:opacity-60"
-                >
-                  {aiBomLoading ? "Подбор..." : "Подобрать расходники (web)"}
-                </button>
-                <p className="text-[11px] text-blue-700">
-                  AI предложит параметры и BOM — после применения можно всё отредактировать.
-                </p>
-              </div>
-              {aiBomError && (
-                <div className="text-xs font-bold text-red-700 bg-white border border-red-200 rounded-xl px-3 py-2">
-                  {aiBomError}
-                </div>
-              )}
-              {!!aiBomPreview.length && (
-                <div className="bg-white border border-indigo-200 rounded-xl p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-black text-indigo-800">Предпросмотр BOM от AI: {aiBomPreview.length} поз.</p>
-                    <button type="button" onClick={applyAiBomPreview} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-black">
-                      Применить в BOM
-                    </button>
-                  </div>
-                  <div className="max-h-40 overflow-y-auto space-y-1.5">
-                    {aiBomPreview.map((r, idx) => (
-                      <div key={idx} className="text-[11px] border border-slate-200 rounded-lg px-2 py-1.5">
-                        <p className="font-bold text-slate-700">{r.name} · {r.qtyFixed} + {r.qtyPerMeter}/м · {r.unit}</p>
-                        <p className="text-slate-500">
-                          match: {r.matchType || "none"} ({Math.round((r.confidence || 0) * 100)}%) {r.needsReview ? "· проверить" : "· ok"}
-                        </p>
-                        {r.sourceUrl && <p className="text-slate-400 truncate">{r.sourceUrl}</p>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
           {/* ── BASIC ── */}
           {step === "basic" && (<>
             <div>

@@ -309,16 +309,41 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
         const B2 = 10; // server limit
         for (let i = 0; i < savedIds.length; i += B2) {
           const batch = savedIds.slice(i, i + B2);
-          const res = await fetchWith404Fallback(`/equipment/enrich`, {
-            method: "POST",
-            headers: JH,
-            body: JSON.stringify({ items: batch.map((id) => ({ equipmentId: id })) }),
-          }, `/make-server-1df47c03/equipment/enrich`);
-          if (res.status === 404) throw new Error("Autofill API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
-          const d = await res.json().catch(() => ({}));
-          if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
-          setEnriching(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
-          await new Promise(r => setTimeout(r, 250));
+          const startRes = await fetchWith404Fallback(
+            `/equipment/autofill/start`,
+            { method: "POST", headers: JH, body: JSON.stringify({ equipmentIds: batch }) },
+            `/make-server-1df47c03/equipment/autofill/start`,
+          );
+          const startData = await startRes.json().catch(() => ({}));
+          if (!startRes.ok || startData.error) throw new Error(startData.error || `HTTP ${startRes.status}`);
+          const jobId = String(startData.jobId ?? "").trim();
+          if (!jobId) throw new Error("jobId не получен");
+
+          for (let guard = 0; guard < 1200; guard++) {
+            const stepRes = await fetchWith404Fallback(
+              `/equipment/autofill/step`,
+              { method: "POST", headers: JH, body: JSON.stringify({ jobId }) },
+              `/make-server-1df47c03/equipment/autofill/step`,
+            );
+            const stepData = await stepRes.json().catch(() => ({}));
+            if (!stepRes.ok || stepData.error) throw new Error(stepData.error || `HTTP ${stepRes.status}`);
+            const job = stepData.job;
+            const done0 = Number(job?.done ?? 0) || 0;
+            const total0 = Number(job?.total ?? batch.length) || batch.length;
+            if (stepData.done || String(job?.status) === "done") {
+              // Count this batch as complete
+              setEnriching(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
+              break;
+            }
+            if (String(job?.status) === "error") throw new Error(String(job?.error ?? "Ошибка автозаполнения"));
+            // keep stepping
+            await new Promise(r => setTimeout(r, 350));
+            // safety if backend reports completion per batch unexpectedly
+            if (done0 >= total0) {
+              setEnriching(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
+              break;
+            }
+          }
         }
       } catch (e: any) {
         const msg = String(e?.message ?? "AI enrichment failed");
@@ -479,7 +504,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                   onChange={(e) => setAutoEnrich(e.target.checked)}
                   className="w-3.5 h-3.5 rounded accent-teal-600"
                 />
-                Автозаполнять карточки после импорта (фото, PDF, расходники)
+                Заполнять AI после импорта (фото, PDF, расходники)
               </label>
             </div>
           )}
@@ -738,7 +763,7 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
                 )}
                 {enriching && (
                   <p className="text-xs text-teal-700 mt-2">
-                    AI-автозаполнение: {enriching.running ? "в процессе" : "готово"} {enriching.done} / {enriching.total}
+                    Заполнение AI: {enriching.running ? "в процессе" : "готово"} {enriching.done} / {enriching.total}
                   </p>
                 )}
                 <p className="text-xs text-slate-400 mt-2">Если что-то не нашлось — откройте модель и нажмите “Спросить AI”.</p>
