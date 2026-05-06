@@ -1374,12 +1374,20 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
         method: "GET",
         headers: AH,
       });
+      if (res.status === 404) {
+        throw new Error("Enrichment API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
+      }
       const d = await res.json();
       if (d.error) throw new Error(d.error);
       setEnrichData(d.enrichment ?? null);
       setEnrichAssets(Array.isArray(d.assets) ? d.assets : []);
     } catch (e: any) {
-      setEnrichErr(String(e?.message ?? "Не удалось загрузить enrichment"));
+      const msg = String(e?.message ?? "Не удалось загрузить enrichment");
+      if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("network")) {
+        setEnrichErr("Нет подключения к интернету/серверу. Проверьте сеть и повторите.");
+      } else {
+        setEnrichErr(msg);
+      }
       setEnrichData(null);
       setEnrichAssets([]);
     }
@@ -1400,11 +1408,19 @@ function EquipmentDetail({ eq, warehouseItems, onClose, onEdit }: {
         headers: JH,
         body: JSON.stringify({ items: [{ equipmentId: eq.id }] }),
       });
+      if (res.status === 404) {
+        throw new Error("Autofill API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
+      }
       const d = await res.json().catch(() => ({}));
       if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
       await fetchEnrichment();
     } catch (e: any) {
-      setEnrichErr(String(e?.message ?? "Ошибка автозаполнения"));
+      const msg = String(e?.message ?? "Ошибка автозаполнения");
+      if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("network")) {
+        setEnrichErr("Нет подключения к интернету/серверу. Проверьте сеть и повторите.");
+      } else {
+        setEnrichErr(msg);
+      }
     } finally {
       setEnrichLoading(false);
     }

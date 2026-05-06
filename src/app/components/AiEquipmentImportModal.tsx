@@ -304,13 +304,19 @@ export function AiEquipmentImportModal({ onClose, onImported }: Props) {
             headers: JH,
             body: JSON.stringify({ items: batch.map((id) => ({ equipmentId: id })) }),
           });
+          if (res.status === 404) throw new Error("Autofill API не найден (404). Нужно задеплоить Supabase Edge Function make-server-1df47c03.");
           const d = await res.json().catch(() => ({}));
           if (!res.ok || d.error) throw new Error(d.error || `HTTP ${res.status}`);
           setEnriching(prev => prev ? { ...prev, done: Math.min(prev.total, prev.done + batch.length) } : prev);
           await new Promise(r => setTimeout(r, 250));
         }
       } catch (e: any) {
-        setParseWarning(String(e?.message ?? "AI enrichment failed"));
+        const msg = String(e?.message ?? "AI enrichment failed");
+        if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("network")) {
+          setParseWarning("Нет подключения к интернету/серверу. Автозаполнение после импорта пропущено.");
+        } else {
+          setParseWarning(msg);
+        }
       } finally {
         setEnriching(prev => prev ? { ...prev, running: false } : prev);
       }
