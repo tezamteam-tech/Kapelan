@@ -1,0 +1,631 @@
+{
+  "counts": {
+    "price_matrices": 238,
+    "price_matrix_cells": 40976,
+    "catalog_items": 490,
+    "work_rates": 66
+  },
+  "samples": {
+    "price_matrices": [
+      {
+        "supplier": "Avansum",
+        "name": "Brusbox 60-3 СП24: Brusbox 60-3 (Class B), Аэро, СП24, Белый, block 1",
+        "profile_system": "Brusbox 60-3 (Class B), Аэро",
+        "glass_unit": "СП24",
+        "color": "Белый",
+        "matrix_kind": "window",
+        "hardware_type": "standard",
+        "variant_label": "1-window-4-м1-16-4-м1",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Brusbox 60-3 СП24",
+        "source_block": 1,
+        "effective_from": "2026-03-23",
+        "meta": {
+          "filling": "4 М1-16-4 М1",
+          "header_row": 38,
+          "widths": [
+            500,
+            600,
+            700,
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800
+          ],
+          "heights": [
+            500,
+            600,
+            700,
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+            2000
+          ]
+        },
+        "cells": [
+          {
+            "width_mm": 500,
+            "height_mm": 500,
+            "price": 53.0
+          },
+          {
+            "width_mm": 600,
+            "height_mm": 500,
+            "price": 59.0
+          },
+          {
+            "width_mm": 700,
+            "height_mm": 500,
+            "price": 64.0
+          },
+          {
+            "width_mm": 800,
+            "height_mm": 500,
+            "price": 69.0
+          },
+          {
+            "width_mm": 900,
+            "height_mm": 500,
+            "price": 75.0
+          }
+        ]
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Brusbox 60-3 СП24: Brusbox 60-3 (Class B), Аэро, СП24, Белый, block 2",
+        "profile_system": "Brusbox 60-3 (Class B), Аэро",
+        "glass_unit": "СП24",
+        "color": "Белый",
+        "matrix_kind": "window",
+        "hardware_type": "FUTURUSS",
+        "variant_label": "2-window-futuruss-4-м1-16-4-м1",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Brusbox 60-3 СП24",
+        "source_block": 2,
+        "effective_from": "2026-03-23",
+        "meta": {
+          "filling": "4 М1-16-4 М1",
+          "header_row": 69,
+          "widths": [
+            600,
+            700,
+            800,
+            900,
+            1000
+          ],
+          "heights": [
+            600,
+            700,
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+            2000
+          ]
+        },
+        "cells": [
+          {
+            "width_mm": 600,
+            "height_mm": 600,
+            "price": 147.0
+          },
+          {
+            "width_mm": 700,
+            "height_mm": 600,
+            "price": 155.0
+          },
+          {
+            "width_mm": 800,
+            "height_mm": 600,
+            "price": 167.0
+          },
+          {
+            "width_mm": 900,
+            "height_mm": 600,
+            "price": 175.0
+          },
+          {
+            "width_mm": 1000,
+            "height_mm": 600,
+            "price": 188.0
+          }
+        ]
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Brusbox 60-3 СП24: Brusbox 60-3 (Class B), Аэро, СП24, Белый, block 3",
+        "profile_system": "Brusbox 60-3 (Class B), Аэро",
+        "glass_unit": "СП24",
+        "color": "Белый",
+        "matrix_kind": "window",
+        "hardware_type": "standard",
+        "variant_label": "3-window-4-м1-16-4-м1",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Brusbox 60-3 СП24",
+        "source_block": 3,
+        "effective_from": "2026-03-23",
+        "meta": {
+          "filling": "4 М1-16-4 М1",
+          "header_row": 99,
+          "widths": [
+            600,
+            700,
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900
+          ],
+          "heights": [
+            600,
+            700,
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+            2000
+          ]
+        },
+        "cells": [
+          {
+            "width_mm": 600,
+            "height_mm": 600,
+            "price": 83.0
+          },
+          {
+            "width_mm": 700,
+            "height_mm": 600,
+            "price": 89.0
+          },
+          {
+            "width_mm": 800,
+            "height_mm": 600,
+            "price": 95.0
+          },
+          {
+            "width_mm": 900,
+            "height_mm": 600,
+            "price": 101.0
+          },
+          {
+            "width_mm": 1000,
+            "height_mm": 600,
+            "price": 106.0
+          }
+        ]
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Brusbox 60-3 СП24: Brusbox 60-3 (Class B), Аэро, СП24, Белый, block 4",
+        "profile_system": "Brusbox 60-3 (Class B), Аэро",
+        "glass_unit": "СП24",
+        "color": "Белый",
+        "matrix_kind": "window",
+        "hardware_type": "FUTURUSS",
+        "variant_label": "4-window-futuruss-4-м1-16-4-м1",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Brusbox 60-3 СП24",
+        "source_block": 4,
+        "effective_from": "2026-03-23",
+        "meta": {
+          "filling": "4 М1-16-4 М1",
+          "header_row": 130,
+          "widths": [
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+            2000
+          ],
+          "heights": [
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+            2000,
+            2100
+          ]
+        },
+        "cells": [
+          {
+            "width_mm": 1000,
+            "height_mm": 800,
+            "price": 212.0
+          },
+          {
+            "width_mm": 1100,
+            "height_mm": 800,
+            "price": 220.0
+          },
+          {
+            "width_mm": 1200,
+            "height_mm": 800,
+            "price": 228.0
+          },
+          {
+            "width_mm": 1300,
+            "height_mm": 800,
+            "price": 236.0
+          },
+          {
+            "width_mm": 1400,
+            "height_mm": 800,
+            "price": 247.0
+          }
+        ]
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Brusbox 60-3 СП24: Brusbox 60-3 (Class B), Аэро, СП24, Белый, block 5",
+        "profile_system": "Brusbox 60-3 (Class B), Аэро",
+        "glass_unit": "СП24",
+        "color": "Белый",
+        "matrix_kind": "window",
+        "hardware_type": "FUTURUSS",
+        "variant_label": "5-window-futuruss-4-м1-16-4-м1",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Brusbox 60-3 СП24",
+        "source_block": 5,
+        "effective_from": "2026-03-23",
+        "meta": {
+          "filling": "4 М1-16-4 М1",
+          "header_row": 161,
+          "widths": [
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+            2000
+          ],
+          "heights": [
+            800,
+            900,
+            1000,
+            1100,
+            1200,
+            1300,
+            1400,
+            1500,
+            1600,
+            1700,
+            1800,
+            1900,
+            2000,
+            2100,
+            2200
+          ]
+        },
+        "cells": [
+          {
+            "width_mm": 1000,
+            "height_mm": 800,
+            "price": 300.0
+          },
+          {
+            "width_mm": 1100,
+            "height_mm": 800,
+            "price": 309.0
+          },
+          {
+            "width_mm": 1200,
+            "height_mm": 800,
+            "price": 318.0
+          },
+          {
+            "width_mm": 1300,
+            "height_mm": 800,
+            "price": 327.0
+          },
+          {
+            "width_mm": 1400,
+            "height_mm": 800,
+            "price": 343.0
+          }
+        ]
+      }
+    ],
+    "catalog_items": [
+      {
+        "supplier": "Avansum",
+        "name": "Комплект фурнитуры Futuruss на окно (Белый)",
+        "sku": "AVA-F571AE7BED8B",
+        "category": "hardware",
+        "unit": "комплект",
+        "buy_price": 70.2,
+        "sell_price": 70.2,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Комплект фурнитуры Futuruss на балконную дверь (Белый)",
+        "sku": "AVA-F6E30B66A848",
+        "category": "hardware",
+        "unit": "комплект",
+        "buy_price": 117.0,
+        "sell_price": 117.0,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Комплект фурнитуры Roto на окно (Белый)",
+        "sku": "AVA-EA9946567902",
+        "category": "hardware",
+        "unit": "комплект",
+        "buy_price": 182.52,
+        "sell_price": 182.52,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Комплект фурнитуры Roto на балконную дверь (Белый)",
+        "sku": "AVA-E9950856417E",
+        "category": "hardware",
+        "unit": "комплект",
+        "buy_price": 218.4,
+        "sell_price": 218.4,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Комплект декоративных накладок на петли Futuruss (Белый)",
+        "sku": "AVA-29700FB22204",
+        "category": "hardware",
+        "unit": "комплект",
+        "buy_price": 6.58,
+        "sell_price": 6.58,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Коричневый",
+        "sku": "AVA-C1DB3128ACBB",
+        "category": "hardware",
+        "unit": "шт",
+        "buy_price": 23.22,
+        "sell_price": 23.22,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Комплект декоративных накладок на петли Roto (Белый)",
+        "sku": "AVA-BD72FDEDE125",
+        "category": "hardware",
+        "unit": "комплект",
+        "buy_price": 7.96,
+        "sell_price": 7.96,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Ручка оконная стандартная Makbet (Белый)",
+        "sku": "AVA-BDE7227555E5",
+        "category": "hardware",
+        "unit": "шт",
+        "buy_price": 3.64,
+        "sell_price": 3.64,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Ручка оконная с ключом Forwin (Белый)",
+        "sku": "AVA-132A72987721",
+        "category": "hardware",
+        "unit": "шт",
+        "buy_price": 17.03,
+        "sell_price": 17.03,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Ручка-захват для балконной двери пластик (Белый)",
+        "sku": "AVA-A01C1781F2E2",
+        "category": "hardware",
+        "unit": "шт",
+        "buy_price": 0.58,
+        "sell_price": 0.58,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Коричневый/ Антрацит",
+        "sku": "AVA-524E30D45C48",
+        "category": "hardware",
+        "unit": "шт",
+        "buy_price": 4.66,
+        "sell_price": 4.66,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      },
+      {
+        "supplier": "Avansum",
+        "name": "Ручка-захват для балконной двери алюминий Medos de luxe (Белый/ Коричневый)",
+        "sku": "AVA-9DE59E90C57D",
+        "category": "hardware",
+        "unit": "шт",
+        "buy_price": 21.91,
+        "sell_price": 21.91,
+        "item_type": "component",
+        "source_file": "69c38967982f6.xlsx",
+        "source_sheet": "Фурнитура",
+        "notes": ""
+      }
+    ],
+    "work_rates": [
+      {
+        "name": "Монтаж сушилки потолочной",
+        "category": "",
+        "unit": "шт.",
+        "rate": 30.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Подготовка основания на брус",
+        "category": "до 5м",
+        "unit": "м.пог.",
+        "rate": 70.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Подготовка основания на брус",
+        "category": "до 7м",
+        "unit": "м.пог.",
+        "rate": 90.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Наружная отделка сайдингом",
+        "category": "на брус",
+        "unit": "м2",
+        "rate": 15.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Наружная отделка сайдингом",
+        "category": "на металл",
+        "unit": "м2",
+        "rate": 16.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Монтаж пола по лагам",
+        "category": "OSB",
+        "unit": "м2",
+        "rate": 15.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Монтаж пола по лагам",
+        "category": "дерево шпунт",
+        "unit": "м2",
+        "rate": 17.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Отделка стен по контробрешетке",
+        "category": "гипс",
+        "unit": "м2",
+        "rate": 11.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Отделка стен по контробрешетке",
+        "category": "пвх панели",
+        "unit": "м2",
+        "rate": 12.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Отделка стен по контробрешетке",
+        "category": "вагонка",
+        "unit": "м2",
+        "rate": 14.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Отделка стен по контробрешетке",
+        "category": "ламинат",
+        "unit": "м2",
+        "rate": 17.0,
+        "source_file": "Закупки ОС+.xlsx"
+      },
+      {
+        "name": "Отделка стен по контробрешетке",
+        "category": "декор.штукатурка",
+        "unit": "м2",
+        "rate": 22.0,
+        "source_file": "Закупки ОС+.xlsx"
+      }
+    ]
+  }
+}

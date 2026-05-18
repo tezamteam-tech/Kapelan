@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "bootstrap:users": "node scripts/bootstrap-users.mjs"
+    "bootstrap:users": "node scripts/bootstrap-users.mjs",
+    "import:windows": "node scripts/import-window-workbooks.mjs"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

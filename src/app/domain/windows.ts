@@ -47,6 +47,31 @@ export interface WindowOfferLine {
   unit: string;
   price: number;
   window_construct_id?: string;
+  planned_cost?: number;
+  warehouse_item_id?: string;
+}
+
+export interface WindowBomRequirement {
+  key: string;
+  window_construct_id: string;
+  name: string;
+  category: "profile" | "glass" | "hardware" | "sill" | "drip_cap" | "mosquito_net" | "slopes" | "consumable" | "labor";
+  qty: number;
+  unit: string;
+  planned_buy_price: number;
+  planned_sell_price: number;
+  source: "warehouse" | "supplier" | "mixed" | "manual";
+}
+
+export interface WindowOrderEconomics {
+  revenue: number;
+  materialCost: number;
+  laborCost: number;
+  supplierCost: number;
+  overheadCost: number;
+  grossProfit: number;
+  grossMarginPct: number;
+  requirements: WindowBomRequirement[];
 }
 
 export const PROFILE_SYSTEMS = [
@@ -60,6 +85,24 @@ export const PROFILE_SYSTEMS = [
 
 export const GLASS_UNITS = ["СП24", "СП32", "СП40"];
 export const HARDWARE_TYPES = ["Futuruss", "Roto", "Maco", "Forwin"];
+
+const WORK_RATES = {
+  installationWindow: 48,
+  installationBalcony: 72,
+  slopesPvc: 12,
+  slopesOther: 16,
+};
+
+const MATERIAL_COST = {
+  profilePerM: 9.5,
+  glassPerM2: 38,
+  hardwareFixed: 28,
+  sillPerM: 13,
+  dripCapPerM: 8,
+  mosquitoNet: 20,
+  foamPerConstruct: 9,
+  anchorsPerConstruct: 5,
+};
 
 export function defaultWindowConstruct(idx = 1): WindowConstruct {
   return {
@@ -207,6 +250,161 @@ export function calculateWindowOfferLines(constructs: WindowConstruct[]): Window
     });
   }
   return lines;
+}
+
+export function buildWindowBomRequirements(constructs: WindowConstruct[]): WindowBomRequirement[] {
+  const requirements: WindowBomRequirement[] = [];
+  for (const raw of constructs) {
+    const w = normalizeWindowConstruct(raw);
+    const area = windowAreaM2(w) * w.quantity;
+    const widthM = (w.widthMm / 1000) * w.quantity;
+    const heightM = (w.heightMm / 1000) * w.quantity;
+    const perimeterM = Math.round((widthM * 2 + heightM * 2) * 10) / 10;
+    const sashCount = w.segments.filter((s) => s.kind !== "fixed" && s.opening !== "fixed").length * w.quantity;
+
+    requirements.push({
+      key: `${w.id}:profile`,
+      window_construct_id: w.id,
+      name: `Профиль ${w.profileSystem}`,
+      category: "profile",
+      qty: perimeterM,
+      unit: "м.п.",
+      planned_buy_price: MATERIAL_COST.profilePerM,
+      planned_sell_price: Math.round(MATERIAL_COST.profilePerM * 1.55),
+      source: "supplier",
+    });
+    requirements.push({
+      key: `${w.id}:glass`,
+      window_construct_id: w.id,
+      name: `Стеклопакет ${w.glassUnit}`,
+      category: "glass",
+      qty: Math.round(area * 10) / 10,
+      unit: "м2",
+      planned_buy_price: MATERIAL_COST.glassPerM2,
+      planned_sell_price: Math.round(MATERIAL_COST.glassPerM2 * 1.45),
+      source: "supplier",
+    });
+    if (sashCount > 0) {
+      requirements.push({
+        key: `${w.id}:hardware`,
+        window_construct_id: w.id,
+        name: `Фурнитура ${w.hardwareType}`,
+        category: "hardware",
+        qty: sashCount,
+        unit: "компл.",
+        planned_buy_price: MATERIAL_COST.hardwareFixed,
+        planned_sell_price: Math.round(MATERIAL_COST.hardwareFixed * 1.8),
+        source: "supplier",
+      });
+    }
+    if (w.sillDepthMm) {
+      requirements.push({
+        key: `${w.id}:sill`,
+        window_construct_id: w.id,
+        name: `Подоконник ${w.sillDepthMm} мм`,
+        category: "sill",
+        qty: Math.max(1, Math.ceil(widthM)),
+        unit: "м.п.",
+        planned_buy_price: MATERIAL_COST.sillPerM,
+        planned_sell_price: 28,
+        source: "mixed",
+      });
+    }
+    if (w.dripCapDepthMm) {
+      requirements.push({
+        key: `${w.id}:drip`,
+        window_construct_id: w.id,
+        name: `Отлив ${w.dripCapDepthMm} мм`,
+        category: "drip_cap",
+        qty: Math.max(1, Math.ceil(widthM)),
+        unit: "м.п.",
+        planned_buy_price: MATERIAL_COST.dripCapPerM,
+        planned_sell_price: 18,
+        source: "mixed",
+      });
+    }
+    if (w.mosquitoNet) {
+      requirements.push({
+        key: `${w.id}:mosquito`,
+        window_construct_id: w.id,
+        name: "Москитная сетка",
+        category: "mosquito_net",
+        qty: w.quantity,
+        unit: "шт",
+        planned_buy_price: MATERIAL_COST.mosquitoNet,
+        planned_sell_price: 45,
+        source: "supplier",
+      });
+    }
+    requirements.push({
+      key: `${w.id}:foam`,
+      window_construct_id: w.id,
+      name: "Пена, крепеж, герметики",
+      category: "consumable",
+      qty: w.quantity,
+      unit: "компл.",
+      planned_buy_price: MATERIAL_COST.foamPerConstruct + MATERIAL_COST.anchorsPerConstruct,
+      planned_sell_price: 32,
+      source: "warehouse",
+    });
+    requirements.push({
+      key: `${w.id}:labor`,
+      window_construct_id: w.id,
+      name: `Работы по монтажу ${w.title}`,
+      category: "labor",
+      qty: w.quantity,
+      unit: "шт",
+      planned_buy_price: w.constructionType === "balcony_glazing" ? WORK_RATES.installationBalcony : WORK_RATES.installationWindow,
+      planned_sell_price: w.constructionType === "balcony_glazing" ? 130 : 85,
+      source: "manual",
+    });
+  }
+  return requirements;
+}
+
+export function calculateWindowEconomics(constructs: WindowConstruct[], offerLines?: WindowOfferLine[]): WindowOrderEconomics {
+  const lines = offerLines?.length ? offerLines : calculateWindowOfferLines(constructs);
+  const requirements = buildWindowBomRequirements(constructs);
+  const revenue = Math.round(lines.reduce((sum, line) => sum + (Number(line.qty) || 0) * (Number(line.price) || 0), 0));
+  const materialCost = Math.round(requirements.filter((r) => r.category !== "labor").reduce((sum, r) => sum + r.qty * r.planned_buy_price, 0));
+  const laborCost = Math.round(requirements.filter((r) => r.category === "labor").reduce((sum, r) => sum + r.qty * r.planned_buy_price, 0));
+  const supplierCost = Math.round(requirements.filter((r) => r.source === "supplier" || r.source === "mixed").reduce((sum, r) => sum + r.qty * r.planned_buy_price, 0));
+  const overheadCost = Math.round(revenue * 0.04);
+  const grossProfit = Math.round(revenue - materialCost - laborCost - overheadCost);
+  const grossMarginPct = revenue > 0 ? Math.round((grossProfit / revenue) * 1000) / 10 : 0;
+  return { revenue, materialCost, laborCost, supplierCost, overheadCost, grossProfit, grossMarginPct, requirements };
+}
+
+export function windowMeasurementVisionPrompt() {
+  return `Верни только JSON без markdown. Найди на фото оконные/дверные/балконные конструкции и верни массив WindowConstruct.
+Схема объекта:
+{
+  "constructs": [{
+    "title": "Окно 1",
+    "roomName": "Кухня",
+    "constructionType": "window|door|balcony_block|balcony_glazing|balcony_finish",
+    "widthMm": 1400,
+    "heightMm": 1300,
+    "quantity": 1,
+    "profileSystem": "если указано, иначе пусто",
+    "glassUnit": "СП24|СП32|СП40 или пусто",
+    "hardwareType": "если указано, иначе пусто",
+    "lamination": "none|inside|outside|both",
+    "sillDepthMm": 250,
+    "dripCapDepthMm": 150,
+    "mosquitoNet": false,
+    "slopes": "none|pvc|plaster|sandwich",
+    "segments": [{
+      "kind": "fixed|sash|door|sliding",
+      "opening": "fixed|turn|tilt_turn|tilt|door|sliding",
+      "widthRatio": 1,
+      "handleSide": "left|right"
+    }],
+    "notes": "сомнения, повреждения, особенности монтажа"
+  }],
+  "confidence": 0-100,
+  "warnings": ["что нужно перепроверить замерщику"]
+}`;
 }
 
 export function renderWindowSvg(w: WindowConstruct, opts?: { width?: number; height?: number }) {

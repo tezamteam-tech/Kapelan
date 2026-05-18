@@ -23,6 +23,7 @@ import {
   GLASS_UNITS,
   HARDWARE_TYPES,
   PROFILE_SYSTEMS,
+  calculateWindowEconomics,
   calculateWindowOfferLines,
   defaultWindowConstruct,
   describeWindowConstruct,
@@ -1953,6 +1954,9 @@ export function OrdersView() {
                   onCreateDraft={createOfferDraftFromEquipment}
                   onSaveLines={saveOfferLines}
                 />
+                {role === "admin" && (
+                  <OrderEconomicsPanel order={selected} />
+                )}
               </div>
             )}
 
@@ -2352,6 +2356,69 @@ export function OrdersView() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function OrderEconomicsPanel({ order }: { order: Order }) {
+  const { currency } = useCurrency();
+  const economics = useMemo(() => {
+    return calculateWindowEconomics(order.window_constructs ?? [], (order.offer?.lines ?? []) as any);
+  }, [order.offer?.lines, order.window_constructs]);
+
+  const money = (value: number) => `${Math.round(value).toLocaleString("ru-RU")} ${order.offer?.currency ?? currency.name}`;
+  const cost = economics.materialCost + economics.laborCost + economics.overheadCost;
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-black text-slate-900">Экономика заказа</p>
+          <p className="text-[11px] text-slate-400 mt-0.5">Только для администратора: плановая себестоимость и маржа</p>
+        </div>
+        <span className={`text-xs font-black px-3 py-1 rounded-full ${economics.grossProfit >= 0 ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+          Маржа {economics.grossMarginPct}%
+        </span>
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-0 border-b border-slate-100">
+        {[
+          ["Выручка", economics.revenue],
+          ["Материалы", economics.materialCost],
+          ["Работы", economics.laborCost],
+          ["Накладные", economics.overheadCost],
+          ["Прибыль", economics.grossProfit],
+        ].map(([label, value]) => (
+          <div key={String(label)} className="p-4 border-r border-slate-100 last:border-r-0">
+            <p className="text-[11px] uppercase tracking-widest font-bold text-slate-400">{label}</p>
+            <p className="mt-1 text-base font-black text-slate-900">{money(Number(value))}</p>
+          </div>
+        ))}
+      </div>
+      <div className="p-4 grid grid-cols-1 lg:grid-cols-[1fr_260px] gap-4">
+        <div className="rounded-xl border border-slate-100 overflow-hidden">
+          <div className="grid grid-cols-[1fr_80px_100px_100px] bg-slate-50 px-3 py-2 text-[11px] font-black uppercase text-slate-400">
+            <span>Потребность</span>
+            <span>Кол-во</span>
+            <span>Закупка</span>
+            <span>Источник</span>
+          </div>
+          {economics.requirements.slice(0, 12).map((req) => (
+            <div key={req.key} className="grid grid-cols-[1fr_80px_100px_100px] items-center border-t border-slate-100 px-3 py-2 text-xs">
+              <span className="font-semibold text-slate-700 truncate">{req.name}</span>
+              <span className="text-slate-500">{req.qty} {req.unit}</span>
+              <span className="font-bold text-slate-800">{money(req.qty * req.planned_buy_price)}</span>
+              <span className="text-slate-500">{req.source}</span>
+            </div>
+          ))}
+        </div>
+        <div className="rounded-xl bg-slate-900 p-4 text-white">
+          <p className="text-xs font-bold uppercase text-slate-300">Плановая себестоимость</p>
+          <p className="mt-1 text-2xl font-black">{money(cost)}</p>
+          <p className="mt-3 text-xs leading-relaxed text-slate-300">
+            До прихода материалов расчет строится по плановым закупочным ценам. После закупки и списания сюда можно подставлять фактические цены поставщиков и фактический расход.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

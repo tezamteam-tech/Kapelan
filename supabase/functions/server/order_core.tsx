@@ -512,6 +512,7 @@ function isWindowOrder(order: Order): boolean {
 
 export function registerOrderCoreRoutes(app: any) {
   const P = "/make-server-1df47c03";
+  const windowVisionPrompt = `Верни только JSON без markdown. Найди на фото оконные, дверные и балконные конструкции. Верни объект { "constructs": WindowConstruct[], "confidence": 0-100, "warnings": string[] }. WindowConstruct: title, roomName, constructionType, widthMm, heightMm, quantity, profileSystem, glassUnit, hardwareType, lamination, sillDepthMm, dripCapDepthMm, mosquitoNet, slopes, segments[]. Segment: kind fixed|sash|door|sliding, opening fixed|turn|tilt_turn|tilt|door|sliding, widthRatio, handleSide left|right.`;
 
   // GET /orders
   app.get(`${P}/orders`, async (c: any) => {
@@ -631,6 +632,71 @@ export function registerOrderCoreRoutes(app: any) {
       getTimeline(id),
     ]);
     return c.json({ order, materials, supplierRequests, timeline });
+  });
+
+  // POST /orders/:id/measurement-ai/parse
+  // Stores parsed vision output from a measurement sketch/photo and maps it to WindowConstruct[]
+  app.post(`${P}/orders/:id/measurement-ai/parse`, async (c: any) => {
+    const id = c.req.param("id");
+    const order = await getOrder(id);
+    if (!order) return c.json({ error: "Order not found" }, 404);
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = body?.parsed ?? body;
+    const constructsRaw = Array.isArray(parsed?.constructs) ? parsed.constructs : null;
+
+    if (!constructsRaw) {
+      return c.json({
+        status: "needs_ai",
+        prompt: windowVisionPrompt,
+        expected_schema: {
+          constructs: "WindowConstruct[]",
+          confidence: "number 0..100",
+          warnings: "string[]",
+        },
+      });
+    }
+
+    const constructs = constructsRaw.map((x: any, idx: number) => ({
+      id: String(x.id || uid("win")),
+      title: String(x.title || `Конструкция ${idx + 1}`),
+      roomName: String(x.roomName || ""),
+      locationLabel: String(x.locationLabel || ""),
+      constructionType: String(x.constructionType || "window"),
+      widthMm: Math.max(100, Number(x.widthMm) || 1000),
+      heightMm: Math.max(100, Number(x.heightMm) || 1000),
+      quantity: Math.max(1, Number(x.quantity) || 1),
+      profileSystem: String(x.profileSystem || ""),
+      glassUnit: String(x.glassUnit || ""),
+      hardwareType: String(x.hardwareType || ""),
+      colorInside: String(x.colorInside || "Белый"),
+      colorOutside: String(x.colorOutside || "Белый"),
+      lamination: String(x.lamination || "none"),
+      sillDepthMm: x.sillDepthMm == null ? undefined : Number(x.sillDepthMm),
+      dripCapDepthMm: x.dripCapDepthMm == null ? undefined : Number(x.dripCapDepthMm),
+      mosquitoNet: Boolean(x.mosquitoNet),
+      slopes: String(x.slopes || "none"),
+      notes: String(x.notes || ""),
+      segments: Array.isArray(x.segments) && x.segments.length
+        ? x.segments.map((s: any, sIdx: number) => ({ id: String(s.id || `s${sIdx + 1}`), ...s }))
+        : [{ id: "s1", kind: "fixed", opening: "fixed", widthRatio: 1 }],
+    }));
+
+    order.window_constructs = constructs;
+    order.survey = {
+      ...(order.survey ?? {}),
+      status: "done",
+      performed_at: now(),
+      notes: [order.survey?.notes, parsed?.warnings?.length ? `AI warnings: ${parsed.warnings.join("; ")}` : ""].filter(Boolean).join("\n"),
+    };
+    order.status = ["new", "qualification", "survey_scheduled"].includes(order.status) ? "survey_done" : order.status;
+    order.updated_at = now();
+    await saveOrder(order);
+    await pushTimeline(id, "measurement.ai_parsed", {
+      constructs: constructs.length,
+      confidence: parsed?.confidence ?? null,
+      source_url: body?.imageUrl ?? null,
+    });
+    return c.json({ order, constructs, confidence: parsed?.confidence ?? null, warnings: parsed?.warnings ?? [] });
   });
 
   // PATCH /orders/:id (update)
