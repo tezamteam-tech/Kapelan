@@ -40,7 +40,7 @@ export function RootWrapper() {
           }
           if (data.ordersLite) primeJson(`${API_BASE}/orders?lite=1`, data.ordersLite, { ttlMs: 30_000, staleTtlMs: 5 * 60_000 });
           if (data.equipment) primeJson(`${API_BASE}/equipment`, data.equipment, { ttlMs: 2 * 60_000, staleTtlMs: 10 * 60_000 });
-          if (role === "admin") {
+          if (role === "admin" || role === "manager" || role === "installer") {
             if (data.warehouse) primeJson(`${API_BASE}/warehouse`, data.warehouse, { ttlMs: 60_000, staleTtlMs: 10 * 60_000 });
             if (data.purchaseOrders) primeJson(`${API_BASE}/purchase-orders`, data.purchaseOrders, { ttlMs: 60_000, staleTtlMs: 10 * 60_000 });
           }

@@ -69,7 +69,7 @@ export const router = createHashRouter([
           { path: "measurements", element: <Navigate to="/orders" replace /> },
           {
             path: "tasks",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/TasksPage")).TasksPage, ["admin", "installer"])) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/TasksPage")).TasksPage, ["admin", "manager", "installer"])) }),
           },
           {
             path: "calendar",
@@ -77,7 +77,7 @@ export const router = createHashRouter([
           },
           {
             path: "warehouse",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/WarehousePage")).WarehousePage, ["admin"])) }),
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/WarehousePage")).WarehousePage, ["admin", "manager", "installer"])) }),
           },
           {
             path: "procurement",
