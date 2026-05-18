@@ -1,15 +1,15 @@
 import React, { Suspense } from "react";
 import { createHashRouter, Navigate } from "react-router";
-import { RootWrapper } from "./components/RootWrapper";
 import { Layout } from "./components/Layout";
-import { RoleGuard } from "./components/RoleGuard";
-import type { UserRole } from "./components/RoleContext";
 import { RequireAuth } from "./components/RequireAuth";
+import { RoleGuard } from "./components/RoleGuard";
+import { RootWrapper } from "./components/RootWrapper";
+import type { UserRole } from "./components/RoleContext";
 
 function PageFallback() {
   return (
-    <div className="h-full min-h-[240px] flex items-center justify-center text-slate-400">
-      Загрузка…
+    <div className="flex h-full min-h-[240px] items-center justify-center text-slate-400">
+      Загрузка...
     </div>
   );
 }
@@ -34,7 +34,6 @@ function withAccessGuard(C: React.ComponentType, roles: UserRole[]) {
   };
 }
 
-// Hash router makes refresh/deep-links work on static hosting.
 export const router = createHashRouter([
   {
     path: "/",
@@ -65,7 +64,6 @@ export const router = createHashRouter([
             path: "orders",
             lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/OrdersPage")).OrdersPage, ["admin", "manager"])) }),
           },
-          // Order-first: legacy entry points redirect to Orders
           { path: "leads", element: <Navigate to="/orders" replace /> },
           { path: "install-orders", element: <Navigate to="/orders" replace /> },
           { path: "measurements", element: <Navigate to="/orders" replace /> },
@@ -90,24 +88,12 @@ export const router = createHashRouter([
             lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/DocumentsPage")).DocumentsPage, ["admin", "manager"])) }),
           },
           {
-            path: "reminders",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/RemindersPage")).RemindersPage, ["admin", "manager"])) }),
-          },
-          {
-            path: "ventilation",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/VentilationPage")).VentilationPage, ["admin", "manager"])) }),
-          },
-          {
-            path: "training",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/TrainingPage")).TrainingPage, ["admin", "manager", "installer"])) }),
+            path: "clients",
+            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/ClientsPage")).ClientsPage, ["admin", "manager"])) }),
           },
           {
             path: "users",
             lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/UsersPage")).UsersPage, ["admin"])) }),
-          },
-          {
-            path: "clients",
-            lazy: async () => ({ Component: withSuspense(withAccessGuard((await import("./components/pages/ClientsPage")).ClientsPage, ["admin", "manager"])) }),
           },
           {
             path: "settings",

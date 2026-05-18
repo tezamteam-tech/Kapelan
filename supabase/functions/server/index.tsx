@@ -7,13 +7,8 @@ import { PDFDocument, rgb } from "npm:pdf-lib";
 import fontkit from "npm:@pdf-lib/fontkit";
 import { registerWarehouseRoutes, getAllWarehouseItems, getWarehouseItem as getWhItemById } from "./warehouse.tsx";
 import { registerProcurementRoutes } from "./procurement.tsx";
-import { registerRemindersRoutes, createServiceReminderForLead } from "./reminders.tsx";
-import { registerVentilationRoutes } from "./ventilation.tsx";
-import { registerTrainingRoutes } from "./training.tsx";
-import { registerInstallOrderRoutes, AC_CATALOG } from "./orders.tsx";
-import { registerEquipmentRoutes } from "./equipment.tsx";
-import { registerAiImportRoutes } from "./ai_import.tsx";
 import { registerMeasurementOrderRoutes } from "./measurement_orders.tsx";
+import { registerOrderCoreRoutes } from "./order_core.tsx";
 
 const app = new Hono();
 
@@ -22,15 +17,20 @@ app.use('*', logger(console.log));
 
 // Enable CORS for all routes and methods
 app.use(
-  "/*",
+  "*",
   cors({
     origin: "*",
-    allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     exposeHeaders: ["Content-Length"],
     maxAge: 600,
   }),
 );
+
+// Explicit preflight handler for browsers (avoid non-2xx on OPTIONS)
+app.options("*", (c) => {
+  return c.body(null, 204);
+});
 
 // Supabase client for storage
 const supabase = createClient(
@@ -40,6 +40,7 @@ const supabase = createClient(
 
 const BUCKET_NAME = 'make-1df47c03-measurements';
 const IMAGES_BUCKET = 'make-1df47c03-images';
+const WINDOW_ASSETS_BUCKET = 'window-assets';
 
 // Initialize storage buckets on startup
 async function initBucket() {
@@ -53,6 +54,10 @@ async function initBucket() {
     if (!bucketNames.includes(IMAGES_BUCKET)) {
       await supabase.storage.createBucket(IMAGES_BUCKET, { public: false });
       console.log('Created images bucket:', IMAGES_BUCKET);
+    }
+    if (!bucketNames.includes(WINDOW_ASSETS_BUCKET)) {
+      await supabase.storage.createBucket(WINDOW_ASSETS_BUCKET, { public: false });
+      console.log('Created window assets bucket:', WINDOW_ASSETS_BUCKET);
     }
   } catch (err) {
     console.error('Error initializing storage buckets:', err);
@@ -104,629 +109,50 @@ app.get("/make-server-1df47c03/health", (c) => {
   return c.json({ status: "ok" });
 });
 
-// System prompt for AI Sales Manager Agent
-const AGENT_SYSTEM_PROMPT = `Ты — AI-ассистент менеджера компании Kapelan по установке кондиционеров.
-
-ТВОЯ РОЛЬ — автоматизация работы менеджера. Выполняй реальные действия в CRM через инструменты.
-
-РАБОЧИЙ ПРОЦЕСС (шаг за шагом):
-1. search_warehouse_ac — подобрать кондиционер из РЕАЛЬНОГО склада по площади/бюджету (только то, что есть в наличии — stock > 0)
-2. check_consumables_stock — проверить расходники и комплектующие для выбранной модели
-3. create_installation_order — создать ордер монтажа (кондиционер + расходники + данные клиента)
-4. assign_installer — назначить монтажника на ордер и задать дату монтажа
-5. create_client_lead — только если нужна отдельная заявка без ордера
-
-ПРАВИЛА:
-1. ТОЛЬКО СО СКЛАДА — никогда не предлагай то, чего нет в наличии. Используй search_warehouse_ac.
-2. ДЕЙСТВУЙ СРАЗУ — известна площадь? Немедленно вызывай search_warehouse_ac.
-3. Длина трассы — 4 м по умолчанию, если не указана.
-4. После создания ордера — предложи назначить монтажника.
-5. Назначай монтажника, если менеджер указал дату или попросил назначить.
-6. Пиши кратко и по делу после каждого шага.
-
-СТИЛЬ: деловой, без воды. Emoji: ❄️ ✅ 📦 🔧 👷
-ЯЗЫК: только русский. Никакого украинского.`;
-
-// ─── AI Agent Tools Definition ─────────────────────────────────────────────────
-const AGENT_TOOLS = [
-  {
-    type: "function",
-    function: {
-      name: "search_warehouse_ac",
-      description: "Подобрать кондиционер/сплит/фанкойл из РЕАЛЬНОГО склада. Возвращает только позиции с остатком > 0. Вызывай сразу как известна площадь помещения.",
-      parameters: {
-        type: "object",
-        properties: {
-          area:          { type: "number", description: "Площадь помещения в кв.м" },
-          budget:        { type: "number", description: "Максимальный бюджет в гривнах (необязательно)" },
-          tier:          { type: "string", enum: ["economy", "standard", "premium"], description: "Ценовой сегмент (необязательно)" },
-          equipmentType: { type: "string", enum: ["split_ac", "fan_coil", "chiller", "any"], description: "Тип оборудования: split_ac/fan_coil/chiller/any (по умолчанию any)" }
-        },
-        required: ["area"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "check_consumables_stock",
-      description: "Проверить наличие расходников и комплектующих на складе для монтажа выбранного кондиционера. Используй warehouseAcId из search_warehouse_ac.",
-      parameters: {
-        type: "object",
-        properties: {
-          warehouseAcId: { type: "string", description: "ID позиции кондиционера на складе (из результата search_warehouse_ac)" },
-          traceLength:   { type: "number", description: "Длина фреоновой трассы в метрах (по умолчанию 4)" }
-        },
-        required: ["warehouseAcId", "traceLength"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_installation_order",
-      description: "Создать ордер монтажа в CRM. Обязательно: имя клиента, телефон, ID кондиционера со склада, площадь помещения.",
-      parameters: {
-        type: "object",
-        properties: {
-          clientName:    { type: "string", description: "Имя клиента" },
-          clientPhone:   { type: "string", description: "Телефон клиента" },
-          clientAddress: { type: "string", description: "Адрес монтажа (если неизвестен — 'Уточнить')" },
-          warehouseAcId: { type: "string", description: "ID позиции кондиционера на складе" },
-          roomArea:      { type: "number", description: "Площадь помещения в кв.м" },
-          roomType:      { type: "string", description: "Тип помещения (квартира / офис / склад / магазин)" },
-          traceLength:   { type: "number", description: "Длина трассы в метрах (по умолчанию 4)" },
-          acCount:       { type: "number", description: "Количество кондиционеров (по умолчанию 1)" },
-          notes:         { type: "string", description: "Примечания к заказу" }
-        },
-        required: ["clientName", "clientPhone", "warehouseAcId", "roomArea"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "assign_installer",
-      description: "Назначить монтажника на ордер монтажа. Можно указать конкретное имя или система выберет первого доступного. Дата необязательна.",
-      parameters: {
-        type: "object",
-        properties: {
-          orderId:       { type: "string", description: "ID ордера монтажа" },
-          installerName: { type: "string", description: "Имя монтажника (если уже известно)" },
-          scheduledDate: { type: "string", description: "Дата монтажа в формате YYYY-MM-DD (необязательно)" }
-        },
-        required: ["orderId"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "create_client_lead",
-      description: "Создать заявку (лид) клиента в CRM без создания ордера монтажа. Используй, если клиент ещё не готов к мо��тажу.",
-      parameters: {
-        type: "object",
-        properties: {
-          clientName:  { type: "string", description: "Имя клиента" },
-          clientPhone: { type: "string", description: "Телефон клиента" },
-          clientEmail: { type: "string", description: "Email клиента (необязательно)" },
-          area:        { type: "number", description: "Площадь помещения в кв.м (необязательно)" },
-          roomType:    { type: "string", description: "Тип помещения (необязательно)" },
-          budget:      { type: "number", description: "Бюджет клиента в гривнах (необязательно)" },
-          notes:       { type: "string", description: "Дополнительные примечания (необязательно)" }
-        },
-        required: ["clientName", "clientPhone"]
-      }
-    }
-  }
-];
-
-// ─── Standard BOM (расходники для сплит-систем) ───────────────────────────────
-const STD_SPLIT_BOM = [
-  { warehouseId: "wh_pipe_14",    name: 'Медная труба 1/4" (жидкостная)', unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
-  { warehouseId: "wh_pipe_38",    name: 'Медная труба 3/8" (газовая)',     unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
-  { warehouseId: "wh_insul_14",   name: "Теплоизоляция 9мм",              unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
-  { warehouseId: "wh_insul_38",   name: "Теплоизоляция 13мм",             unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
-  { warehouseId: "wh_drain_pipe", name: "Дренажная труба ø16мм",          unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
-  { warehouseId: "wh_cable",      name: "Кабель питания 3×1.5мм²",        unit: "м",     qtyFixed: 3,  qtyPerMeter: 1 },
-  { warehouseId: "wh_cable_duct", name: "Кабельный канал 60×40",          unit: "м",     qtyFixed: 1,  qtyPerMeter: 1 },
-  { warehouseId: "wh_brackets",   name: "Кронштейны наружного блока",     unit: "компл", qtyFixed: 1,  qtyPerMeter: 0 },
-  { warehouseId: "wh_dowels",     name: "Дюбель-шуруп 6×60",             unit: "шт",    qtyFixed: 12, qtyPerMeter: 0 },
-  { warehouseId: "wh_clamps",     name: "Хомуты для труб",                unit: "шт",    qtyFixed: 4,  qtyPerMeter: 2 },
-  { warehouseId: "wh_freon",      name: "Фреон R32 (буфер дозаправки)",   unit: "кг",    qtyFixed: 1,  qtyPerMeter: 0 },
-  { warehouseId: "wh_sealant",    name: "Герметик силиконовый",           unit: "шт",    qtyFixed: 1,  qtyPerMeter: 0 },
-  { warehouseId: "wh_gland",      name: "Сальники кабельного ввода",      unit: "шт",    qtyFixed: 2,  qtyPerMeter: 0 },
-  { warehouseId: "wh_tape",       name: "Самовулканизирующаяся лента",    unit: "м",     qtyFixed: 2,  qtyPerMeter: 0 },
-];
-
-const FAN_COIL_BOM_AI = [
-  { warehouseId: "wh_ppr_pipe_20", name: "Труба ППР 20мм",                unit: "м",     qtyFixed: 4,  qtyPerMeter: 1 },
-  { warehouseId: "wh_insul_19",   name: "Теплоизоляция 19мм",             unit: "м",     qtyFixed: 4,  qtyPerMeter: 1 },
-  { warehouseId: "wh_ball_valve", name: 'Шаровой кран 3/4"',              unit: "шт",    qtyFixed: 2,  qtyPerMeter: 0 },
-  { warehouseId: "wh_flex_conn",  name: "Гибкая подводка 3/4\"",          unit: "компл", qtyFixed: 1,  qtyPerMeter: 0 },
-  { warehouseId: "wh_motor_valve",name: "Моторизированный клапан",        unit: "шт",    qtyFixed: 1,  qtyPerMeter: 0 },
-  { warehouseId: "wh_drain_pipe", name: "Дренажная труба ø16мм",          unit: "м",     qtyFixed: 3,  qtyPerMeter: 0.5 },
-  { warehouseId: "wh_cable",      name: "Кабель питания 3×1.5мм²",        unit: "м",     qtyFixed: 3,  qtyPerMeter: 1 },
-  { warehouseId: "wh_cable_duct", name: "Кабельный канал 60×40",          unit: "м",     qtyFixed: 2,  qtyPerMeter: 1 },
-  { warehouseId: "wh_dowels",     name: "Дюбель-шуруп 6×60",             unit: "шт",    qtyFixed: 8,  qtyPerMeter: 0 },
-  { warehouseId: "wh_sealant",    name: "Герметик силиконовый",           unit: "шт",    qtyFixed: 1,  qtyPerMeter: 0 },
-];
-
-// Default installers seed
-const DEFAULT_INSTALLERS = [
-  { id: "inst_01", name: "Алексей Коваль",    phone: "+380971234501", level: "master",    status: "available", certYear: 2026 },
-  { id: "inst_02", name: "Дмитрий Шевченко",  phone: "+380971234502", level: "specialist",status: "available", certYear: 2026 },
-  { id: "inst_03", name: "Иван Бондаренко",   phone: "+380971234503", level: "installer", status: "available", certYear: 2025 },
-  { id: "inst_04", name: "Николай Петренко",  phone: "+380971234504", level: "master",    status: "busy",      certYear: 2026 },
-  { id: "inst_05", name: "Сергей Лысенко",    phone: "+380971234505", level: "specialist",status: "available", certYear: 2026 },
-];
-
-async function getInstallers() {
-  const all = await kv.getByPrefix("kapelan_installer:") as string[];
-  if (all.length > 0) return all.map((v: string) => { try { return JSON.parse(v); } catch { return null; } }).filter(Boolean);
-  for (const inst of DEFAULT_INSTALLERS) await kv.set(`kapelan_installer:${inst.id}`, JSON.stringify(inst));
-  return DEFAULT_INSTALLERS;
-}
-
-// ─── Tool execution ────────────────────────────────────────────────────────────
-async function executeAgentTool(name: string, args: any): Promise<{ result: string; action: any }> {
+// ─── Bootstrap: load core data in one request ────────────────────────────────
+// GET /bootstrap?role=admin|manager|installer
+app.get("/make-server-1df47c03/bootstrap", async (c) => {
   try {
-    // ── 1. Search warehouse for AC equipment ──────────────���───────────────────
-    if (name === "search_warehouse_ac") {
-      const { area, budget, tier, equipmentType } = args;
-      const allItems = await getAllWarehouseItems();
-      // Filter equipment items with acSpecs and stock > 0
-      let matches = allItems.filter((item: any) =>
-        item.itemType === 'equipment' &&
-        item.acSpecs &&
-        item.stock > 0 &&
-        area >= (item.acSpecs.areaMin ?? 0) - 5 &&
-        area <= (item.acSpecs.areaMax ?? 9999) + 5
-      );
-      if (tier) matches = matches.filter((item: any) => item.acSpecs?.tier === tier);
-      if (budget) matches = matches.filter((item: any) => item.price <= budget);
-      if (equipmentType && equipmentType !== "any") matches = matches.filter((item: any) => item.acSpecs?.equipmentType === equipmentType);
-      matches.sort((a: any, b: any) => a.price - b.price);
-      const top3 = matches.slice(0, 3);
-      if (top3.length === 0) {
-        // Fallback: show all available AC equipment
-        const allAc = allItems.filter((i: any) => i.itemType === 'equipment' && i.acSpecs && i.stock > 0);
-        if (allAc.length === 0) return { result: "На складе нет оборудования в наличии. Обратитесь в отдел закупок.", action: null };
-        const closest = allAc.sort((a: any, b: any) => Math.abs((a.acSpecs?.areaMin + a.acSpecs?.areaMax) / 2 - area) - Math.abs((b.acSpecs?.areaMin + b.acSpecs?.areaMax) / 2 - area)).slice(0, 3);
-        return {
-          result: JSON.stringify(closest.map((i: any) => ({ id: i.id, name: i.name, btu: i.acSpecs?.btu, kw: i.acSpecs?.kw, areaMin: i.acSpecs?.areaMin, areaMax: i.acSpecs?.areaMax, tier: i.acSpecs?.tier, price: i.price, stock: i.stock, features: i.acSpecs?.features, warranty: i.acSpecs?.warranty, equipmentType: i.acSpecs?.equipmentType }))),
-          action: { type: "ac_selected", title: `Подобрано ${closest.length} позиции со склада`, data: closest }
-        };
-      }
-      return {
-        result: JSON.stringify(top3.map((i: any) => ({ id: i.id, name: i.name, btu: i.acSpecs?.btu, kw: i.acSpecs?.kw, areaMin: i.acSpecs?.areaMin, areaMax: i.acSpecs?.areaMax, tier: i.acSpecs?.tier, price: i.price, stock: i.stock, features: i.acSpecs?.features, warranty: i.acSpecs?.warranty, equipmentType: i.acSpecs?.equipmentType }))),
-        action: { type: "ac_selected", title: `Подобрано ${top3.length} позиции со склада`, data: top3 }
-      };
-    }
+    const role = String(c.req.query("role") ?? "").trim();
 
-    // ── 2. Check consumables ───────────────────────────────────────────────────
-    if (name === "check_consumables_stock") {
-      const { warehouseAcId, traceLength } = args;
-      const tl = Number(traceLength) || 4;
-      const allItems = await getAllWarehouseItems();
-      const whMap = new Map(allItems.map((i: any) => [i.id, i]));
-      const acItem: any = whMap.get(warehouseAcId);
-      if (!acItem) return { result: `Позиция ${warehouseAcId} не найдена на складе`, action: null };
-      const isFanCoil = acItem.acSpecs?.equipmentType === 'fan_coil';
-      const bom = isFanCoil ? FAN_COIL_BOM_AI : STD_SPLIT_BOM;
-      const items = bom.map((entry: any) => {
-        const qty = Math.ceil(entry.qtyFixed + entry.qtyPerMeter * tl);
-        const stockItem: any = whMap.get(entry.warehouseId);
-        const stock = stockItem?.stock ?? 0;
-        return { id: entry.warehouseId, name: entry.name, unit: entry.unit, qty, stock, inStock: stock >= qty, price: stockItem?.price ?? 0 };
-      });
-      const allInStock = items.every((i: any) => i.inStock);
-      const shortages = items.filter((i: any) => !i.inStock);
-      return {
-        result: JSON.stringify({ items, allInStock, shortages: shortages.map((s: any) => s.name), traceLength: tl }),
-        action: { type: "consumables_checked", title: allInStock ? "Все расходники в наличии ✅" : `Не хватает: ${shortages.length} поз. ⚠️`, data: { items, allInStock, traceLength: tl, acName: acItem.name } }
-      };
-    }
+    const [companyRaw, ordersLite, warehouse, purchaseOrders] = await Promise.all([
+      kv.get("config:company"),
+      // Use order_core list (lite) for fast initial render
+      fetch(new URL("/make-server-1df47c03/orders?lite=1", c.req.url), { headers: c.req.raw.headers }).then((r) => r.json()).catch(() => ({ orders: [] })),
+      // Warehouse is admin-only heavy; for manager/installer return empty to reduce payload
+      role === "admin"
+        ? fetch(new URL("/make-server-1df47c03/warehouse", c.req.url), { headers: c.req.raw.headers }).then((r) => r.json()).catch(() => ({ items: [], lowStockCount: 0, totalValue: 0 }))
+        : Promise.resolve({ items: [], lowStockCount: 0, totalValue: 0 }),
+      role === "admin"
+        ? fetch(new URL("/make-server-1df47c03/purchase-orders", c.req.url), { headers: c.req.raw.headers }).then((r) => r.json()).catch(() => ({ orders: [] }))
+        : Promise.resolve({ orders: [] }),
+    ]);
 
-    // ── 3. Create order ────────────────────────────────────────────────────────
-    if (name === "create_installation_order") {
-      const { clientName, clientPhone, clientAddress, warehouseAcId, roomArea, roomType, traceLength, acCount, notes } = args;
-      const allItems = await getAllWarehouseItems();
-      const whMap = new Map(allItems.map((i: any) => [i.id, i]));
-      const acItem: any = whMap.get(warehouseAcId);
-      if (!acItem) return { result: `Позиция ${warehouseAcId} не найдена на складе`, action: null };
-      const tl = Number(traceLength) || 4;
-      const count = Number(acCount) || 1;
-      const isFanCoil = acItem.acSpecs?.equipmentType === 'fan_coil';
-      const bom = isFanCoil ? FAN_COIL_BOM_AI : STD_SPLIT_BOM;
-      const consumables = bom.map((entry: any) => {
-        const si: any = whMap.get(entry.warehouseId);
-        return {
-          warehouseId: entry.warehouseId, name: entry.name, unit: entry.unit,
-          qtyRequired: Math.ceil((entry.qtyFixed + entry.qtyPerMeter * tl) * count),
-          qtyIssued: 0, stockSnapshot: si?.stock ?? 0
-        };
-      });
-      // Add the AC unit itself as a consumable line
-      consumables.unshift({ warehouseId: acItem.id, name: acItem.name, unit: "шт", qtyRequired: count, qtyIssued: 0, stockSnapshot: acItem.stock });
-      const client = await findOrCreateClient({ name: clientName, phone: clientPhone });
-      const leadId = `lead_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const lead = {
-        id: leadId, clientId: client.id, status: "deal", source: "ai_manager",
-        requirements_json: { area: roomArea, roomType: roomType || "квартира" },
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
-      };
-      await kv.set(`lead:${leadId}`, JSON.stringify(lead));
-      try {
-        const leadsIdx = await kv.get(`leads_by_client:${client.id}`);
-        const arr = leadsIdx ? JSON.parse(leadsIdx) : [];
-        arr.push(leadId); await kv.set(`leads_by_client:${client.id}`, JSON.stringify(arr));
-      } catch {}
-      const orderId = `ord_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const order = {
-        id: orderId, clientName, clientPhone,
-        clientAddress: clientAddress || "Уточнити адресу",
-        leadId, roomArea, roomType: roomType || "квартира", traceLength: tl,
-        acModelId: acItem.acSpecs?.equipmentId || acItem.id,
-        warehouseAcId: acItem.id,
-        acBrand: acItem.name.split(" ")[0],
-        acModelName: acItem.name,
-        acBtu: acItem.acSpecs?.btu, acKw: acItem.acSpecs?.kw,
-        acPrice: acItem.price, acCount: count,
-        consumables, consumablesIssued: false,
-        installerName: "", scheduledDate: "",
-        status: "draft", notes: notes || "", source: "ai",
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
-      };
-      await kv.set(`kapelan_order:${orderId}`, JSON.stringify(order));
-      try {
-        const idxRaw = await kv.get('kapelan_orders_index');
-        const idx = idxRaw ? JSON.parse(idxRaw) : [];
-        idx.unshift(orderId); await kv.set('kapelan_orders_index', JSON.stringify(idx));
-      } catch {}
-      try {
-        await sendTelegramMessage(
-          `🔧 <b>Ордер создан AI-менеджером!</b>\n\n👤 Клиент: <b>${clientName}</b>\n📞 ${clientPhone}\n❄️ ${acItem.name}\n📐 ${roomArea} м²\n🔖 ID: ${orderId.substring(0, 20)}\n🕐 ${new Date().toLocaleString('ru-RU')}`
-        );
-      } catch {}
-      return {
-        result: JSON.stringify({ orderId, status: "draft", clientName, acName: acItem.name, price: acItem.price, leadId }),
-        action: { type: "order_created", title: "Ордер монтажа создан ✅", data: { order, client, acItem } }
-      };
-    }
-
-    // ── 4. Assign installer ────────────────────────────────────────────────────
-    if (name === "assign_installer") {
-      const { orderId, installerName, scheduledDate } = args;
-      const installers = await getInstallers();
-      const available = installers.filter((i: any) => i.status === "available");
-      // Find order
-      const orderRaw = await kv.get(`kapelan_order:${orderId}`);
-      if (!orderRaw) return { result: `Ордер ${orderId} не знайдено`, action: null };
-      const order: any = JSON.parse(orderRaw);
-      // Pick installer
-      let assigned = installers.find((i: any) => i.name === installerName) ?? available[0];
-      if (!assigned) return { result: "Нет доступных монтажников", action: { type: "installer_assigned", title: "Нет монтажников", data: { installers, orderId } } };
-      order.installerName = assigned.name;
-      order.installerPhone = assigned.phone;
-      order.scheduledDate = scheduledDate || "";
-      order.status = "assigned";
-      order.updatedAt = new Date().toISOString();
-      await kv.set(`kapelan_order:${orderId}`, JSON.stringify(order));
-      // Mark installer as busy if date set
-      if (scheduledDate) {
-        assigned.status = "busy";
-        await kv.set(`kapelan_installer:${assigned.id}`, JSON.stringify(assigned));
-      }
-      try {
-        await sendTelegramMessage(
-          `👷 <b>Монтажник назначен!</b>\n\n🔖 Ордер: ${orderId.slice(-8)}\n👤 Клиент: ${order.clientName}\n🔧 Монтажник: <b>${assigned.name}</b>\n📅 Дата: ${scheduledDate || "Не указана"}`
-        );
-      } catch {}
-      return {
-        result: JSON.stringify({ orderId, installerName: assigned.name, scheduledDate, status: "assigned", availableInstallers: available.length }),
-        action: { type: "installer_assigned", title: `Монтажник назначен: ${assigned.name}`, data: { installer: assigned, orderId, order, availableInstallers: installers } }
-      };
-    }
-
-    if (name === "create_client_lead") {
-      const { clientName, clientPhone, clientEmail, area, roomType, budget, notes } = args;
-      const client = await findOrCreateClient({ name: clientName, phone: clientPhone, email: clientEmail });
-      const leadId = `lead_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const lead = {
-        id: leadId, clientId: client.id, status: "new", source: "ai_manager",
-        requirements_json: { area, roomType, budget, additionalNotes: notes },
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
-      };
-      await kv.set(`lead:${leadId}`, JSON.stringify(lead));
-      try {
-        const leadsIdx = await kv.get(`leads_by_client:${client.id}`);
-        const arr = leadsIdx ? JSON.parse(leadsIdx) : [];
-        arr.push(leadId);
-        await kv.set(`leads_by_client:${client.id}`, JSON.stringify(arr));
-      } catch {}
-      return {
-        result: JSON.stringify({ leadId, clientName: client.name, status: "new" }),
-        action: { type: "lead_created", title: "Заявка клиента создана", data: { lead, client } }
-      };
-    }
-
-    return { result: "Инструмент не найден", action: null };
-  } catch (err: any) {
-    console.error(`Tool execution error [${name}]:`, err);
-    return { result: `Ошибка выполнения: ${err.message}`, action: null };
-  }
-}
-
-// Chat endpoint with OpenAI Agent (function calling loop)
-app.post("/make-server-1df47c03/chat", async (c) => {
-  try {
-    const { sessionId, message, history } = await c.req.json();
-    
-    if (!sessionId || !message) {
-      return c.json({ error: "sessionId and message are required" }, 400);
-    }
-
-    const apiKey = Deno.env.get("kapelan_openai_api_key");
-    if (!apiKey) {
-      console.error("OpenAI API key not configured");
-      return c.json({ error: "OpenAI API key not configured" }, 500);
-    }
-
-    // Build messages (only user/assistant roles for history)
-    const oaiMessages: any[] = [
-      { role: "system", content: AGENT_SYSTEM_PROMPT },
-      ...(history || []).filter((m: any) => m.role === "user" || m.role === "assistant"),
-      { role: "user", content: message }
-    ];
-
-    const collectedActions: any[] = [];
-    let finalMessage = "";
-    let maxIter = 6;
-
-    while (maxIter-- > 0) {
-      const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: oaiMessages,
-          tools: AGENT_TOOLS,
-          tool_choice: "auto",
-          temperature: 0.3,
-          max_tokens: 1200
-        })
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        console.error("OpenAI API error:", errText);
-        return c.json({ error: "Failed to get response from AI" }, 500);
-      }
-
-      const data = await resp.json();
-      const aiMsg = data.choices[0].message;
-      oaiMessages.push(aiMsg);
-
-      if (!aiMsg.tool_calls || aiMsg.tool_calls.length === 0) {
-        finalMessage = aiMsg.content || "";
-        break;
-      }
-
-      // Execute all tool calls
-      const toolResults = await Promise.all(
-        aiMsg.tool_calls.map(async (toolCall: any) => {
-          let args: any = {};
-          try { args = JSON.parse(toolCall.function.arguments); } catch {}
-          const { result, action } = await executeAgentTool(toolCall.function.name, args);
-          if (action) collectedActions.push(action);
-          return { tool_call_id: toolCall.id, role: "tool" as const, content: result };
-        })
-      );
-      oaiMessages.push(...toolResults);
-    }
-
-    // Save clean history
-    const updatedHistory = [
-      ...(history || []).filter((m: any) => m.role === "user" || m.role === "assistant"),
-      { role: "user", content: message },
-      { role: "assistant", content: finalMessage }
-    ];
-    await kv.set(`chat_session:${sessionId}`, JSON.stringify(updatedHistory));
-
-    // ── Save / update session metadata ────────────────────────────────────────
-    const existingMeta = await kv.get(`chat_meta:${sessionId}`);
-    const metaParsed = existingMeta ? JSON.parse(existingMeta) : null;
-    const sessionTitle = metaParsed?.title || message.substring(0, 60) + (message.length > 60 ? "…" : "");
-    const actionsCount = (metaParsed?.actionsCount ?? 0) + collectedActions.length;
-    const sessionMeta = {
-      id: sessionId,
-      title: sessionTitle,
-      createdAt: metaParsed?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastMessage: message.substring(0, 80),
-      lastReply: finalMessage.substring(0, 80),
-      actionsCount,
-      completed: !!(collectedActions.find(a => a.type === "order_created") || collectedActions.find(a => a.type === "lead_created")),
-      messageCount: updatedHistory.length
+    const defCompany = {
+      companyName: 'ООО "Оконная Служба Плюс"',
+      companyCode: "12345678",
+      companyDirector: "Иванов И.И.",
+      companyPhone: "+375 33 9-006-006",
+      city: "Витебск",
+      currency: { symbol: "Br", name: "BYN", position: "suffix" },
+      vat: { enabledByDefault: false, percent: 20 },
     };
-    await kv.set(`chat_meta:${sessionId}`, JSON.stringify(sessionMeta));
-    // Add to sessions index if new
-    if (!metaParsed) {
-      const idxRaw = await kv.get("chat_sessions_index");
-      const idx: string[] = idxRaw ? JSON.parse(idxRaw) : [];
-      if (!idx.includes(sessionId)) {
-        idx.unshift(sessionId);
-        await kv.set("chat_sessions_index", JSON.stringify(idx.slice(0, 200)));
-      }
-    }
-
-    const orderAction = collectedActions.find(a => a.type === "order_created");
-    const leadAction = collectedActions.find(a => a.type === "lead_created");
+    const company = companyRaw ? { ...defCompany, ...JSON.parse(String(companyRaw)) } : defCompany;
 
     return c.json({
-      message: finalMessage,
-      actions: collectedActions,
-      completed: !!(orderAction || leadAction),
-      lead: orderAction?.data?.order ? { id: orderAction.data.order.leadId, orderId: orderAction.data.order.id } : leadAction?.data?.lead || null,
-      client: orderAction?.data?.client || leadAction?.data?.client || null,
-      sessionId
+      company,
+      ordersLite,
+      warehouse,
+      purchaseOrders,
+      ts: Date.now(),
     });
-
   } catch (error: any) {
-    console.error("Error in chat endpoint:", error);
-    return c.json({ error: `Failed to process chat: ${error.message}` }, 500);
+    return c.json({ error: error.message }, 500);
   }
 });
 
-// Get chat history
-app.get("/make-server-1df47c03/chat-history/:sessionId", async (c) => {
-  try {
-    const sessionId = c.req.param("sessionId");
-    const historyData = await kv.get(`chat_session:${sessionId}`);
-    
-    if (!historyData) {
-      return c.json({ history: [] });
-    }
-
-    const history = JSON.parse(historyData);
-    return c.json({ history });
-
-  } catch (error) {
-    console.error("Error fetching chat history:", error);
-    return c.json({ error: `Failed to fetch chat history: ${error.message}` }, 500);
-  }
-});
-
-// ─── Installers API ────────────────────────────────────────────────────────────
-app.get("/make-server-1df47c03/installers", async (c) => {
-  try {
-    const installers = await getInstallers();
-    return c.json({ installers });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-app.post("/make-server-1df47c03/installers", async (c) => {
-  try {
-    const body = await c.req.json();
-    const id = body.id || `inst_${Date.now()}`;
-    const installer = { id, name: body.name, phone: body.phone || "", level: body.level || "installer", status: body.status || "available", certYear: body.certYear || new Date().getFullYear() };
-    await kv.set(`kapelan_installer:${id}`, JSON.stringify(installer));
-    return c.json({ installer });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-app.patch("/make-server-1df47c03/installers/:id", async (c) => {
-  try {
-    const id = c.req.param("id");
-    const raw = await kv.get(`kapelan_installer:${id}`);
-    if (!raw) return c.json({ error: "Installer not found" }, 404);
-    const installer = { ...JSON.parse(raw), ...await c.req.json() };
-    await kv.set(`kapelan_installer:${id}`, JSON.stringify(installer));
-    return c.json({ installer });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// POST assign installer to order
-app.post("/make-server-1df47c03/install-orders/:id/assign", async (c) => {
-  try {
-    const orderId = c.req.param("id");
-    const raw = await kv.get(`kapelan_order:${orderId}`);
-    if (!raw) return c.json({ error: "Ордер не найден" }, 404);
-    const order: any = JSON.parse(raw);
-    const { installerName, installerPhone, scheduledDate } = await c.req.json();
-    order.installerName = installerName || "";
-    order.installerPhone = installerPhone || "";
-    order.scheduledDate = scheduledDate || "";
-    if (order.status === "draft" || order.status === "confirmed") order.status = "assigned";
-    order.updatedAt = new Date().toISOString();
-    await kv.set(`kapelan_order:${orderId}`, JSON.stringify(order));
-    return c.json({ order });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// ─── Chat Sessions List ────────────────────────────────────────────────────────
-// GET /chat-sessions — list all conversations (metadata only, newest first)
-app.get("/make-server-1df47c03/chat-sessions", async (c) => {
-  try {
-    const idxRaw = await kv.get("chat_sessions_index");
-    const idx: string[] = idxRaw ? JSON.parse(idxRaw) : [];
-    const sessions = (await Promise.all(
-      idx.map(async (sid) => {
-        const raw = await kv.get(`chat_meta:${sid}`);
-        return raw ? JSON.parse(raw) : null;
-      })
-    )).filter(Boolean);
-    // Sort by updatedAt desc
-    sessions.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    return c.json({ sessions });
-  } catch (err: any) {
-    console.error("Error listing chat sessions:", err);
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// GET /chat-session/:sessionId — full session (meta + history + actions)
-app.get("/make-server-1df47c03/chat-session/:sessionId", async (c) => {
-  try {
-    const sessionId = c.req.param("sessionId");
-    const [metaRaw, histRaw, actionsRaw] = await Promise.all([
-      kv.get(`chat_meta:${sessionId}`),
-      kv.get(`chat_session:${sessionId}`),
-      kv.get(`chat_actions:${sessionId}`)
-    ]);
-    return c.json({
-      meta: metaRaw ? JSON.parse(metaRaw) : null,
-      history: histRaw ? JSON.parse(histRaw) : [],
-      actions: actionsRaw ? JSON.parse(actionsRaw) : []
-    });
-  } catch (err: any) {
-    console.error("Error fetching chat session:", err);
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// DELETE /chat-session/:sessionId — remove a conversation
-app.delete("/make-server-1df47c03/chat-session/:sessionId", async (c) => {
-  try {
-    const sessionId = c.req.param("sessionId");
-    await Promise.all([
-      kv.del(`chat_meta:${sessionId}`),
-      kv.del(`chat_session:${sessionId}`),
-      kv.del(`chat_actions:${sessionId}`)
-    ]);
-    // Remove from index
-    const idxRaw = await kv.get("chat_sessions_index");
-    if (idxRaw) {
-      const idx: string[] = JSON.parse(idxRaw);
-      await kv.set("chat_sessions_index", JSON.stringify(idx.filter(id => id !== sessionId)));
-    }
-    return c.json({ success: true });
-  } catch (err: any) {
-    console.error("Error deleting chat session:", err);
-    return c.json({ error: err.message }, 500);
-  }
-});
-
-// POST /chat-session-actions/:sessionId — save full actions log for a session
-app.post("/make-server-1df47c03/chat-session-actions/:sessionId", async (c) => {
-  try {
-    const sessionId = c.req.param("sessionId");
-    const { actions } = await c.req.json();
-    await kv.set(`chat_actions:${sessionId}`, JSON.stringify(actions || []));
-    return c.json({ success: true });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
-});
+// Legacy AI sales chat was removed during the window-business pivot.
+// The active assistant lives in the frontend window workflow and order-core APIs.
 
 // Save requirements manually
 app.post("/make-server-1df47c03/save-requirements", async (c) => {
@@ -882,45 +308,12 @@ app.post("/make-server-1df47c03/update-lead-status", async (c) => {
         const clientData = await kv.get(`client:${lead.clientId}`);
         const client = clientData ? JSON.parse(clientData) : null;
         if (client) {
-          // Try to get AC model from offer
-          let acModel: string | null = null;
-          try {
-            const offerIdRaw = await kv.get(`offer_by_lead:${leadId}`);
-            if (offerIdRaw) {
-              const offerRaw = await kv.get(`offer:${offerIdRaw}`);
-              if (offerRaw) {
-                const offer = JSON.parse(offerRaw);
-                const recommended = offer.variants?.find((v: any) => v.isRecommended) ?? offer.variants?.[0];
-                if (recommended?.ac?.name) acModel = `${recommended.ac.name} (${recommended.ac.btu / 1000}kBTU)`;
-              }
-            }
-          } catch { /* silent */ }
-
-          const reminder = await createServiceReminderForLead(
-            leadId,
-            client.id,
-            client.name,
-            client.phone,
-            client.email,
-            acModel,
-            null, // address (not stored yet)
+          await sendTelegramMessage(
+            `✅ <b>Монтаж завершен</b>\n\nКлиент: <b>${client.name}</b>\nТелефон: ${client.phone}\nЗаказ переведен в выполненные.\n\n${new Date().toLocaleString("ru-RU")}`
           );
-
-          // Notify admin in TG about new reminder creation
-          try {
-            const dueDate = new Date(reminder.reminderDate).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
-            await sendTelegramMessage(
-              `✅ <b>Монтаж завершён!</b>\n\n👤 Клиент: <b>${client.name}</b>\n📞 ${client.phone}\n${acModel ? `❄️ ${acModel}\n` : ""}` +
-              `\n🔔 Напоминание о ТО создано автоматически\n📅 Дата ТО: <b>${dueDate}</b>\n\n🕐 ${new Date().toLocaleString("ru-RU")}`
-            );
-          } catch { /* silent */ }
-
-          lead._serviceReminderId = reminder.id;
-          await kv.set(`lead:${leadId}`, JSON.stringify(lead));
-          console.log(`ServiceReminder auto-created for lead ${leadId}: ${reminder.id}`);
         }
-      } catch (remErr) {
-        console.error("Auto-create reminder error:", remErr);
+      } catch (notifyErr) {
+        console.error("Completion notification error:", notifyErr);
       }
     }
 
@@ -989,7 +382,7 @@ app.get("/make-server-1df47c03/client/:clientId", async (c) => {
     const leadsListData = await kv.get(`leads_by_client:${clientId}`);
     const leadsList = leadsListData ? JSON.parse(leadsListData) : [];
     
-    const leads = [];
+    const leads: any[] = [];
     for (const leadId of leadsList) {
       const leadData = await kv.get(`lead:${leadId}`);
       if (leadData) {
@@ -1002,6 +395,207 @@ app.get("/make-server-1df47c03/client/:clientId", async (c) => {
   } catch (error) {
     console.error("Error fetching client:", error);
     return c.json({ error: `Failed to fetch client: ${error.message}` }, 500);
+  }
+});
+
+// List clients (admin)
+app.get("/make-server-1df47c03/clients", async (c) => {
+  try {
+    const clientsData = await kv.getByPrefix("client:");
+    const clients = clientsData
+      .map((v: any) => {
+        try { return JSON.parse(v); } catch { return null; }
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => String(a.name ?? "").localeCompare(String(b.name ?? ""), "ru"));
+    return c.json({ clients });
+  } catch (error: any) {
+    console.error("Error fetching clients:", error);
+    return c.json({ error: `Failed to fetch clients: ${error.message}` }, 500);
+  }
+});
+
+// Create client (admin)
+app.post("/make-server-1df47c03/clients", async (c) => {
+  try {
+    const body = await c.req.json();
+    const name = String(body?.name ?? "").trim();
+    const phone = String(body?.phone ?? "").trim();
+    const email = body?.email ? String(body.email).trim() : null;
+    if (!name || !phone) return c.json({ error: "name and phone are required" }, 400);
+    const type = String(body?.type ?? "individual");
+    const legal_name = body?.legal_name ? String(body.legal_name).trim() : "";
+    const tax_id = body?.tax_id ? String(body.tax_id).trim() : "";
+    const address = body?.address ? String(body.address).trim() : "";
+    const notes = body?.notes ? String(body.notes).trim() : "";
+    const doc_basis = body?.doc_basis ? String(body.doc_basis).trim() : "";
+
+    // Reuse existing by phone if found
+    const clientsData = await kv.getByPrefix("client:");
+    for (const value of clientsData) {
+      try {
+        const client = JSON.parse(value);
+        if (String(client.phone ?? "").trim() === phone) {
+          // update name/email best-effort
+          const updated = {
+            ...client,
+            name,
+            phone,
+            email,
+            type: type || client.type || "individual",
+            legal_name: legal_name || client.legal_name || "",
+            tax_id: tax_id || client.tax_id || "",
+            address: address || client.address || "",
+            notes: notes || client.notes || "",
+            doc_basis: doc_basis || client.doc_basis || "",
+            updatedAt: new Date().toISOString(),
+          };
+          await kv.set(`client:${client.id}`, JSON.stringify(updated));
+          return c.json({ client: updated });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const newClient = {
+      id: clientId,
+      name,
+      phone,
+      email,
+      type: type === "company" ? "company" : "individual",
+      legal_name,
+      tax_id,
+      address,
+      notes,
+      doc_basis,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await kv.set(`client:${clientId}`, JSON.stringify(newClient));
+    return c.json({ client: newClient });
+  } catch (error: any) {
+    console.error("Error creating client:", error);
+    return c.json({ error: `Failed to create client: ${error.message}` }, 500);
+  }
+});
+
+// Update client (admin)
+app.patch("/make-server-1df47c03/client/:clientId", async (c) => {
+  try {
+    const clientId = c.req.param("clientId");
+    const raw = await kv.get(`client:${clientId}`);
+    if (!raw) return c.json({ error: "Client not found" }, 404);
+    const client = JSON.parse(raw);
+
+    const body = await c.req.json().catch(() => ({}));
+    const next = {
+      ...client,
+      name: body?.name != null ? String(body.name).trim() : client.name,
+      phone: body?.phone != null ? String(body.phone).trim() : client.phone,
+      email: body?.email === null ? null : (body?.email != null ? String(body.email).trim() : client.email),
+      type: body?.type != null ? String(body.type) : client.type,
+      legal_name: body?.legal_name != null ? String(body.legal_name).trim() : (client.legal_name || ""),
+      tax_id: body?.tax_id != null ? String(body.tax_id).trim() : (client.tax_id || ""),
+      address: body?.address != null ? String(body.address).trim() : (client.address || ""),
+      notes: body?.notes != null ? String(body.notes).trim() : (client.notes || ""),
+      doc_basis: body?.doc_basis != null ? String(body.doc_basis).trim() : (client.doc_basis || ""),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (!String(next.name ?? "").trim() || !String(next.phone ?? "").trim()) {
+      return c.json({ error: "name and phone are required" }, 400);
+    }
+
+    await kv.set(`client:${clientId}`, JSON.stringify(next));
+    return c.json({ client: next });
+  } catch (error: any) {
+    console.error("Error updating client:", error);
+    return c.json({ error: `Failed to update client: ${error.message}` }, 500);
+  }
+});
+
+// Delete client + cascade (admin)
+app.delete("/make-server-1df47c03/client/:clientId", async (c) => {
+  try {
+    const clientId = c.req.param("clientId");
+    const raw = await kv.get(`client:${clientId}`);
+    if (!raw) return c.json({ error: "Client not found" }, 404);
+    const client = JSON.parse(raw);
+
+    // Delete leads + related entities
+    const leadsListData = await kv.get(`leads_by_client:${clientId}`);
+    const leadIds: string[] = leadsListData ? JSON.parse(leadsListData) : [];
+
+    for (const leadId of leadIds) {
+      // documents
+      const docListRaw = await kv.get(`documents_by_lead:${leadId}`);
+      const docIds: string[] = docListRaw ? JSON.parse(docListRaw) : [];
+      for (const docId of docIds) {
+        await kv.del(`document:${docId}`);
+      }
+      await kv.del(`documents_by_lead:${leadId}`);
+
+      // measurement
+      const measId = await kv.get(`measurement_by_lead:${leadId}`);
+      if (measId) await kv.del(`measurement:${measId}`);
+      await kv.del(`measurement_by_lead:${leadId}`);
+
+      // offers (best-effort)
+      const offerId = await kv.get(`offer_by_lead:${leadId}`);
+      if (offerId) await kv.del(`offer:${offerId}`);
+      await kv.del(`offer_by_lead:${leadId}`);
+
+      await kv.del(`lead:${leadId}`);
+    }
+    await kv.del(`leads_by_client:${clientId}`);
+
+    // Delete orders created by AI-manager (order:) matching client phone
+    const phone = String(client.phone ?? "").trim();
+    if (phone) {
+      const idxRaw = await kv.get("order_index");
+      const idx: string[] = idxRaw ? JSON.parse(idxRaw) : [];
+      const keep: string[] = [];
+      for (const oid of idx) {
+        const oraw = await kv.get(`order:${oid}`);
+        if (!oraw) continue;
+        try {
+          const o = JSON.parse(oraw);
+          const oPhone = String(o.client_phone ?? "").trim();
+          if (oPhone && oPhone === phone) {
+            await kv.del(`order:${oid}`);
+          } else {
+            keep.push(oid);
+          }
+        } catch {
+          keep.push(oid);
+        }
+      }
+      await kv.set("order_index", JSON.stringify(keep));
+
+      // Legacy kapelan_order:* (best-effort phone match)
+      const kap = await kv.getByPrefix("kapelan_order:");
+      for (const v of kap) {
+        try {
+          const o = JSON.parse(v);
+          const oPhone = String(o.clientPhone ?? o.client_phone ?? "").trim();
+          if (oPhone && oPhone === phone && o.id) {
+            await kv.del(`kapelan_order:${o.id}`);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // Finally delete client record
+    await kv.del(`client:${clientId}`);
+
+    return c.json({ success: true, deleted: { clientId, leads: leadIds.length } });
+  } catch (error: any) {
+    console.error("Error deleting client:", error);
+    return c.json({ error: `Failed to delete client: ${error.message}` }, 500);
   }
 });
 
@@ -1468,8 +1062,12 @@ async function sendTelegramMessage(text: string): Promise<boolean> {
 // Config GET
 app.get('/make-server-1df47c03/config', async (c) => {
   try {
-    const chatId = await kv.get('config:tgAdminChatId');
-    return c.json({ tgAdminChatId: chatId || '' });
+    const [chatId, companyRaw] = await Promise.all([
+      kv.get('config:tgAdminChatId'),
+      kv.get('config:company'),
+    ]);
+    const company = companyRaw ? JSON.parse(String(companyRaw)) : null;
+    return c.json({ tgAdminChatId: chatId || '', company });
   } catch (error) {
     console.error('Error getting config:', error);
     return c.json({ error: `Failed to get config: ${error.message}` }, 500);
@@ -1479,9 +1077,17 @@ app.get('/make-server-1df47c03/config', async (c) => {
 // Config POST
 app.post('/make-server-1df47c03/config', async (c) => {
   try {
-    const { tgAdminChatId } = await c.req.json();
+    const { tgAdminChatId, company } = await c.req.json();
     if (tgAdminChatId !== undefined) {
       await kv.set('config:tgAdminChatId', String(tgAdminChatId).trim());
+    }
+    if (company && typeof company === 'object') {
+      let prev: any = {};
+      try {
+        const prevRaw = await kv.get('config:company');
+        if (prevRaw) prev = JSON.parse(String(prevRaw));
+      } catch {}
+      await kv.set('config:company', JSON.stringify({ ...prev, ...company }));
     }
     return c.json({ success: true });
   } catch (error) {
@@ -1501,7 +1107,7 @@ app.post('/make-server-1df47c03/tg-test', async (c) => {
       return c.json({ error: 'Chat ID не настроен. Сохраните Chat ID в настройках.' }, 400);
     }
     const ok = await sendTelegramMessage(
-      `✅ <b>Тест уведомлений</b>\n\nCRM кондиционеры — подключение работает!\n🕐 ${new Date().toLocaleString('ru-RU')}`
+      `✅ <b>Тест уведомлений</b>\n\nWindow CRM — подключение работает!\n${new Date().toLocaleString('ru-RU')}`
     );
     if (ok) return c.json({ success: true });
     return c.json({ error: 'Не удалось отправить сообщение. Проверьте Chat ID.' }, 500);
@@ -1511,831 +1117,13 @@ app.post('/make-server-1df47c03/tg-test', async (c) => {
   }
 });
 
-// ─── AC CATALOG ───────────────────────────────────────────────────────────────
-
-interface AcModel {
-  id: string;
-  brand: string;
-  model: string;
-  btu: number;
-  kw: number;
-  area: number;       // max recommended area m²
-  tier: 'economy' | 'standard' | 'premium';
-  features: string[]; // inverter, wifi, silent, filter, hyper_heat
-  price: number;      // ₴ per unit
-  warranty: number;   // years
-}
-
-const DEFAULT_AC_CATALOG: AcModel[] = [
-  // ── Эконом ──
-  { id: 'chigo_09', brand: 'Chigo', model: 'CS-09H3A-150', btu: 9000,  kw: 2.6, area: 25, tier: 'economy',  features: [],                              price: 9800,  warranty: 1 },
-  { id: 'chigo_12', brand: 'Chigo', model: 'CS-12H3A-150', btu: 12000, kw: 3.5, area: 35, tier: 'economy',  features: [],                              price: 12500, warranty: 1 },
-  { id: 'chigo_18', brand: 'Chigo', model: 'CS-18H3A-150', btu: 18000, kw: 5.2, area: 50, tier: 'economy',  features: [],                              price: 16200, warranty: 1 },
-  { id: 'aux_09',   brand: 'AUX',   model: 'ASW-09A4/FA',  btu: 9000,  kw: 2.6, area: 25, tier: 'economy',  features: [],                              price: 10500, warranty: 1 },
-  { id: 'aux_12',   brand: 'AUX',   model: 'ASW-12A4/FA',  btu: 12000, kw: 3.5, area: 35, tier: 'economy',  features: [],                              price: 13500, warranty: 1 },
-  { id: 'aux_18',   brand: 'AUX',   model: 'ASW-18A4/FA',  btu: 18000, kw: 5.0, area: 50, tier: 'economy',  features: [],                              price: 16800, warranty: 1 },
-  { id: 'aux_24',   brand: 'AUX',   model: 'ASW-24A4/FA',  btu: 24000, kw: 7.0, area: 70, tier: 'economy',  features: [],                              price: 21500, warranty: 1 },
-  // ── Стандарт ──
-  { id: 'samsung_09', brand: 'Samsung', model: 'AR09TXHQASIXUA', btu: 9000,  kw: 2.6, area: 25, tier: 'standard', features: ['inverter','wifi'],          price: 18500, warranty: 3 },
-  { id: 'samsung_12', brand: 'Samsung', model: 'AR12TXHQASIXUA', btu: 12000, kw: 3.5, area: 35, tier: 'standard', features: ['inverter','wifi'],          price: 22000, warranty: 3 },
-  { id: 'samsung_18', brand: 'Samsung', model: 'AR18TXHQASIXUA', btu: 18000, kw: 5.0, area: 50, tier: 'standard', features: ['inverter','wifi'],          price: 28500, warranty: 3 },
-  { id: 'lg_09',      brand: 'LG',      model: 'S09EQ',           btu: 9000,  kw: 2.6, area: 25, tier: 'standard', features: ['inverter','silent'],        price: 17800, warranty: 3 },
-  { id: 'lg_12',      brand: 'LG',      model: 'S12EQ',           btu: 12000, kw: 3.5, area: 35, tier: 'standard', features: ['inverter','silent'],        price: 21500, warranty: 3 },
-  { id: 'lg_18',      brand: 'LG',      model: 'S18ET',           btu: 18000, kw: 5.0, area: 50, tier: 'standard', features: ['inverter','silent'],        price: 27000, warranty: 3 },
-  { id: 'haier_09',   brand: 'Haier',   model: 'AS09BS4HRA',      btu: 9000,  kw: 2.6, area: 25, tier: 'standard', features: ['inverter','wifi','silent'], price: 19200, warranty: 3 },
-  { id: 'haier_12',   brand: 'Haier',   model: 'AS12BS4HRA',      btu: 12000, kw: 3.5, area: 35, tier: 'standard', features: ['inverter','wifi','silent'], price: 23500, warranty: 3 },
-  // ── Премиум ──
-  { id: 'daikin_09',     brand: 'Daikin',     model: 'FTXB25C/RXB25C',  btu: 9000,  kw: 2.5, area: 25, tier: 'premium', features: ['inverter','wifi','silent','filter'], price: 32000, warranty: 5 },
-  { id: 'daikin_12',     brand: 'Daikin',     model: 'FTXB35C/RXB35C',  btu: 12000, kw: 3.5, area: 35, tier: 'premium', features: ['inverter','wifi','silent','filter'], price: 38000, warranty: 5 },
-  { id: 'daikin_18',     brand: 'Daikin',     model: 'FTXB50C/RXB50C',  btu: 18000, kw: 5.0, area: 50, tier: 'premium', features: ['inverter','wifi','silent','filter'], price: 46000, warranty: 5 },
-  { id: 'mitsubishi_09', brand: 'Mitsubishi', model: 'MSZ-LN25VG/MUZ',  btu: 9000,  kw: 2.5, area: 25, tier: 'premium', features: ['inverter','wifi','silent','hyper_heat'], price: 35000, warranty: 5 },
-  { id: 'mitsubishi_12', brand: 'Mitsubishi', model: 'MSZ-LN35VG/MUZ',  btu: 12000, kw: 3.5, area: 35, tier: 'premium', features: ['inverter','wifi','silent','hyper_heat'], price: 42000, warranty: 5 },
-  { id: 'mitsubishi_18', brand: 'Mitsubishi', model: 'MSZ-LN50VG/MUZ',  btu: 18000, kw: 5.0, area: 50, tier: 'premium', features: ['inverter','wifi','silent','hyper_heat'], price: 52000, warranty: 5 },
-];
-
-async function loadAcCatalog(): Promise<AcModel[]> {
-  try {
-    const raw = await kv.get('ac_catalog');
-    if (raw) return JSON.parse(raw);
-  } catch (e) { console.error('Error loading AC catalog:', e); }
-  return DEFAULT_AC_CATALOG;
-}
-
-// GET catalog
-app.get('/make-server-1df47c03/ac-catalog', async (c) => {
-  try {
-    const catalog = await loadAcCatalog();
-    return c.json({ catalog });
-  } catch (error) {
-    console.error('Error fetching AC catalog:', error);
-    return c.json({ error: `Failed to fetch catalog: ${error.message}` }, 500);
-  }
-});
-
-// POST save catalog (full replace)
-app.post('/make-server-1df47c03/ac-catalog', async (c) => {
-  try {
-    const { catalog } = await c.req.json();
-    await kv.set('ac_catalog', JSON.stringify(catalog));
-    return c.json({ success: true, catalog });
-  } catch (error) {
-    console.error('Error saving AC catalog:', error);
-    return c.json({ error: `Failed to save catalog: ${error.message}` }, 500);
-  }
-});
-
-// POST reset catalog to defaults
-app.post('/make-server-1df47c03/ac-catalog/reset', async (c) => {
-  try {
-    await kv.set('ac_catalog', JSON.stringify(DEFAULT_AC_CATALOG));
-    return c.json({ success: true, catalog: DEFAULT_AC_CATALOG });
-  } catch (error) {
-    return c.json({ error: `Failed to reset: ${error.message}` }, 500);
-  }
-});
-
-// ─── OFFER GENERATION ─────────────────────────────────────────────────────────
-
-interface OfferVariant {
-  tier: 'economy' | 'standard' | 'premium';
-  label: string;
-  ac: AcModel;
-  acCount: number;
-  acTotal: number;
-  materialsTotal: number;
-  workCost: number;
-  subtotal: number;
-  discount: number;
-  total: number;
-  isRecommended: boolean;
-  notes: string;
-  features: string[];
-}
-
-interface Offer {
-  id: string;
-  leadId: string;
-  clientId: string;
-  variants: OfferVariant[];
-  status: 'draft' | 'sent' | 'accepted' | 'rejected';
-  validDays: number;
-  notes: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-// Helpers
-function btuForArea(area: number): number {
-  if (area <= 20) return 7000;
-  if (area <= 26) return 9000;
-  if (area <= 35) return 12000;
-  if (area <= 50) return 18000;
-  if (area <= 70) return 24000;
-  return 28000;
-}
-
-const FEATURE_LABELS: Record<string, string> = {
-  inverter:   'Инвертор',
-  wifi:       'Wi-Fi управление',
-  silent:     'Тихий режим',
-  filter:     'Очистка воздуха',
-  hyper_heat: 'Обогрев до -25°C',
-};
-
-function selectAcForTier(
-  catalog: AcModel[],
-  tier: 'economy' | 'standard' | 'premium',
-  areaPerRoom: number,
-  preferences: string[],
-): AcModel | null {
-  const targetBtu = btuForArea(areaPerRoom);
-  const tierModels = catalog.filter(m => m.tier === tier);
-  if (tierModels.length === 0) return null;
-
-  // Sort by BTU proximity
-  const sorted = [...tierModels].sort((a, b) =>
-    Math.abs(a.btu - targetBtu) - Math.abs(b.btu - targetBtu)
-  );
-
-  // Among closest BTU group, prefer models matching preferences
-  const prefs = (preferences || []).map(p => p.toLowerCase());
-  const closestBtu = sorted[0].btu;
-  const closestGroup = sorted.filter(m => Math.abs(m.btu - closestBtu) < 2000);
-
-  if (prefs.length > 0) {
-    const withPrefs = closestGroup.filter(m =>
-      prefs.some(p => m.features.includes(p))
-    );
-    if (withPrefs.length > 0) return withPrefs[0];
-  }
-
-  return closestGroup[0];
-}
-
-function buildVariant(
-  tier: 'economy' | 'standard' | 'premium',
-  ac: AcModel,
-  roomsCount: number,
-  materialsTotal: number,
-  workCost: number,
-  discount: number,
-  budget: number | null,
-): OfferVariant {
-  const LABELS = { economy: 'Эконом', standard: 'Стандарт', premium: 'Премиум' };
-  const acCount = Math.max(1, roomsCount);
-  const acTotal = ac.price * acCount;
-  const subtotal = acTotal + materialsTotal + workCost;
-  const discountAmt = Math.round(subtotal * discount);
-  const total = subtotal - discountAmt;
-
-  const features = ac.features.map(f => FEATURE_LABELS[f] ?? f);
-
-  let notes = '';
-  if (tier === 'economy') notes = 'Надёжное базовое решение. Доступная цена, проверенный бренд.';
-  if (tier === 'standard') notes = 'Инверторная технология: экономия электроэнергии до 40%. Оптимальное соотношение цена/качество.';
-  if (tier === 'premium') notes = `Лучшие мировые бренды. Гарантия ${ac.warranty} лет, максимальный комфорт и надёжность.`;
-
-  return {
-    tier,
-    label: LABELS[tier],
-    ac,
-    acCount,
-    acTotal,
-    materialsTotal,
-    workCost,
-    subtotal,
-    discount: discountAmt,
-    total,
-    isRecommended: tier === 'standard',
-    notes,
-    features,
-  };
-}
-
-// POST generate offer for a lead
-app.post('/make-server-1df47c03/offers/generate', async (c) => {
-  try {
-    const { leadId, discountPct = 0, validDays = 14, notes = '' } = await c.req.json();
-    if (!leadId) return c.json({ error: 'leadId is required' }, 400);
-
-    // Load lead
-    const leadRaw = await kv.get(`lead:${leadId}`);
-    if (!leadRaw) return c.json({ error: 'Lead not found' }, 404);
-    const lead = JSON.parse(leadRaw);
-    const req = lead.requirements_json || {};
-
-    // Load measurement (optional)
-    const measurementId = await kv.get(`measurement_by_lead:${leadId}`);
-    let measurement: any = null;
-    if (measurementId) {
-      const mRaw = await kv.get(`measurement:${measurementId}`);
-      if (mRaw) measurement = JSON.parse(mRaw);
-    }
-
-    // Load catalog
-    const catalog = await loadAcCatalog();
-
-    // Parameters
-    const area: number = req.area || 25;
-    const roomsCount: number = req.roomsCount || 1;
-    const preferences: string[] = req.preferences || [];
-    const budget: number | null = req.budget || null;
-    const areaPerRoom = area / roomsCount;
-
-    const materialsTotal = measurement?.materials_json?.totalMaterials ?? 0;
-    const workCost = measurement?.workCost ?? 0;
-    const discount = (discountPct || 0) / 100;
-
-    // Generate variants for all 3 tiers
-    const variants: OfferVariant[] = [];
-    for (const tier of ['economy', 'standard', 'premium'] as const) {
-      const ac = selectAcForTier(catalog, tier, areaPerRoom, preferences);
-      if (ac) {
-        variants.push(buildVariant(tier, ac, roomsCount, materialsTotal, workCost, discount, budget));
-      }
-    }
-
-    if (variants.length === 0) {
-      return c.json({ error: 'No suitable AC models found in catalog' }, 400);
-    }
-
-    // Save offer
-    const offerId = `offer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const offer: Offer = {
-      id: offerId,
-      leadId,
-      clientId: lead.clientId,
-      variants,
-      status: 'draft',
-      validDays,
-      notes,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await kv.set(`offer:${offerId}`, JSON.stringify(offer));
-    // Index: offers_by_lead
-    const existingList = await kv.get(`offers_by_lead:${leadId}`);
-    const offerList: string[] = existingList ? JSON.parse(existingList) : [];
-    offerList.unshift(offerId);
-    await kv.set(`offers_by_lead:${leadId}`, JSON.stringify(offerList));
-
-    console.log('Offer generated:', offerId, 'for lead:', leadId, 'variants:', variants.length);
-    return c.json({ offer });
-
-  } catch (error) {
-    console.error('Error generating offer:', error);
-    return c.json({ error: `Failed to generate offer: ${error.message}` }, 500);
-  }
-});
-
-// GET all offers
-app.get('/make-server-1df47c03/offers', async (c) => {
-  try {
-    const raw = await kv.getByPrefix('offer:');
-    const offers = raw
-      .map(d => { try { return JSON.parse(d); } catch { return null; } })
-      .filter(Boolean)
-      .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return c.json({ offers });
-  } catch (error) {
-    console.error('Error fetching offers:', error);
-    return c.json({ error: `Failed to fetch offers: ${error.message}` }, 500);
-  }
-});
-
-// GET offers by lead
-app.get('/make-server-1df47c03/offers/lead/:leadId', async (c) => {
-  try {
-    const leadId = c.req.param('leadId');
-    const listRaw = await kv.get(`offers_by_lead:${leadId}`);
-    if (!listRaw) return c.json({ offers: [] });
-    const ids: string[] = JSON.parse(listRaw);
-    const offers = (await Promise.all(ids.map(id => kv.get(`offer:${id}`))))
-      .filter(Boolean)
-      .map(d => JSON.parse(d!));
-    return c.json({ offers });
-  } catch (error) {
-    console.error('Error fetching offers by lead:', error);
-    return c.json({ error: `Failed to fetch offers: ${error.message}` }, 500);
-  }
-});
-
-// GET single offer
-app.get('/make-server-1df47c03/offers/:offerId', async (c) => {
-  try {
-    const offerId = c.req.param('offerId');
-    const raw = await kv.get(`offer:${offerId}`);
-    if (!raw) return c.json({ error: 'Offer not found' }, 404);
-    return c.json({ offer: JSON.parse(raw) });
-  } catch (error) {
-    console.error('Error fetching offer:', error);
-    return c.json({ error: `Failed to fetch offer: ${error.message}` }, 500);
-  }
-});
-
-// PATCH update offer (status, notes, discount)
-app.patch('/make-server-1df47c03/offers/:offerId', async (c) => {
-  try {
-    const offerId = c.req.param('offerId');
-    const raw = await kv.get(`offer:${offerId}`);
-    if (!raw) return c.json({ error: 'Offer not found' }, 404);
-    const offer = JSON.parse(raw);
-    const patch = await c.req.json();
-    const allowed = ['status', 'notes', 'validDays'];
-    for (const key of allowed) {
-      if (patch[key] !== undefined) (offer as any)[key] = patch[key];
-    }
-    offer.updatedAt = new Date().toISOString();
-    await kv.set(`offer:${offerId}`, JSON.stringify(offer));
-    return c.json({ offer });
-  } catch (error) {
-    console.error('Error updating offer:', error);
-    return c.json({ error: `Failed to update offer: ${error.message}` }, 500);
-  }
-});
-
-
-// ─── PDF DOCUMENT GENERATION ─────────────────────────────────────────────────
-
-const DOC_BUCKET = 'make-1df47c03-documents';
-
-async function initDocBucket() {
-  try {
-    const { data: buckets } = await supabase.storage.listBuckets();
-    if (!buckets?.some((b: any) => b.name === DOC_BUCKET)) {
-      await supabase.storage.createBucket(DOC_BUCKET);
-      console.log('Created documents bucket:', DOC_BUCKET);
-    }
-  } catch (err) { console.error('Error init doc bucket:', err); }
-}
-initDocBucket();
-
-// Font cache
-let _fontRBytes: ArrayBuffer | null = null;
-let _fontBBytes: ArrayBuffer | null = null;
-
-async function loadFonts() {
-  const base = 'https://cdn.jsdelivr.net/npm/pdfmake@0.2.10/fonts/Roboto/';
-  if (!_fontRBytes) _fontRBytes = await fetch(base + 'Roboto-Regular.ttf').then(r => r.arrayBuffer());
-  if (!_fontBBytes) _fontBBytes = await fetch(base + 'Roboto-Medium.ttf').then(r => r.arrayBuffer());
-  return { r: _fontRBytes!, b: _fontBBytes! };
-}
-
-// ─── Layout constants & helpers ───────────────────────────────────────────────
-const PH = 841.89, PW = 595.28, ML = 50, MR = 50, CW = PW - ML - MR;
-
-const C = {
-  navy:  rgb(0.10, 0.22, 0.45), blue:  rgb(0.18, 0.42, 0.72),
-  teal:  rgb(0.05, 0.55, 0.44), light: rgb(0.94, 0.96, 0.99),
-  border:rgb(0.78, 0.82, 0.88), text:  rgb(0.10, 0.10, 0.13),
-  muted: rgb(0.43, 0.45, 0.52), white: rgb(1, 1, 1),
-  green: rgb(0.06, 0.55, 0.34),
-};
-
-interface PdfCtx { doc: any; page: any; y: number; fontR: any; fontB: any; }
-
-function newPage(ctx: PdfCtx) { ctx.page = ctx.doc.addPage([PW, PH]); ctx.y = 60; }
-function ensureSpace(ctx: PdfCtx, n: number) { if (ctx.y + n > PH - 70) newPage(ctx); }
-function pdfY(topY: number, elemH = 0) { return PH - topY - elemH; }
-function txtW(font: any, t: string, s: number) { try { return font.widthOfTextAtSize(String(t), s); } catch { return 0; } }
-
-function wrapText(font: any, text: string, size: number, maxW: number): string[] {
-  const words = String(text).split(' '); const lines: string[] = []; let line = '';
-  for (const w of words) {
-    const test = line ? line + ' ' + w : w;
-    if (txtW(font, test, size) > maxW && line) { lines.push(line); line = w; } else line = test;
-  }
-  if (line) lines.push(line); return lines.length ? lines : [''];
-}
-
-function drawText(ctx: PdfCtx, text: string, opts: { x?: number; size?: number; bold?: boolean; color?: any; align?: 'left'|'center'|'right'; maxW?: number; lineH?: number } = {}) {
-  const { x = ML, size = 10, bold = false, color = C.text, align = 'left', maxW = CW, lineH } = opts;
-  const font = bold ? ctx.fontB : ctx.fontR; const lh = lineH ?? size * 1.45;
-  for (const line of wrapText(font, text, size, maxW)) {
-    ensureSpace(ctx, lh); let dx = x;
-    const w = txtW(font, line, size);
-    if (align === 'center') dx = x + (maxW - w) / 2; else if (align === 'right') dx = x + maxW - w;
-    ctx.page.drawText(line, { x: dx, y: pdfY(ctx.y, size * 0.2), font, size, color }); ctx.y += lh;
-  }
-}
-
-function gap(ctx: PdfCtx, h: number) { ctx.y += h; }
-
-function hRule(ctx: PdfCtx, color = C.border, thickness = 0.5) {
-  ctx.page.drawLine({ start: { x: ML, y: pdfY(ctx.y) }, end: { x: ML + CW, y: pdfY(ctx.y) }, color, thickness });
-}
-
-function fillRect(ctx: PdfCtx, x: number, w: number, h: number, fill: any) {
-  ctx.page.drawRectangle({ x, y: pdfY(ctx.y, h), width: w, height: h, color: fill });
-}
-function borderRect(ctx: PdfCtx, x: number, w: number, h: number, color: any, bw = 0.7) {
-  ctx.page.drawRectangle({ x, y: pdfY(ctx.y, h), width: w, height: h, borderColor: color, borderWidth: bw });
-}
-
-function sectionHeader(ctx: PdfCtx, title: string, fill = C.navy) {
-  ensureSpace(ctx, 34); gap(ctx, 8);
-  fillRect(ctx, ML, CW, 22, fill);
-  ctx.page.drawText(title, { x: ML + 8, y: pdfY(ctx.y, 15), font: ctx.fontB, size: 10, color: C.white });
-  ctx.y += 22; gap(ctx, 5);
-}
-
-function drawTable(ctx: PdfCtx, cols: { label: string; w: number; align?: 'left'|'center'|'right' }[], rows: string[][]) {
-  const RH = 17, HH = 21, totalW = cols.reduce((s, c) => s + c.w, 0);
-  ensureSpace(ctx, HH + Math.min(rows.length, 8) * RH + 4);
-
-  // Header
-  fillRect(ctx, ML, totalW, HH, C.blue);
-  let cx = ML;
-  for (const col of cols) {
-    const tw = txtW(ctx.fontB, col.label, 9); let tx = cx + 4;
-    if (col.align === 'center') tx = cx + (col.w - tw) / 2; else if (col.align === 'right') tx = cx + col.w - tw - 4;
-    ctx.page.drawText(col.label, { x: tx, y: pdfY(ctx.y, 14), font: ctx.fontB, size: 9, color: C.white }); cx += col.w;
-  }
-  const headerStartY = ctx.y; ctx.y += HH;
-
-  // Rows
-  for (let ri = 0; ri < rows.length; ri++) {
-    if (ctx.y + RH > PH - 70) {
-      // Draw border up to here then new page
-      ctx.page.drawRectangle({ x: ML, y: pdfY(ctx.y), width: totalW, height: ctx.y - headerStartY, borderColor: C.border, borderWidth: 0.8 });
-      newPage(ctx);
-    }
-    if (ri % 2 === 0) fillRect(ctx, ML, totalW, RH, C.light);
-    cx = ML;
-    for (let ci = 0; ci < cols.length; ci++) {
-      const col = cols[ci]; let cell = String(rows[ri][ci] ?? '');
-      while (cell.length > 2 && txtW(ctx.fontR, cell, 9) > col.w - 8) cell = cell.slice(0, -1);
-      if (cell !== String(rows[ri][ci] ?? '')) cell += '…';
-      const tw = txtW(ctx.fontR, cell, 9); let tx = cx + 4;
-      if (col.align === 'center') tx = cx + (col.w - tw) / 2; else if (col.align === 'right') tx = cx + col.w - tw - 4;
-      ctx.page.drawText(cell, { x: tx, y: pdfY(ctx.y, 12), font: ctx.fontR, size: 9, color: C.text }); cx += col.w;
-    }
-    ctx.page.drawLine({ start: { x: ML, y: pdfY(ctx.y, RH) }, end: { x: ML + totalW, y: pdfY(ctx.y, RH) }, color: C.border, thickness: 0.3 });
-    ctx.y += RH;
-  }
-
-  // Final border
-  const tableH = ctx.y - headerStartY;
-  ctx.page.drawRectangle({ x: ML, y: pdfY(ctx.y), width: totalW, height: tableH, borderColor: C.border, borderWidth: 0.8 });
-  // Column dividers
-  cx = ML;
-  for (const col of cols.slice(0, -1)) {
-    cx += col.w;
-    ctx.page.drawLine({ start: { x: cx, y: pdfY(ctx.y) }, end: { x: cx, y: pdfY(headerStartY) }, color: C.border, thickness: 0.4 });
-  }
-  gap(ctx, 6);
-}
-
-function keyVal(ctx: PdfCtx, pairs: [string, string][], indent = 0) {
-  for (const [key, val] of pairs) {
-    ensureSpace(ctx, 14);
-    ctx.page.drawText(key, { x: ML + indent, y: pdfY(ctx.y, 8 * 0.2), font: ctx.fontB, size: 9, color: C.muted });
-    ctx.page.drawText(val, { x: ML + indent + 130, y: pdfY(ctx.y, 8 * 0.2), font: ctx.fontR, size: 9, color: C.text });
-    ctx.y += 14;
-  }
-}
-
-function amountBox(ctx: PdfCtx, label: string, amount: string, fill = C.navy) {
-  ensureSpace(ctx, 28); fillRect(ctx, ML, CW, 26, fill);
-  ctx.page.drawText(label, { x: ML + 10, y: pdfY(ctx.y, 17), font: ctx.fontB, size: 11, color: C.white });
-  const aw = txtW(ctx.fontB, amount, 13);
-  ctx.page.drawText(amount, { x: ML + CW - aw - 10, y: pdfY(ctx.y, 18), font: ctx.fontB, size: 13, color: C.white });
-  ctx.y += 26;
-}
-
-function signatureBlock(ctx: PdfCtx) {
-  ensureSpace(ctx, 80); gap(ctx, 12); hRule(ctx); gap(ctx, 14);
-  const half = (CW - 30) / 2;
-  ctx.page.drawText('ИСПОЛНИТЕЛЬ:', { x: ML, y: pdfY(ctx.y, 10), font: ctx.fontB, size: 10, color: C.navy });
-  ctx.page.drawText('ЗАКАЗЧИК:', { x: ML + half + 30, y: pdfY(ctx.y, 10), font: ctx.fontB, size: 10, color: C.navy });
-  ctx.y += 16;
-  for (const lbl of ['Подпись:', 'Ф.И.О.:', 'Дата:']) {
-    ctx.page.drawText(lbl, { x: ML, y: pdfY(ctx.y, 7), font: ctx.fontR, size: 8, color: C.muted });
-    ctx.page.drawText(lbl, { x: ML + half + 30, y: pdfY(ctx.y, 7), font: ctx.fontR, size: 8, color: C.muted });
-    ctx.page.drawLine({ start: { x: ML + 50, y: pdfY(ctx.y, 5) }, end: { x: ML + half - 5, y: pdfY(ctx.y, 5) }, color: C.border, thickness: 0.7 });
-    ctx.page.drawLine({ start: { x: ML + half + 80, y: pdfY(ctx.y, 5) }, end: { x: ML + CW, y: pdfY(ctx.y, 5) }, color: C.border, thickness: 0.7 });
-    ctx.y += 16;
-  }
-  gap(ctx, 4);
-  ctx.page.drawText('М.П.', { x: ML, y: pdfY(ctx.y, 7), font: ctx.fontR, size: 8, color: C.muted });
-  ctx.page.drawText('М.П.', { x: ML + half + 30, y: pdfY(ctx.y, 7), font: ctx.fontR, size: 8, color: C.muted });
-}
-
-// ─── Contract PDF ─────────────────────────────────────────────────────────────
-async function generateContractPDF(d: {
-  contractNumber: string; contractDate: string; city: string;
-  companyName: string; companyCode: string; companyDirector: string; companyPhone: string;
-  client: { name: string; phone: string; email?: string | null };
-  variant: OfferVariant; materialsItems: MaterialItem[];
-  currencySymbol?: string;
-  advancePct: number; advanceAmount: number; balanceAmount: number; totalAmount: number; notes: string;
-}): Promise<Uint8Array> {
-  const fonts = await loadFonts();
-  const pdfDoc = await PDFDocument.create();
-  pdfDoc.registerFontkit(fontkit);
-  const fontR = await pdfDoc.embedFont(fonts.r);
-  const fontB = await pdfDoc.embedFont(fonts.b);
-  const ctx: PdfCtx = { doc: pdfDoc, page: pdfDoc.addPage([PW, PH]), y: 0, fontR, fontB };
-  const v = d.variant;
-  const cur = d.currencySymbol ?? 'Br';
-  const fN = (n: number) => n.toLocaleString('ru-RU');
-
-  // Header bar
-  fillRect(ctx, 0, PW, 52, C.navy);
-  ctx.page.drawText(d.companyName, { x: ML, y: PH - 22, font: fontB, size: 13, color: C.white });
-  ctx.page.drawText(`ИНН: ${d.companyCode}  •  ${d.companyPhone}`, { x: ML, y: PH - 37, font: fontR, size: 9, color: rgb(0.7, 0.8, 0.95) });
-  const title = `ДОГОВІР № ${d.contractNumber}`;
-  ctx.page.drawText(title, { x: PW - MR - txtW(fontB, title, 14), y: PH - 22, font: fontB, size: 14, color: C.white });
-  const sub = `от ${d.contractDate}  •  г. ${d.city}`;
-  ctx.page.drawText(sub, { x: PW - MR - txtW(fontR, sub, 9), y: PH - 37, font: fontR, size: 9, color: rgb(0.7, 0.8, 0.95) });
-  ctx.y = 58;
-
-  // Parties
-  gap(ctx, 5); drawText(ctx, 'СТОРОНЫ ДОГОВОРА', { bold: true, size: 10, color: C.navy }); gap(ctx, 4);
-  const startY = ctx.y; const half = (CW - 20) / 2;
-  ctx.page.drawText('ИСПОЛНИТЕЛЬ:', { x: ML + 4, y: pdfY(ctx.y, 9), font: fontB, size: 9, color: C.navy }); ctx.y += 13;
-  keyVal(ctx, [['Компания:', d.companyName], ['Директор:', d.companyDirector], ['Телефон:', d.companyPhone], ['ИНН:', d.companyCode]], 4);
-  const leftH = ctx.y - startY + 6; ctx.y = startY;
-  ctx.page.drawText('ЗАКАЗЧИК:', { x: ML + half + 24, y: pdfY(ctx.y, 9), font: fontB, size: 9, color: C.navy }); ctx.y += 13;
-  keyVal(ctx, [['Ф.И.О.:', d.client.name], ['Телефон:', d.client.phone], ['Email:', d.client.email || '—'], ['Документ:', 'Паспорт']], half + 24);
-  ctx.page.drawLine({ start: { x: ML + half + 12, y: pdfY(startY - 2) }, end: { x: ML + half + 12, y: pdfY(startY + leftH - 2) }, color: C.border, thickness: 0.6 });
-  ctx.y = startY + leftH;
-  gap(ctx, 4); hRule(ctx); gap(ctx, 10);
-
-  // Article 1: Subject
-  sectionHeader(ctx, '1. ПРЕДМЕТ ДОГОВОРА', C.navy);
-  drawText(ctx, `Исполнитель обязуется выполнить поставку и монтаж климатического оборудования (${v.ac.brand} ${v.ac.model}, ${v.acCount} шт.), а Заказчик обязуется принять и оплатить работы в соответствии с условиями настоящего Договора и Спецификации (Приложение №1).`, { size: 9.5, maxW: CW });
-  gap(ctx, 3);
-  drawText(ctx, `Мощность охлаждения: ${v.ac.kw} кВт (${(v.ac.btu / 1000).toFixed(0)} BTU). Рекомендуемая площадь помещения: до ${v.ac.area} м².`, { size: 9.5, maxW: CW });
-  gap(ctx, 6);
-
-  // Article 2: Equipment
-  sectionHeader(ctx, '2. ОБОРУДОВАНИЕ И МОНТАЖНЫЕ МАТЕРИАЛЫ', C.blue);
-  const eqRows: string[][] = [
-    ['1', `Кондиционер (${v.tier === 'economy' ? 'Эконом' : v.tier === 'standard' ? 'Стандарт' : 'Премиум'})`, `${v.ac.brand} ${v.ac.model}`, String(v.acCount), fN(v.ac.price), fN(v.acTotal)],
-    ...d.materialsItems.slice(0, 14).map((m, i) => [String(i + 2), m.name, `${m.qty} ${m.unit}`, '1', fN(m.pricePerUnit), fN(m.total)]),
-  ];
-  drawTable(ctx,
-    [{ label: '№', w: 24, align: 'center' }, { label: 'Наименование', w: 165 }, { label: 'Модель / Количество', w: 130 },
-     { label: 'Кол-во', w: 40, align: 'center' }, { label: `Цена, ${cur}`, w: 66, align: 'right' }, { label: `Сумма, ${cur}`, w: 70, align: 'right' }],
-    eqRows
-  );
-
-  // Article 3: Works
-  sectionHeader(ctx, '3. МОНТАЖНЫЕ РАБОТЫ', C.blue);
-  drawTable(ctx,
-    [{ label: '№', w: 24, align: 'center' }, { label: 'Вид работ', w: 350 }, { label: `Сумма, ${cur}`, w: 121, align: 'right' }],
-    [
-      ['1', 'Монтаж внутреннего и наружного блоков', fN(Math.round(v.workCost * 0.4))],
-      ['2', 'Прокладка медной фреоновой трассы и дренажа', fN(Math.round(v.workCost * 0.3))],
-      ['3', 'Прокладка кабеля питания и подключение', fN(Math.round(v.workCost * 0.2))],
-      ['4', 'Вакуумирование, заправка фреоном R32, пуско-наладка', fN(Math.round(v.workCost * 0.1))],
-    ]
-  );
-
-  // Article 4: Payment
-  sectionHeader(ctx, '4. СТОИМОСТЬ И УСЛОВИЯ ОПЛАТЫ', C.teal);
-  ensureSpace(ctx, 100);
-  for (const [lbl, val] of [
-    ['Стоимость оборудования:', fN(v.acTotal) + ' ' + cur],
-    ['Стоимость материалов:', fN(v.materialsTotal) + ' ' + cur],
-    ['Стоимость монтажных работ:', fN(v.workCost) + ' ' + cur],
-    ...(v.discount > 0 ? [['Скидка:', '– ' + fN(v.discount) + ' ' + cur]] : []),
-  ] as [string,string][]) {
-    ctx.page.drawText(lbl, { x: ML + 4, y: pdfY(ctx.y, 8), font: fontR, size: 9.5, color: C.text });
-    ctx.page.drawText(val, { x: ML + CW - txtW(fontB, val, 9.5), y: pdfY(ctx.y, 8), font: fontB, size: 9.5, color: C.text });
-    ctx.y += 15;
-  }
-  gap(ctx, 4); hRule(ctx, C.border, 0.8); gap(ctx, 8);
-  amountBox(ctx, 'ИТОГОВАЯ СТОИМОСТЬ (с НДС):', fN(d.totalAmount) + ' ' + cur, C.navy); gap(ctx, 5);
-  amountBox(ctx, `АВАНС (${d.advancePct}%) — до начала монтажа:`, fN(d.advanceAmount) + ' ' + cur, C.teal); gap(ctx, 5);
-  ensureSpace(ctx, 22); fillRect(ctx, ML, CW, 20, rgb(0.94, 0.98, 0.95)); borderRect(ctx, ML, CW, 20, C.teal, 0.6);
-  ctx.page.drawText('Остаток — в день завершения работ:', { x: ML + 8, y: pdfY(ctx.y, 13), font: fontR, size: 9.5, color: C.text });
-  const bw2 = txtW(fontB, fN(d.balanceAmount) + ' ' + cur, 11);
-  ctx.page.drawText(fN(d.balanceAmount) + ' ' + cur, { x: ML + CW - bw2 - 8, y: pdfY(ctx.y, 14), font: fontB, size: 11, color: C.teal });
-  ctx.y += 20; gap(ctx, 8);
-
-  // Article 5: Guarantees
-  sectionHeader(ctx, '5. ГАРАНТИИ И ОТВЕТСТВЕННОСТЬ', C.navy);
-  for (const txt of [
-    `5.1. Гарантийный срок на оборудование: ${v.ac.warranty} год(года) с даты монтажа.`,
-    `5.2. Гарантийный срок на монтажные работы: 12 месяцев.`,
-    `5.3. Гарантия не распространяется на механические повреждения и нарушение условий эксплуатации.`,
-    `5.4. Скрытые дефекты монтажа устраняются бесплатно в течение 5 рабочих дней.`,
-  ]) { drawText(ctx, txt, { size: 9.5, maxW: CW }); gap(ctx, 2); }
-  if (d.notes) { gap(ctx, 4); drawText(ctx, `Примечания: ${d.notes}`, { size: 9, color: C.muted, maxW: CW }); }
-
-  signatureBlock(ctx);
-  return pdfDoc.save();
-}
-
-// ─── Specification PDF ────────────────────────────────────────────────────────
-async function generateSpecificationPDF(d: {
-  contractNumber: string; contractDate: string;
-  companyName: string; companyPhone: string;
-  client: { name: string; phone: string };
-  variant: OfferVariant; materialsItems: MaterialItem[]; totalAmount: number;
-  currencySymbol?: string;
-}): Promise<Uint8Array> {
-  const fonts = await loadFonts();
-  const pdfDoc = await PDFDocument.create();
-  pdfDoc.registerFontkit(fontkit);
-  const fontR = await pdfDoc.embedFont(fonts.r);
-  const fontB = await pdfDoc.embedFont(fonts.b);
-  const ctx: PdfCtx = { doc: pdfDoc, page: pdfDoc.addPage([PW, PH]), y: 0, fontR, fontB };
-  const v = d.variant;
-  const cur = d.currencySymbol ?? 'Br';
-  const fN = (n: number) => n.toLocaleString('ru-RU');
-
-  // Header bar
-  fillRect(ctx, 0, PW, 52, C.teal);
-  ctx.page.drawText(d.companyName, { x: ML, y: PH - 22, font: fontB, size: 13, color: C.white });
-  ctx.page.drawText(`Тел: ${d.companyPhone}`, { x: ML, y: PH - 37, font: fontR, size: 9, color: rgb(0.75, 0.93, 0.87) });
-  const specTitle = 'СПЕЦИФИКАЦИЯ (Приложение №1)';
-  ctx.page.drawText(specTitle, { x: PW - MR - txtW(fontB, specTitle, 12), y: PH - 20, font: fontB, size: 12, color: C.white });
-  const specSub = `к Договору № ${d.contractNumber} от ${d.contractDate}`;
-  ctx.page.drawText(specSub, { x: PW - MR - txtW(fontR, specSub, 9), y: PH - 36, font: fontR, size: 9, color: rgb(0.75, 0.93, 0.87) });
-  ctx.y = 58;
-
-  gap(ctx, 4);
-  ctx.page.drawText(`Заказчик: ${d.client.name}  •  ${d.client.phone}`, { x: ML, y: pdfY(ctx.y, 8), font: fontR, size: 9, color: C.muted });
-  ctx.y += 16; hRule(ctx); gap(ctx, 10);
-
-  // 1. Equipment
-  sectionHeader(ctx, '1. КЛИМАТИЧЕСКОЕ ОБОРУДОВАНИЕ', C.teal);
-  const feats = v.ac.features.map((f: string) => FEATURE_LABELS[f] ?? f).join(', ') || '—';
-  drawTable(ctx,
-    [{ label: '№', w: 22, align: 'center' }, { label: 'Бренд', w: 72 }, { label: 'Модель', w: 128 },
-     { label: 'Характеристики', w: 115 }, { label: 'Кол-во', w: 38, align: 'center' },
-     { label: `Цена, ${cur}`, w: 58, align: 'right' }, { label: `Сумма, ${cur}`, w: 62, align: 'right' }],
-    [['1', v.ac.brand, v.ac.model, `${v.ac.kw}кВт/${(v.ac.btu/1000).toFixed(0)}BTU`, String(v.acCount), fN(v.ac.price), fN(v.acTotal)]]
-  );
-  drawText(ctx, `Гарантия: ${v.ac.warranty} год(а). Функции: ${feats}.`, { size: 8.5, color: C.muted, maxW: CW }); gap(ctx, 4);
-
-  // 2. Materials
-  if (d.materialsItems.length > 0) {
-    sectionHeader(ctx, '2. МОНТАЖНЫЕ МАТЕРИАЛЫ И КОМПЛЕКТУЮЩИЕ', C.teal);
-    const matRows = d.materialsItems.map((m, i) => [String(i + 1), m.name, m.category, m.unit, String(m.qty), fN(m.pricePerUnit), fN(m.total)]);
-    drawTable(ctx,
-      [{ label: '№', w: 22, align: 'center' }, { label: 'Наименование', w: 152 }, { label: 'Категория', w: 78 },
-       { label: 'Ед.', w: 28, align: 'center' }, { label: 'Кол-во', w: 38, align: 'center' },
-       { label: `Цена, ${cur}`, w: 58, align: 'right' }, { label: `Сумма, ${cur}`, w: 119, align: 'right' }],
-      matRows
-    );
-    gap(ctx, 2);
-  }
-
-  // 3. Works
-  sectionHeader(ctx, '3. МОНТАЖНЫЕ РАБОТЫ', C.teal);
-  drawTable(ctx,
-    [{ label: '№', w: 22, align: 'center' }, { label: 'Вид работ', w: 313 },
-     { label: 'Ед.', w: 30, align: 'center' }, { label: 'Кол-во', w: 40, align: 'center' }, { label: `Сумма, ${cur}`, w: 90, align: 'right' }],
-    [
-      ['1', 'Монтаж внутреннего и наружного блоков', 'компл', '1', fN(Math.round(v.workCost * 0.4))],
-      ['2', 'Прокладка медной фреоновой трассы и дренажа', 'компл', '1', fN(Math.round(v.workCost * 0.3))],
-      ['3', 'Прокладка кабеля питания и подключение', 'компл', '1', fN(Math.round(v.workCost * 0.2))],
-      ['4', 'Вакуумирование, заправка фреоном, пуско-наладка', 'компл', '1', fN(Math.round(v.workCost * 0.1))],
-    ]
-  );
-
-  // 4. Totals
-  sectionHeader(ctx, '4. ИТОГ', C.navy);
-  ensureSpace(ctx, 80);
-  for (const [lbl, val] of [
-    ['Оборудование:', fN(v.acTotal) + ' ' + cur],
-    ['Монтажные материалы:', fN(v.materialsTotal) + ' ' + cur],
-    ['Монтажные работы:', fN(v.workCost) + ' ' + cur],
-    ...(v.discount > 0 ? [['Скидка:', '– ' + fN(v.discount) + ' ' + cur]] : []),
-  ] as [string,string][]) {
-    ctx.page.drawText(lbl, { x: ML + 4, y: pdfY(ctx.y, 8), font: fontR, size: 9.5, color: C.text });
-    ctx.page.drawText(val, { x: ML + CW - txtW(fontR, val, 9.5), y: pdfY(ctx.y, 8), font: fontR, size: 9.5, color: C.text });
-    ctx.y += 14;
-  }
-  gap(ctx, 6); amountBox(ctx, 'ИТОГОВАЯ СТОИМОСТЬ:', fN(d.totalAmount) + ' ' + cur, C.navy); gap(ctx, 6);
-  drawText(ctx, `Настоящая спецификация является неотъемлемой частью Договора № ${d.contractNumber} от ${d.contractDate}.`, { size: 9, color: C.muted, maxW: CW });
-  signatureBlock(ctx);
-  return pdfDoc.save();
-}
-
-// ─── Document storage & endpoints ────────────────────────────────────────────
-interface DocumentRecord {
-  id: string; leadId: string; clientId: string; offerId: string;
-  contractNumber: string; contractDate: string; selectedTier: string;
-  advancePct: number; totalAmount: number; advanceAmount: number; balanceAmount: number;
-  contractPath: string; contractUrl: string; specPath: string; specUrl: string;
-  createdAt: string;
-}
-
-async function signDocUrl(path: string): Promise<string> {
-  const { data } = await supabase.storage.from(DOC_BUCKET).createSignedUrl(path, 60 * 60 * 24 * 30);
-  return data?.signedUrl ?? '';
-}
-
-app.post('/make-server-1df47c03/documents/generate', async (c) => {
-  try {
-    const body = await c.req.json();
-    const {
-      leadId, offerId, selectedTier = 'standard', advancePct = 50,
-      contractNumber, notes = '',
-      companyName = 'ООО "КЛИМАТ СЕРВИС"', companyCode = '12345678',
-      companyDirector = 'Директор', companyPhone = '+375 44 000-00-00', city = 'Минск',
-      currencySymbol = 'Br',
-    } = body;
-
-    if (!leadId || !offerId) return c.json({ error: 'leadId and offerId are required' }, 400);
-
-    const [leadRaw, offerRaw] = await Promise.all([kv.get(`lead:${leadId}`), kv.get(`offer:${offerId}`)]);
-    if (!leadRaw) return c.json({ error: 'Lead not found' }, 404);
-    if (!offerRaw) return c.json({ error: 'Offer not found' }, 404);
-
-    const lead = JSON.parse(leadRaw);
-    const offer = JSON.parse(offerRaw);
-    const clientRaw = await kv.get(`client:${lead.clientId}`);
-    const client = clientRaw ? JSON.parse(clientRaw) : { name: '—', phone: '—', email: null };
-    const variant: OfferVariant = offer.variants.find((v: OfferVariant) => v.tier === selectedTier) ?? offer.variants[0];
-    if (!variant) return c.json({ error: 'Variant not found' }, 400);
-
-    // Materials
-    const measId = await kv.get(`measurement_by_lead:${leadId}`);
-    let materialsItems: MaterialItem[] = [];
-    if (measId) { const mr = await kv.get(`measurement:${measId}`); if (mr) materialsItems = JSON.parse(mr).materials_json?.items ?? []; }
-
-    const totalAmount = variant.total;
-    const advanceAmount = Math.round(totalAmount * advancePct / 100);
-    const balanceAmount = totalAmount - advanceAmount;
-    const contractDate = new Date().toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    const docNum = contractNumber || `${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
-
-    const pdfData = { contractNumber: docNum, contractDate, city, companyName, companyCode, companyDirector, companyPhone, client, variant, materialsItems, advancePct, advanceAmount, balanceAmount, totalAmount, notes, currencySymbol };
-
-    console.log('Generating PDFs for lead:', leadId, 'tier:', selectedTier, 'currency:', currencySymbol);
-    const [contractBytes, specBytes] = await Promise.all([generateContractPDF(pdfData), generateSpecificationPDF(pdfData)]);
-
-    const prefix = `${leadId}/${docNum}`;
-    const contractPath = `${prefix}_contract.pdf`;
-    const specPath = `${prefix}_specification.pdf`;
-
-    const [cUp, sUp] = await Promise.all([
-      supabase.storage.from(DOC_BUCKET).upload(contractPath, contractBytes, { contentType: 'application/pdf', upsert: true }),
-      supabase.storage.from(DOC_BUCKET).upload(specPath, specBytes, { contentType: 'application/pdf', upsert: true }),
-    ]);
-    if (cUp.error) throw new Error(`Contract upload: ${cUp.error.message}`);
-    if (sUp.error) throw new Error(`Spec upload: ${sUp.error.message}`);
-
-    const [contractUrl, specUrl] = await Promise.all([signDocUrl(contractPath), signDocUrl(specPath)]);
-
-    const docId = `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const doc: DocumentRecord = { id: docId, leadId, clientId: lead.clientId, offerId, contractNumber: docNum, contractDate, selectedTier, advancePct, totalAmount, advanceAmount, balanceAmount, contractPath, contractUrl, specPath, specUrl, createdAt: new Date().toISOString() };
-
-    await kv.set(`document:${docId}`, JSON.stringify(doc));
-    const dlRaw = await kv.get(`documents_by_lead:${leadId}`);
-    const dl: string[] = dlRaw ? JSON.parse(dlRaw) : [];
-    dl.unshift(docId);
-    await kv.set(`documents_by_lead:${leadId}`, JSON.stringify(dl));
-
-    console.log('Documents saved:', docId);
-    return c.json({ document: doc });
-  } catch (error) {
-    console.error('Error generating documents:', error);
-    return c.json({ error: `Failed to generate documents: ${error.message}` }, 500);
-  }
-});
-
-app.get('/make-server-1df47c03/documents/lead/:leadId', async (c) => {
-  try {
-    const leadId = c.req.param('leadId');
-    const listRaw = await kv.get(`documents_by_lead:${leadId}`);
-    if (!listRaw) return c.json({ documents: [] });
-    const ids: string[] = JSON.parse(listRaw);
-    const docs: DocumentRecord[] = [];
-    for (const id of ids) {
-      const raw = await kv.get(`document:${id}`); if (!raw) continue;
-      const doc = JSON.parse(raw);
-      const [cu, su] = await Promise.all([signDocUrl(doc.contractPath), signDocUrl(doc.specPath)]);
-      docs.push({ ...doc, contractUrl: cu, specUrl: su });
-    }
-    return c.json({ documents: docs });
-  } catch (error) {
-    console.error('Error fetching documents:', error);
-    return c.json({ error: `Failed to fetch documents: ${error.message}` }, 500);
-  }
-});
-
-app.get('/make-server-1df47c03/documents/:docId', async (c) => {
-  try {
-    const raw = await kv.get(`document:${c.req.param('docId')}`);
-    if (!raw) return c.json({ error: 'Document not found' }, 404);
-    const doc = JSON.parse(raw);
-    const [cu, su] = await Promise.all([signDocUrl(doc.contractPath), signDocUrl(doc.specPath)]);
-    return c.json({ document: { ...doc, contractUrl: cu, specUrl: su } });
-  } catch (error) { return c.json({ error: `Failed to fetch document: ${error.message}` }, 500); }
-});
+// Legacy lead-based catalog, offer and document generator removed.
+// Current documents are generated by the order-centric window workflow.
 
 app.get('/make-server-1df47c03/company-config', async (c) => {
   try {
     const raw = await kv.get('config:company');
-    const def = { companyName: 'ООО "КЛИМАТ СЕРВИС"', companyCode: '12345678', companyDirector: 'Иванов И.И.', companyPhone: '+380 44 000-00-00', city: 'Киев' };
+    const def = { companyName: 'ООО "Оконная Служба Плюс"', companyCode: '12345678', companyDirector: 'Иванов И.И.', companyPhone: '+375 33 9-006-006', city: 'Витебск' };
     return c.json({ config: raw ? { ...def, ...JSON.parse(raw) } : def });
   } catch (error) { return c.json({ error: error.message }, 500); }
 });
@@ -2354,26 +1142,11 @@ registerWarehouseRoutes(app);
 // Register procurement routes
 registerProcurementRoutes(app);
 
-// Register service reminders routes
-registerRemindersRoutes(app);
-
-// Register ventilation analysis routes
-registerVentilationRoutes(app);
-
-// Register training & certification routes
-registerTrainingRoutes(app);
-
-// Register install orders routes
-registerInstallOrderRoutes(app);
-
-// Register equipment catalog routes
-registerEquipmentRoutes(app);
-
-// Register AI-powered warehouse import routes
-registerAiImportRoutes(app);
-
 // Register measurement orders routes
 registerMeasurementOrderRoutes(app);
+
+// Register order-centric core (Orders module)
+registerOrderCoreRoutes(app);
 
 // ─── MANUAL LEAD CREATION ─────────────────────────────────────────────────────
 app.post('/make-server-1df47c03/leads/create', async (c) => {
@@ -2416,195 +1189,7 @@ app.post('/make-server-1df47c03/leads/create', async (c) => {
   }
 });
 
-// ─── MATCH AC FROM REQUIREMENTS ──────────────────────────────────────────────
-app.post('/make-server-1df47c03/ac-match', async (c) => {
-  try {
-    const { area, budget, preferredTier, minBtu } = await c.req.json();
-    const areaNum = Number(area) || 0;
-    const budgetNum = Number(budget) || 0;
-    const btu = Number(minBtu) || Math.max(7000, Math.round(areaNum * 100));
-
-    let candidates = AC_CATALOG.filter(m =>
-      (areaNum === 0 || (m.areaMin <= areaNum + 10 && m.areaMax >= areaNum - 5))
-      && (budgetNum === 0 || m.price <= budgetNum * 1.2)
-    );
-    if (preferredTier && candidates.some(m => m.tier === preferredTier)) {
-      candidates = candidates.filter(m => m.tier === preferredTier);
-    }
-    if (candidates.length === 0) candidates = [...AC_CATALOG];
-
-    const scored = candidates.map(m => ({
-      ...m,
-      score: (
-        (Math.abs((m.areaMin + m.areaMax) / 2 - areaNum) < 8 ? 20 : 0) +
-        (budgetNum > 0 && m.price <= budgetNum ? 15 : 0) +
-        (preferredTier && m.tier === preferredTier ? 10 : 0) +
-        (Math.abs(m.btu - btu) < 2000 ? 10 : 0)
-      ),
-    })).sort((a, b) => b.score - a.score);
-
-    return c.json({ matches: scored.slice(0, 3) });
-  } catch (error: any) {
-    return c.json({ error: error.message }, 500);
-  }
-});
-
-// ─── PARSE CONVERSATION (paste client dialog) ────────────────────────────────
-
-const PARSE_CONVERSATION_PROMPT = `Ты — AI-ассистент CRM-системы для компании по установке кондиционеров.
-
-Менеджер вставляет переписку с клиентом (из мессенджера, email, или телефонного разговора).
-Твоя задача — проанализировать диалог и извлечь ВСЮ полезную информацию.
-
-ОБЯЗАТЕЛЬНО верни JSON объект (и ТОЛЬКО JSON, без markdown):
-{
-  "client": {
-    "name": "Имя клиента (если не указано — 'Клиент')",
-    "phone": "Телефон (если есть)",
-    "email": "Email или null"
-  },
-  "requirements": {
-    "area": число или null,
-    "roomType": "тип помещения или null",
-    "roomsCount": число или null,
-    "preferences": ["список пожеланий"],
-    "budget": число или null,
-    "additionalNotes": "любая доп. информация из диалога",
-    "address": "адрес если упоминается или null"
-  },
-  "suggestedAction": "краткая рекомендация менеджеру (что делать дальше)",
-  "summary": "краткое резюме диалога в 2-3 предложения",
-  "acRecommendation": {
-    "minBtu": число,
-    "preferredTier": "economy/standard/premium",
-    "reason": "почему этот вариант"
-  },
-  "urgency": "low/medium/high",
-  "confidence": число от 0 до 100
-}
-
-Если какие-то данные не найдены в диалоге — ставь null.
-Анализируй контекст: если клиент упоминает детей/аллергию — добавь "filter" в preferences.
-Если упоминает шум — добавь "silent". Если говорит про управление с телефона — "wifi".
-Если budget не указан явно, но клиент говорит "недорого/бюджетный" — ставь tier economy.
-Если "лучшее/премиум/качество" — premium. Иначе standard.`;
-
-app.post('/make-server-1df47c03/parse-conversation', async (c) => {
-  try {
-    const { conversation } = await c.req.json();
-    if (!conversation || conversation.trim().length < 10) {
-      return c.json({ error: 'Текст переписки слишком короткий' }, 400);
-    }
-
-    const apiKey = Deno.env.get('kapelan_openai_api_key');
-    if (!apiKey) return c.json({ error: 'OpenAI API key not configured' }, 500);
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: PARSE_CONVERSATION_PROMPT },
-          { role: 'user', content: `Вот переписка с клиентом:\n\n${conversation}` },
-        ],
-        temperature: 0.3,
-        max_tokens: 1000,
-      }),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.error('OpenAI parse-conversation error:', err);
-      return c.json({ error: 'AI не смог обработать переписку' }, 500);
-    }
-
-    const data = await response.json();
-    let aiText = data.choices[0].message.content;
-    aiText = aiText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(aiText);
-    } catch {
-      console.error('Failed to parse AI response as JSON:', aiText);
-      return c.json({ error: 'AI вернул некорректный ответ. Попробуйте снова.', raw: aiText }, 500);
-    }
-
-    return c.json({ parsed });
-  } catch (error: any) {
-    console.error('Error in parse-conversation:', error);
-    return c.json({ error: `Ошибка: ${error.message}` }, 500);
-  }
-});
-
-// Create lead from parsed conversation
-app.post('/make-server-1df47c03/create-lead-from-conversation', async (c) => {
-  try {
-    const { clientData, requirements, acRecommendation } = await c.req.json();
-    if (!clientData) return c.json({ error: 'clientData is required' }, 400);
-
-    const client = await findOrCreateClient({
-      name: clientData.name || 'Клиент',
-      phone: clientData.phone || '',
-      email: clientData.email || null,
-    });
-
-    const leadId = `lead_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    const lead = {
-      id: leadId,
-      clientId: client.id,
-      status: 'new',
-      source: 'conversation_paste',
-      requirements_json: {
-        ...requirements,
-        _acRecommendation: acRecommendation || null,
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await kv.set(`lead:${leadId}`, JSON.stringify(lead));
-
-    const clientLeadsKey = `leads_by_client:${client.id}`;
-    const existingLeadsData = await kv.get(clientLeadsKey);
-    const existingLeads = existingLeadsData ? JSON.parse(existingLeadsData) : [];
-    existingLeads.push(leadId);
-    await kv.set(clientLeadsKey, JSON.stringify(existingLeads));
-
-    // Telegram notification
-    try {
-      const req = requirements || {};
-      const tgText = [
-        `📋 <b>Новая заявка из переписки!</b>`,
-        ``,
-        `👤 Клиент: <b>${client.name}</b>`,
-        `📞 Телефон: ${client.phone || '—'}`,
-        client.email ? `📧 Email: ${client.email}` : '',
-        ``,
-        req.area ? `📐 Площадь: <b>${req.area} м²</b>` : '',
-        req.roomType ? `🏠 Тип: ${req.roomType}` : '',
-        req.roomsCount ? `🚪 Комнат: ${req.roomsCount}` : '',
-        req.budget ? `💰 Бюджет: ${Number(req.budget).toLocaleString()} ₴` : '',
-        req.address ? `📍 Адрес: ${req.address}` : '',
-        acRecommendation ? `❄️ Рекомендация: ${acRecommendation.preferredTier} (${acRecommendation.minBtu} BTU)` : '',
-        ``,
-        `🕐 ${new Date().toLocaleString('ru-RU')}`,
-      ].filter(Boolean).join('\n');
-      await sendTelegramMessage(tgText);
-    } catch (tgErr) {
-      console.error('TG notification error (conversation lead):', tgErr);
-    }
-
-    console.log('Created lead from conversation:', leadId);
-    return c.json({ success: true, client, lead });
-  } catch (error: any) {
-    console.error('Error creating lead from conversation:', error);
-    return c.json({ error: `Failed: ${error.message}` }, 500);
-  }
-});
-
-// ─── INSTALLER MANAGEMENT & ASSIGNMENT ───────────────────────────────────────
+// Legacy requirement matching and pasted-dialog parsing were removed during the window-business pivot.
 
 app.get('/make-server-1df47c03/installers', async (c) => {
   try {
@@ -2621,7 +1206,7 @@ app.get('/make-server-1df47c03/installers', async (c) => {
 app.post('/make-server-1df47c03/installers', async (c) => {
   try {
     const body = await c.req.json();
-    const { name, phone, tgChatId, specialization, notes, photoUrl } = body;
+    const { name, phone, tgChatId, specialization, notes, photoUrl, teamId, teamName, isTeamLead } = body;
     if (!name || !phone) return c.json({ error: 'name and phone are required' }, 400);
 
     const id = body.id || `installer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -2631,6 +1216,9 @@ app.post('/make-server-1df47c03/installers', async (c) => {
       specialization: specialization || 'general',
       notes: notes || '',
       photoUrl: photoUrl || null,
+      teamId: teamId || null,
+      teamName: teamName || null,
+      isTeamLead: !!isTeamLead,
       active: true,
       createdAt: body.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2641,6 +1229,22 @@ app.post('/make-server-1df47c03/installers', async (c) => {
     return c.json({ installer });
   } catch (error: any) {
     console.error('Error saving installer:', error);
+    return c.json({ error: `Failed: ${error.message}` }, 500);
+  }
+});
+
+app.patch('/make-server-1df47c03/installers/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const raw = await kv.get(`installer:${id}`);
+    if (!raw) return c.json({ error: 'Installer not found' }, 404);
+    const existing = JSON.parse(raw);
+    const patch = await c.req.json();
+    const installer = { ...existing, ...patch, id, updatedAt: new Date().toISOString() };
+    await kv.set(`installer:${id}`, JSON.stringify(installer));
+    return c.json({ installer });
+  } catch (error: any) {
+    console.error('Error patching installer:', error);
     return c.json({ error: `Failed: ${error.message}` }, 500);
   }
 });
@@ -2682,6 +1286,7 @@ app.post('/make-server-1df47c03/assign-installer', async (c) => {
     const assignment = {
       id: assignmentId, leadId, installerId,
       installerName: installer.name,
+      teamId: installer.teamId || null,
       clientName: client?.name || '—',
       clientPhone: client?.phone || '—',
       scheduledDate: scheduledDate || null,
@@ -2696,6 +1301,7 @@ app.post('/make-server-1df47c03/assign-installer', async (c) => {
 
     lead.assignedInstallerId = installerId;
     lead.assignedInstallerName = installer.name;
+    lead.assignedInstallerTeamId = installer.teamId || null;
     lead.assignmentId = assignmentId;
     lead.scheduledDate = scheduledDate || null;
     lead.scheduledTime = scheduledTime || null;
@@ -2871,436 +1477,7 @@ function toInitials(fullName: string): string {
   return mid ? `${first[0]}.${mid[0]}. ${last}` : `${first[0]}. ${last}`;
 }
 
-interface EverisMatItem { name:string; unit:string; qty:number; price:number; vat:number; }
-interface EverisPackageData {
-  contractType:'invoice'|'full';
-  contractNumber:string; contractDate:string; city:string;
-  co:{ name:string; unp:string; dirFull:string; dirShort:string; legalAddr:string; postalAddr:string; account:string; bank:string; bik:string; email:string; phone:string; };
-  clientType:'individual'|'org';
-  ind:{ name:string; address:string; idCard:string; phone:string; email:string; };
-  org:{ name:string; unp:string; dirFull:string; dirShort:string; dirBasis:string; legalAddr:string; postalAddr:string; account:string; bank:string; bik:string; email:string; };
-  objectDesc:string; objectAddr:string;
-  acModel:string; acUnit:string; acQty:number; acPrice:number; acVat:number;
-  materials:EverisMatItem[];
-  worksDesc:string; worksUnit:string; worksQty:number; worksPrice:number; worksVat:number;
-  withVat:boolean;
-  advanceAmt:number; stage1Amt:number; stage2Amt:number;
-}
-
-function drawTwoColBlock(ctx: PdfCtx, leftLines:[boolean,string][], rightLines:[boolean,string][], colW: number, xRight: number) {
-  const sz=8.5, lh=sz*1.4;
-  const totalRows=Math.max(leftLines.length, rightLines.length);
-  ensureSpace(ctx, totalRows*lh+20);
-  const startY=ctx.y;
-  let ly=startY;
-  for(const [bold,text] of leftLines) {
-    const font=bold?ctx.fontB:ctx.fontR;
-    const lines=wrapText(font,text,sz,colW);
-    for(const line of lines) { ctx.page.drawText(line,{x:ML,y:pdfY(ly,sz*0.2),font,size:sz,color:C.text}); ly+=lh; }
-  }
-  let ry=startY;
-  for(const [bold,text] of rightLines) {
-    const font=bold?ctx.fontB:ctx.fontR;
-    const lines=wrapText(font,text,sz,colW);
-    for(const line of lines) { ctx.page.drawText(line,{x:xRight,y:pdfY(ry,sz*0.2),font,size:sz,color:C.text}); ry+=lh; }
-  }
-  ctx.y=Math.max(ly,ry);
-}
-
-async function genEverisInvoicePDF(d: EverisPackageData): Promise<Uint8Array> {
-  const fonts=await loadFonts();
-  const pdfDoc=await PDFDocument.create(); pdfDoc.registerFontkit(fontkit);
-  const fontR=await pdfDoc.embedFont(fonts.r), fontB=await pdfDoc.embedFont(fonts.b);
-  const ctx:PdfCtx={doc:pdfDoc,page:pdfDoc.addPage([PW,PH]),y:0,fontR,fontB};
-  const fC=(n:number)=>n.toFixed(2);
-
-  const acTotal=+(d.acPrice*d.acQty).toFixed(2);
-  const matTotal=+d.materials.reduce((s,m)=>s+m.price*m.qty,0).toFixed(2);
-  const worksTotal=+(d.worksPrice*d.worksQty).toFixed(2);
-  const grandTotal=+(acTotal+matTotal+worksTotal).toFixed(2);
-
-  ctx.y=30;
-  drawText(ctx,`ДОГОВОР-СЧЕТ № ${d.contractNumber}`,{bold:true,size:15,align:'center',maxW:CW});
-  gap(ctx,4);
-  drawText(ctx,'на поставку и монтаж',{size:11,align:'center',maxW:CW});
-  gap(ctx,18);
-
-  ctx.page.drawText(`г. ${d.city}`,{x:ML,y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
-  const ds=`«${d.contractDate}»`;
-  ctx.page.drawText(ds,{x:ML+CW-txtW(fontR,ds,9),y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
-  ctx.y+=18; hRule(ctx,C.border,0.5); gap(ctx,10);
-
-  const idPart=d.ind.idCard?`, ID-карта: ${d.ind.idCard}`:'';
-  const addrPart=d.ind.address?`, зарегистрирован(а) по адресу: ${d.ind.address}`:'';
-  drawText(ctx,`Исполнитель: ООО «Эвериз Сервис», в лице директора ${d.co.dirFull}, действующего на основании Устава, и Заказчик: ${d.ind.name}${addrPart}${idPart}, в дальнейшем совместно именуемые «Стороны», заключили настоящий договор-счет о нижеследующем:`,{size:9.5,maxW:CW});
-  gap(ctx,10);
-
-  drawText(ctx,'1. Исполнитель принимает на себя обязанности выполнить, а Заказчик принять и оплатить следующие работы (далее – Работы):',{size:9.5,maxW:CW});
-  gap(ctx,6);
-
-  const rows:string[][]=[];
-  rows.push(['1',`Сплит-система ${d.acModel}`,d.acUnit||'комплект',String(d.acQty),fC(d.acPrice),fC(acTotal)]);
-  if(matTotal>0) rows.push([String(rows.length+1),'Материалы','комплект','1',fC(matTotal),fC(matTotal)]);
-  rows.push([String(rows.length+1),d.worksDesc||'Монтажные работы',d.worksUnit||'комплект',String(d.worksQty),fC(d.worksPrice),fC(worksTotal)]);
-
-  drawTable(ctx,[
-    {label:'№',w:22,align:'center'},{label:'Наименование, оборудования, материалов, работ',w:222},
-    {label:'Ед. изм.',w:52,align:'center'},{label:'Кол-во',w:40,align:'center'},
-    {label:'Цена, BYN',w:65,align:'right'},{label:'Всего, BYN',w:94,align:'right'}],rows);
-
-  ensureSpace(ctx,22);
-  ctx.page.drawText('ИТОГО:',{x:ML+4,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
-  const gtStr=fC(grandTotal);
-  ctx.page.drawText(gtStr,{x:ML+CW-txtW(fontB,gtStr,10)-4,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
-  ctx.y+=20; gap(ctx,4);
-
-  drawText(ctx,`Общая стоимость оборудования, материалов и работ: ${amountFull(grandTotal,d.withVat)}.`,{size:9.5,maxW:CW});
-  gap(ctx,8);
-
-  let payText=`2. Оплата оборудования и материалов осуществляется в белорусских рублях путем перечисления аванса в размере ${amountFull(d.advanceAmt,d.withVat)}, на расчетный счет Исполнителя в течение 3 (трех) рабочих дней со дня подписания договора.`;
-  if(d.stage1Amt>0||d.stage2Amt>0) payText+=` Оплата работ осуществляется в 2 этапа: 1. Этап после монтажа инженерных коммуникаций в размере ${amountFull(d.stage1Amt,d.withVat)}; 2 Этап после монтажа оборудования в размере ${amountFull(d.stage2Amt,d.withVat)}.`;
-  payText+=' Окончательный расчет осуществляется в течение 3 (трех) банковских дней со дня подписания акта выполненных работ.';
-  drawText(ctx,payText,{size:9.5,maxW:CW}); gap(ctx,8);
-
-  for(const cl of [
-    '3. Исполнитель вправе выполнять Работы как своими силами, так и с привлечением третьих лиц.',
-    '4. Срок выполнения работ – по согласованию с заказчиком.',
-    '5. При завершении работ Исполнитель представляет акт сдачи-приемки выполненных работ. Заказчик в течение 5-ти дней со дня получения акта сдачи-приемки выполненных работ обязан передать Исполнителю подписанный акт или мотивированный отказ от приемки работ в письменной форме. В случае просрочки Заказчиком сроков подписания акта или не предоставления претензий со стороны Заказчика к качеству выполненных Исполнителем работ, Работы считаются выполненными надлежащим образом и принятыми Заказчиком в полном объеме.',
-    '6. В случае нарушения сроков оплаты Заказчик выплачивает Исполнителю пеню в размере 0,15% от суммы просроченного платежа за каждый день просрочки.',
-    '7. Все споры при не достижении между сторонами согласия подлежат рассмотрению в Экономическом суде по месту нахождения Исполнителя. До обращения в суд предъявление письменной претензии является обязательным. Срок рассмотрения претензии – 5 календарных дней с момента ее получения.',
-    '8. Переданные по факсимильной связи или посредством электронной почты настоящий договор-счет и иные документы имеют юридическую силу, с последующим предоставлением подлинников в течение 30 (тридцати) дней.',
-    '9. Во всем остальном стороны руководствуются законодательством Республики Беларусь.',
-    '10. Настоящий договор-счет вступает в силу с момента его подписания и действует до окончания исполнения Сторонами обязательств по настоящему договору.',
-    '11. Настоящий договор-счет составлен на 1 (одном листе).',
-  ]) { drawText(ctx,cl,{size:9.5,maxW:CW}); gap(ctx,5); }
-  gap(ctx,12);
-
-  hRule(ctx,C.border,0.5); gap(ctx,10);
-  const half=(CW-20)/2;
-  const indInitials=toInitials(d.ind.name);
-  const leftSig:[boolean,string][]=[
-    [true,'Исполнитель:'],[true,d.co.name],
-    [false,`УНП ${d.co.unp}`],
-    [false,`Юр. адрес: ${d.co.legalAddr}`],
-    [false,`Почт. адрес: ${d.co.postalAddr}`],
-    [false,`р/с ${d.co.account}`],
-    [false,`в ${d.co.bank}, БИК ${d.co.bik}`],
-    [false,`E-mail: ${d.co.email}`],
-    [false,`Тел. ${d.co.phone}`],
-    [false,`Директор _________________ /${d.co.dirShort}/`],
-  ];
-  const rightSig:[boolean,string][]=[
-    [true,'Заказчик:'],[true,d.ind.name],
-    ...(d.ind.address?[[false,d.ind.address]]as[boolean,string][]:[] as[boolean,string][]),
-    ...(d.ind.idCard?[[false,`ID-карта ${d.ind.idCard}`]]as[boolean,string][]:[] as[boolean,string][]),
-    ...(d.ind.phone?[[false,`Тел. ${d.ind.phone}`]]as[boolean,string][]:[] as[boolean,string][]),
-    ...(d.ind.email?[[false,`e-mail: ${d.ind.email}`]]as[boolean,string][]:[] as[boolean,string][]),
-    [false,''],
-    [false,`_________________ /${indInitials}/`],
-  ];
-  drawTwoColBlock(ctx,leftSig,rightSig,half,ML+half+20);
-  return pdfDoc.save();
-}
-
-async function genEverisFullContractPDF(d: EverisPackageData): Promise<Uint8Array> {
-  const fonts=await loadFonts();
-  const pdfDoc=await PDFDocument.create(); pdfDoc.registerFontkit(fontkit);
-  const fontR=await pdfDoc.embedFont(fonts.r), fontB=await pdfDoc.embedFont(fonts.b);
-  const ctx:PdfCtx={doc:pdfDoc,page:pdfDoc.addPage([PW,PH]),y:0,fontR,fontB};
-
-  const acTotal=+(d.acPrice*d.acQty).toFixed(2);
-  const matTotal=+d.materials.reduce((s,m)=>s+m.price*m.qty,0).toFixed(2);
-  const worksTotal=+(d.worksPrice*d.worksQty).toFixed(2);
-  const grandTotal=+(acTotal+matTotal+worksTotal).toFixed(2);
-
-  ctx.y=30;
-  drawText(ctx,`ДОГОВОР № ${d.contractNumber}`,{bold:true,size:15,align:'center',maxW:CW});
-  gap(ctx,4);
-  drawText(ctx,'на монтаж систем кондиционирования',{size:11,align:'center',maxW:CW});
-  gap(ctx,18);
-  ctx.page.drawText(`г. ${d.city}`,{x:ML,y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
-  const ds=`«${d.contractDate}»`;
-  ctx.page.drawText(ds,{x:ML+CW-txtW(fontR,ds,9),y:pdfY(ctx.y,9),font:fontR,size:9,color:C.text});
-  ctx.y+=18; hRule(ctx,C.border,0.5); gap(ctx,10);
-
-  drawText(ctx,`${d.co.name} (аттестат соответствия № 0019478-СТ), именуемое в дальнейшем Исполнитель, в лице директора ${d.co.dirFull}, действующего на основании Устава, с одной стороны, и ${d.org.name}, именуемый в дальнейшем Заказчик, в лице директора ${d.org.dirFull}, действующего на основании ${d.org.dirBasis||'Устава'}, с другой стороны, а вместе именуемые Стороны, заключили настоящий договор о нижеследующем:`,{size:9.5,maxW:CW});
-  gap(ctx,10);
-
-  sectionHeader(ctx,'1. ПРЕДМЕТ ДОГОВОРА',C.navy);
-  drawText(ctx,`1.1. ИСПОЛНИТЕЛЬ обязуется осуществить поставку оборудования, материалов и выполнить комплекс работ по монтажу системы кондиционирования (далее – «Работы») на объекте: ${d.objectDesc}, расположенный по адресу: ${d.objectAddr} (далее – Объект) и передать результат работ ЗАКАЗЧИКУ, а ЗАКАЗЧИК обязуется принять и оплатить оборудование, материалы и работы по ценам и на условиях настоящего договора.`,{size:9.5,maxW:CW});
-
-  sectionHeader(ctx,'2. СРОКИ И ПОРЯДОК ПОСТАВКИ И ВЫПОЛНЕНИЯ РАБОТ',C.navy);
-  for(const t of [
-    '2.1. Сроки поставки и выполнения работ:',
-    '2.1.1. ИСПОЛНИТЕЛЬ приступает к работе в течение 3 дней после поставки материалов и оборудования на объект или в сроки, согласованные с ЗАКАЗЧИКОМ дополнительно.',
-    '2.1.2. Срок поставки оборудования и материалов – до 5 рабочих дней с момента поступления предварительной оплаты.',
-    '2.2. Поставка оборудования осуществляется транспортом ИСПОЛНИТЕЛЯ по адресу согласно п. 1.1 настоящего договора.',
-    '2.3. По окончании выполнения Работ ИСПОЛНИТЕЛЬ предоставляет ЗАКАЗЧИКУ акт сдачи-приемки выполненных работ (далее – «Акт»). В течение 5 (пяти) рабочих дней с момента получения Акта ЗАКАЗЧИК принимает работы и направляет ИСПОЛНИТЕЛЮ подписанный Акт или мотивированный отказ. Неполучение ИСПОЛНИТЕЛЕМ подписанного Акта в указанный срок означает принятие работ ЗАКАЗЧИКОМ.',
-    '2.4. В случае выявления недостатков по качеству и (или) комплектности оборудования, ИСПОЛНИТЕЛЬ осуществляет замену в течение 30 (тридцати) календарных дней с момента получения письменного уведомления.',
-    '2.5. Сроки продлеваются в случаях: несвоевременной передачи помещения; выявления дополнительных объемов работ; неблагоприятных погодных условий; несвоевременного перечисления аванса.',
-  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
-
-  sectionHeader(ctx,'3. СТОИМОСТЬ РАБОТ И ПОРЯДОК РАСЧЕТОВ',C.navy);
-  drawText(ctx,`3.1. Стоимость оборудования, материалов и работ по договору определена протоколом согласования договорной цены (Приложение №1) и составляет ${amountFull(grandTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
-  drawText(ctx,`3.2. Стоимость оборудования составляет ${amountFull(acTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
-  drawText(ctx,`3.3. Стоимость материалов составляет ${amountFull(matTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
-  drawText(ctx,`3.4. Стоимость работ составляет ${amountFull(worksTotal,d.withVat)}.`,{size:9.5,maxW:CW});
-
-  sectionHeader(ctx,'4. ПОРЯДОК РАСЧЕТОВ',C.navy);
-  for(const t of [
-    '4.1. ЗАКАЗЧИК производит оплату оборудования, материалов и работ в следующем порядке:',
-    '4.1.1. Стоимость оборудования и материалов ЗАКАЗЧИК оплачивает в качестве предварительной оплаты в течение 5 (пяти) календарных дней со дня заключения настоящего Договора.',
-    '4.1.2. Стоимость работ по монтажу систем кондиционирования в течение 3 (трех) банковских дней с момента подписания Акта выполненных работ.',
-    '4.2. Расчеты производятся в безналичном порядке платежными поручениями путем перечисления ЗАКАЗЧИКОМ денежных средств на текущий (расчетный) счет ИСПОЛНИТЕЛЯ.',
-    '4.3. Датой оплаты считается день поступления средств на текущий (расчетный) счет ИСПОЛНИТЕЛЯ.',
-    '4.4. Сумма предварительной оплаты не является коммерческим займом. Проценты за пользование коммерческим займом не начисляются.',
-  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
-
-  sectionHeader(ctx,'5. ПРАВА И ОБЯЗАННОСТИ СТОРОН',C.navy);
-  for(const t of [
-    '5.1. ЗАКАЗЧИК обязуется: своевременно принять и оплатить работы; остановить выполнение работ в случае нарушения технологии; осуществить приемку выполненных работ по комплектности и качеству. Претензии по комплектности после подписания Акта не принимаются.',
-    '5.2. ИСПОЛНИТЕЛЬ обязуется: выполнить и сдать ЗАКАЗЧИКУ все обусловленные договором работы; обеспечить качество работ и оформление необходимой документации; своевременно и за свой счет устранять выявленные недоделки и дефекты; предоставить акт сдачи-приемки выполненных работ.',
-    '5.3. Гарантийное обслуживание оборудования осуществляется при наличии руководства по эксплуатации и гарантийного талона. Гарантийные обязательства не распространяются на механические повреждения, самостоятельный ремонт и повреждения от стихийных бедствий.',
-  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
-
-  sectionHeader(ctx,'6. ОТВЕТСТВЕННОСТЬ СТОРОН',C.navy);
-  for(const t of [
-    '6.1. ЗАКАЗЧИК несет ответственность: за необоснованное уклонение от приемки – 0,01% стоимости непринятых работ за каждый день просрочки; за несвоевременные расчеты – 0,01% не перечисленной суммы за каждый день; за уклонение от подписания акта сверки – штраф 10 базовых величин.',
-    '6.2. ИСПОЛНИТЕЛЬ несет ответственность: за нарушение сроков выполнения работ – 0,01% стоимости работ за каждый день просрочки, но не более их стоимости.',
-    '6.3. Уплата штрафных санкций не освобождает стороны от исполнения обязательств по договору.',
-  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
-
-  sectionHeader(ctx,'7. ФОРС-МАЖОР',C.navy);
-  for(const t of [
-    '7.1. Стороны освобождаются от ответственности за неисполнение обязательств вследствие обстоятельств непреодолимой силы: наводнение, пожар, землетрясение, ураган; война, военные действия, террористический акт; нормативный правовой акт, препятствующий исполнению обязательств.',
-    '7.2. Сторона, для которой возникла невозможность исполнения обязательств, должна уведомить другую Сторону в письменной форме не позднее 7 (семи) рабочих дней с момента наступления таких обстоятельств. Факты подтверждаются Белорусской торгово-промышленной палатой.',
-  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
-
-  sectionHeader(ctx,'8. ПОРЯДОК РАЗРЕШЕНИЯ СПОРОВ',C.navy);
-  for(const t of [
-    '8.1. Все споры и разногласия по настоящему договору решаются путем переговоров.',
-    '8.2. До обращения в суд предъявление письменной претензии является обязательным. Срок рассмотрения – 5 (пять) календарных дней. Споры рассматриваются в Экономическом суде по месту нахождения Исполнителя.',
-  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
-
-  sectionHeader(ctx,'9. ДОПОЛНИТЕЛЬНЫЕ УСЛОВИЯ',C.navy);
-  for(const t of [
-    '9.1. Настоящий договор вступает в силу с момента его подписания и действует до момента выполнения Сторонами всех обязательств.',
-    '9.2. Изменение условий договора возможно только по соглашению сторон в письменной форме.',
-    '9.3. Переданные по электронной почте договор и документы имеют юридическую силу с последующим предоставлением подлинников в течение 30 (тридцати) календарных дней.',
-    '9.4. Во всём остальном стороны руководствуются нормами действующего законодательства Республики Беларусь.',
-    '9.5. Настоящий договор составлен в двух экземплярах, имеющих равную юридическую силу.',
-  ]) { drawText(ctx,t,{size:9.5,maxW:CW}); gap(ctx,4); }
-
-  sectionHeader(ctx,'10. ПРИЛОЖЕНИЯ',C.navy);
-  drawText(ctx,'Приложение № 1 – Спецификация-протокол согласования договорной цены.',{size:9.5,maxW:CW}); gap(ctx,4);
-
-  sectionHeader(ctx,'11. РЕКВИЗИТЫ И ПОДПИСИ СТОРОН',C.navy);
-  gap(ctx,4);
-  const half=(CW-20)/2;
-  const orgInitials=toInitials(d.org.dirFull);
-  const leftSig:[boolean,string][]=[
-    [true,'ИСПОЛНИТЕЛЬ:'],[true,d.co.name],
-    [false,`УНП ${d.co.unp}`],
-    [false,`Юридический адрес: ${d.co.legalAddr}`],
-    [false,`Почтовый адрес: ${d.co.postalAddr}`],
-    [false,`р/с ${d.co.account}`],
-    [false,`в ${d.co.bank}, БИК ${d.co.bik}`],
-    [false,`E-mail: ${d.co.email}`],
-    [false,''],
-    [false,`Директор _________________ /${d.co.dirShort}/`],
-  ];
-  const rightSig:[boolean,string][]=[
-    [true,'ЗАКАЗЧИК:'],[true,d.org.name],
-    [false,`УНП ${d.org.unp}`],
-    [false,`Юридический адрес: ${d.org.legalAddr}`],
-    ...(d.org.postalAddr?[[false,`Почтовый адрес: ${d.org.postalAddr}`]]as[boolean,string][]:[] as[boolean,string][]),
-    [false,`р/с ${d.org.account}`],
-    [false,`в ${d.org.bank}, БИК ${d.org.bik}`],
-    [false,`E-mail: ${d.org.email}`],
-    [false,''],
-    [false,`Директор _________________ /${orgInitials}/`],
-  ];
-  drawTwoColBlock(ctx,leftSig,rightSig,half,ML+half+20);
-  return pdfDoc.save();
-}
-
-async function genEverisSpecPDF(d: EverisPackageData): Promise<Uint8Array> {
-  const fonts=await loadFonts();
-  const pdfDoc=await PDFDocument.create(); pdfDoc.registerFontkit(fontkit);
-  const fontR=await pdfDoc.embedFont(fonts.r), fontB=await pdfDoc.embedFont(fonts.b);
-  const ctx:PdfCtx={doc:pdfDoc,page:pdfDoc.addPage([PW,PH]),y:0,fontR,fontB};
-  const fC=(n:number)=>n.toFixed(2);
-
-  const acTotal=+(d.acPrice*d.acQty).toFixed(2);
-  const acVatSum=d.withVat?+(acTotal*d.acVat/100).toFixed(2):0;
-  const acWithVat=+(acTotal+acVatSum).toFixed(2);
-  let matTotal=0,matVatTotal=0;
-  for(const m of d.materials){
-    const s=+(m.price*m.qty).toFixed(2);
-    const v=d.withVat?+(s*m.vat/100).toFixed(2):0;
-    matTotal=+(matTotal+s).toFixed(2);
-    matVatTotal=+(matVatTotal+v).toFixed(2);
-  }
-  const matWithVat=+(matTotal+matVatTotal).toFixed(2);
-  const wTotal=+(d.worksPrice*d.worksQty).toFixed(2);
-  const wVat=d.withVat?+(wTotal*d.worksVat/100).toFixed(2):0;
-  const wWithVat=+(wTotal+wVat).toFixed(2);
-  const grandTotal=+(acTotal+matTotal+wTotal).toFixed(2);
-  const grandVat=+(acVatSum+matVatTotal+wVat).toFixed(2);
-  const grandWithVat=+(grandTotal+grandVat).toFixed(2);
-
-  ctx.y=28;
-  drawText(ctx,'Приложение №1',{size:11,align:'center',maxW:CW});
-  gap(ctx,3);
-  drawText(ctx,`к договору №${d.contractNumber} от ${d.contractDate}`,{size:9.5,align:'center',maxW:CW});
-  gap(ctx,12);
-  drawText(ctx,'Спецификация-протокол согласования договорной цены',{bold:true,size:13,align:'center',maxW:CW});
-  gap(ctx,14); hRule(ctx,C.border,0.5); gap(ctx,10);
-
-  const cName=d.clientType==='org'?d.org.name:d.ind.name;
-  const cDir=d.clientType==='org'?d.org.dirFull:d.ind.name;
-  const cBasis=d.clientType==='org'?(d.org.dirBasis||'Устава'):'';
-  const cSuffix=cBasis?`, действующей на основании ${cBasis}`:'';
-  drawText(ctx,`${d.co.name}, именуемое в дальнейшем «ИСПОЛНИТЕЛЬ», в лице директора ${d.co.dirFull}, действующего на основании Устава, с одной стороны, и ${cName}, именуемое в дальнейшем «ЗАКАЗЧИК» в лице ${cDir}${cSuffix}, достигли соглашения о составе и величине договорной цены поставляемого Товара и Услуг, в соответствие с п.п. 1.1. настоящего Договора:`,{size:9.5,maxW:CW});
-  gap(ctx,10);
-
-  const specRows:string[][]=[];
-  const vatLabel=(v:number)=>d.withVat?String(v):'—';
-  specRows.push(['1',`Сплит-система ${d.acModel}`,d.acUnit||'компл.',String(d.acQty),fC(d.acPrice),fC(acTotal),vatLabel(d.acVat),fC(acVatSum),fC(acWithVat)]);
-  let rowIdx=2;
-  for(const m of d.materials){
-    const s=+(m.price*m.qty).toFixed(2);
-    const v=d.withVat?+(s*m.vat/100).toFixed(2):0;
-    specRows.push([String(rowIdx++),m.name,m.unit,String(m.qty),fC(m.price),fC(s),vatLabel(m.vat),fC(v),fC(+(s+v).toFixed(2))]);
-  }
-  specRows.push([String(rowIdx),d.worksDesc||'Работы',d.worksUnit||'компл.',String(d.worksQty),fC(d.worksPrice),fC(wTotal),vatLabel(d.worksVat),fC(wVat),fC(wWithVat)]);
-
-  drawTable(ctx,[
-    {label:'№',w:20,align:'center'},{label:'Наименование товара (услуги, работы)',w:155},
-    {label:'Ед.',w:28,align:'center'},{label:'Кол-во',w:34,align:'center'},
-    {label:'Цена, руб',w:53,align:'right'},{label:'Сумма, руб',w:57,align:'right'},
-    {label:'НДС %',w:34,align:'center'},{label:'Сумма НДС',w:54,align:'right'},
-    {label:'С НДС, руб',w:60,align:'right'},
-  ],specRows);
-
-  ensureSpace(ctx,22);
-  ctx.page.drawText('Итого',{x:ML+4,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
-  const w495=ML+20+155+28+34+53; // sum col x
-  ctx.page.drawText(fC(grandTotal),{x:w495,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
-  ctx.page.drawText(fC(grandVat),{x:w495+57+34,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
-  ctx.page.drawText(fC(grandWithVat),{x:w495+57+34+54,y:pdfY(ctx.y,10),font:fontB,size:10,color:C.text});
-  ctx.y+=20; gap(ctx,10);
-
-  drawText(ctx,`Общая стоимость оборудования – ${amountFull(d.withVat?acWithVat:acTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
-  drawText(ctx,`Общая стоимость материалов – ${amountFull(d.withVat?matWithVat:matTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,4);
-  drawText(ctx,`Стоимость работ составляет ${amountFull(d.withVat?wWithVat:wTotal,d.withVat)}.`,{size:9.5,maxW:CW}); gap(ctx,12);
-
-  hRule(ctx,C.border,0.5); gap(ctx,10);
-  const half=(CW-20)/2;
-  const cInitials=d.clientType==='org'?toInitials(d.org.dirFull):toInitials(d.ind.name);
-  const monthYear=d.contractDate.split(' ').slice(-2).join(' ');
-  drawTwoColBlock(ctx,[
-    [true,'ИСПОЛНИТЕЛЬ:'],[false,''],[false,`_________________ /${d.co.dirShort}/`],[false,'м.п.'],[false,`«___» ${monthYear} г.`],
-  ],[
-    [true,'ЗАКАЗЧИК:'],[false,''],[false,`_________________ /${cInitials}/`],[false,'м.п.'],[false,`«___» ${monthYear} г.`],
-  ],half,ML+half+20);
-
-  return pdfDoc.save();
-}
-
-app.post('/make-server-1df47c03/documents/generate-package', async (c) => {
-  try {
-    const body = await c.req.json() as EverisPackageData;
-    if(!body.contractNumber) return c.json({error:'contractNumber обязателен'},400);
-    if(!body.acModel) return c.json({error:'acModel обязателен'},400);
-    console.log('[generate-package] type:', body.contractType, 'num:', body.contractNumber);
-
-    const pdfs: Array<{name:string; bytes:Uint8Array}> = [];
-    if(body.contractType==='invoice'){
-      pdfs.push({name:'contract', bytes: await genEverisInvoicePDF(body)});
-    } else {
-      pdfs.push({name:'contract', bytes: await genEverisFullContractPDF(body)});
-      pdfs.push({name:'spec', bytes: await genEverisSpecPDF(body)});
-    }
-
-    const pkgId = `pkg_${Date.now()}_${Math.random().toString(36).substr(2,9)}`;
-    const savedPaths: Record<string,string> = {};
-    const savedUrls:  Record<string,string> = {};
-    for(const pdf of pdfs){
-      const path = `packages/${pkgId}_${pdf.name}.pdf`;
-      const {error:ue} = await supabase.storage.from(DOC_BUCKET).upload(path, pdf.bytes, {contentType:'application/pdf',upsert:true});
-      if(ue) throw new Error(`Upload ${pdf.name}: ${ue.message}`);
-      savedPaths[`${pdf.name}Path`] = path;
-      const {data:sd} = await supabase.storage.from(DOC_BUCKET).createSignedUrl(path,60*60*24*30);
-      savedUrls[`${pdf.name}Url`] = sd?.signedUrl ?? '';
-    }
-
-    const grandTotal=+(body.acPrice*body.acQty + body.materials.reduce((s,m)=>s+m.price*m.qty,0) + body.worksPrice*body.worksQty).toFixed(2);
-    const pkg = {
-      id: pkgId, contractType: body.contractType,
-      contractNumber: body.contractNumber, contractDate: body.contractDate,
-      clientName: body.clientType==='individual' ? body.ind.name : body.org.name,
-      clientType: body.clientType, grandTotal,
-      ...savedPaths, ...savedUrls,
-      createdAt: new Date().toISOString(),
-    };
-    await kv.set(`docpkg:${pkgId}`, JSON.stringify(pkg));
-    const listRaw = await kv.get('docpkg:list');
-    const list: string[] = listRaw ? JSON.parse(listRaw) : [];
-    list.unshift(pkgId); if(list.length>100) list.splice(100);
-    await kv.set('docpkg:list', JSON.stringify(list));
-    console.log('[generate-package] saved:', pkgId);
-    return c.json({package: pkg});
-  } catch(err:any){
-    console.error('[generate-package] error:', err);
-    return c.json({error:`Ошибка генерации: ${err.message}`},500);
-  }
-});
-
-app.get('/make-server-1df47c03/documents/packages', async (c) => {
-  try {
-    const listRaw = await kv.get('docpkg:list');
-    if(!listRaw) return c.json({packages:[]});
-    const ids: string[] = JSON.parse(listRaw);
-    const packages = [];
-    for(const id of ids.slice(0,50)){
-      const raw = await kv.get(`docpkg:${id}`); if(!raw) continue;
-      const pkg = JSON.parse(raw);
-      const newUrls: Record<string,string> = {};
-      for(const key of ['contractPath','specPath']){
-        if(pkg[key]){
-          const {data:sd} = await supabase.storage.from(DOC_BUCKET).createSignedUrl(pkg[key],60*60*24*30);
-          newUrls[key.replace('Path','Url')] = sd?.signedUrl ?? '';
-        }
-      }
-      packages.push({...pkg,...newUrls});
-    }
-    return c.json({packages});
-  } catch(err:any){ return c.json({error:err.message},500); }
-});
-
-app.get('/make-server-1df47c03/company-everis', async (c) => {
-  const def = {
-    name:'ООО «Эвериз Сервис»', unp:'192812488',
-    dirFull:'Бурак Борис Михайлович', dirShort:'Б.М. Бурак',
-    legalAddr:'220053, г. Минск, ул. Орловская, д. 40а, пом. 6',
-    postalAddr:'220125, г. Минск, ул. Ложинская, д. 4, пом. 36',
-    account:'BY29 MTBK 3012 0001 0933 0013 0402',
-    bank:'ЗАО «МТБанк»', bik:'MTBKBY22',
-    email:'info@everis.by', phone:'+375 44 573 22 22',
-  };
-  try {
-    const raw = await kv.get('config:company-everis');
-    return c.json({company: raw ? {...def,...JSON.parse(raw)} : def});
-  } catch { return c.json({company:def}); }
-});
-
-app.post('/make-server-1df47c03/company-everis', async (c) => {
-  try {
-    const body = await c.req.json();
-    await kv.set('config:company-everis', JSON.stringify(body));
-    return c.json({success:true, company:body});
-  } catch(err:any) { return c.json({error:err.message},500); }
-});
+// Legacy company-specific document package generator removed.
+// Order documents are handled by order_core and the window templates.
 
 Deno.serve(app.fetch);

@@ -5,6 +5,7 @@ import { RightSideCard } from "./ui/RightSideCard";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCurrency } from "./CurrencyContext";
+import { renderWindowSvg, type WindowConstruct } from "../domain/windows";
 
 const API = API_BASE;
 
@@ -36,6 +37,7 @@ interface Order {
   client_tax_id?: string;
   client_email?: string;
   client_doc_basis?: string;
+  window_constructs?: WindowConstruct[];
   offer?: { version: number; status: string; lines: any[] };
   created_at: string;
   updated_at: string;
@@ -693,7 +695,8 @@ export function OrderDocumentsBuilder() {
   <div style="text-align:right;">{{COMPANY_BLOCK}}</div>
 </div>
 {{CLIENT_BLOCK}}
-<p style="margin-top:12px;font-size:12px;">Настоящим предлагаем выполнить поставку оборудования и/или оказание услуг по монтажу кондиционеров на условиях ниже.</p>
+<p style="margin-top:12px;font-size:12px;">Настоящим предлагаем изготовление, поставку и монтаж оконных/дверных конструкций на условиях ниже.</p>
+{{WINDOW_SCHEMES}}
 {{ITEMS_TABLE}}
 {{WORK_STAGES}}
 {{TOTALS}}
@@ -710,14 +713,14 @@ export function OrderDocumentsBuilder() {
     if (t === "contract") {
       return `<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
   <div>
-    <h1 style="margin:0;font-size:18px;letter-spacing:0.2px;">ДОГОВОР НА ВЫПОЛНЕНИЕ РАБОТ</h1>
+    <h1 style="margin:0;font-size:18px;letter-spacing:0.2px;">ДОГОВОР НА МОНТАЖ ОКОННЫХ И ДВЕРНЫХ КОНСТРУКЦИЙ</h1>
     <div style="margin-top:6px;font-size:12px;color:#475569;">№ {{ORDER_NUMBER}} · от {{DOC_DATE}}</div>
   </div>
   <div style="text-align:right;">{{COMPANY_BLOCK}}</div>
 </div>
 {{CLIENT_BLOCK}}
 <h3 style="margin-top:16px;">1. Предмет договора</h3>
-<p style="font-size:12px;line-height:1.5;">Исполнитель обязуется выполнить работы по монтажу/обслуживанию оборудования на объекте Заказчика, а Заказчик обязуется принять и оплатить работы.</p>
+<p style="font-size:12px;line-height:1.5;">Исполнитель обязуется принять заказ на изготовление и монтаж оконных/дверных конструкций согласно спецификации, а Заказчик обязуется принять и оплатить изделия и работы.</p>
 <h3 style="margin-top:14px;">2. Стоимость и порядок оплаты</h3>
 <p style="font-size:12px;line-height:1.5;">Стоимость работ и материалов определяется согласно спецификации/сметы (ниже) и может уточняться по факту осмотра/замера. Оплата: предоплата за оборудование/материалы 100%, аванс на работы 50% (можно изменить).</p>
 <h3 style="margin-top:14px;">3. Сроки выполнения</h3>
@@ -725,6 +728,7 @@ export function OrderDocumentsBuilder() {
 <h3 style="margin-top:14px;">4. Гарантии</h3>
 <p style="font-size:12px;line-height:1.5;">Гарантия на выполненные работы: 5 лет при соблюдении правил эксплуатации и регламентов обслуживания. Гарантия на оборудование — согласно гарантийным обязательствам производителя.</p>
 <h3 style="margin-top:14px;">5. Спецификация</h3>
+{{WINDOW_SCHEMES}}
 {{ITEMS_TABLE}}
 {{WORK_STAGES}}
 {{TOTALS}}
@@ -745,6 +749,7 @@ export function OrderDocumentsBuilder() {
 </div>
 {{CLIENT_BLOCK}}
 <p style="margin-top:12px;font-size:12px;">Настоящим подтверждаем выполнение работ по ордеру.</p>
+{{WINDOW_SCHEMES}}
 {{ITEMS_TABLE}}
 {{WORK_STAGES}}
 {{TOTALS}}
@@ -835,9 +840,9 @@ export function OrderDocumentsBuilder() {
     const title =
       docTitle.trim() ||
       (docType === "act"
-        ? "АКТ ВЫПОЛНЕННЫХ РАБОТ"
-        : docType === "contract"
-          ? "ДОГОВОР НА ВЫПОЛНЕНИЕ РАБОТ"
+          ? "АКТ ВЫПОЛНЕННЫХ РАБОТ"
+          : docType === "contract"
+          ? "ДОГОВОР НА МОНТАЖ ОКОННЫХ И ДВЕРНЫХ КОНСТРУКЦИЙ"
           : "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ");
     const dateStr = docDate ? new Date(docDate).toLocaleDateString("ru-RU") : new Date().toLocaleDateString("ru-RU");
 
@@ -940,6 +945,17 @@ ${stages
   ${company.email ? `<div>Email: ${escapeHtml(company.email)}</div>` : ""}
 </div>`;
 
+    const windowSchemes = (selected.window_constructs ?? []).length
+      ? `<h3 style="margin:18px 0 8px 0;font-size:13px;">Схемы конструкций</h3>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+${(selected.window_constructs ?? []).map((w, idx) => `<div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px;break-inside:avoid;">
+  <div style="font-size:12px;font-weight:700;margin-bottom:6px;">${idx + 1}. ${escapeHtml(w.title || "Конструкция")}</div>
+  ${renderWindowSvg(w, { width: 330, height: 190 })}
+  <div style="font-size:11px;color:#475569;margin-top:6px;">${escapeHtml([w.profileSystem, w.glassUnit, w.hardwareType].filter(Boolean).join(" · "))}</div>
+</div>`).join("")}
+</div>`
+      : "";
+
     const bodySrc = docBodyHtml || "";
 
     const bodyRendered = bodySrc
@@ -947,6 +963,7 @@ ${stages
       .replaceAll("{{DOC_DATE}}", escapeHtml(dateStr))
       .replaceAll("{{CLIENT_BLOCK}}", clientBlock)
       .replaceAll("{{COMPANY_BLOCK}}", companyBlock)
+      .replaceAll("{{WINDOW_SCHEMES}}", windowSchemes)
       .replaceAll("{{ITEMS_TABLE}}", itemsTable)
       .replaceAll("{{WORK_STAGES}}", stagesHtml || "")
       .replaceAll("{{TOTALS}}", totalsBlock)
@@ -973,7 +990,7 @@ ${stages
         (docType === "act"
           ? "АКТ ВЫПОЛНЕННЫХ РАБОТ"
           : docType === "contract"
-            ? "ДОГОВОР НА ВЫПОЛНЕНИЕ РАБОТ"
+            ? "ДОГОВОР НА МОНТАЖ ОКОННЫХ И ДВЕРНЫХ КОНСТРУКЦИЙ"
             : "КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ");
       const date = docDate ? new Date(docDate).toLocaleDateString("ru-RU") : new Date().toLocaleDateString("ru-RU");
       const payload = {
@@ -1654,4 +1671,3 @@ ${stages
     </div>
   );
 }
-

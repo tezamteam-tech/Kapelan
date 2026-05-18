@@ -1,9 +1,7 @@
-import { SalesManagerChat } from "../SalesManagerChat";
+import { WindowBusinessAssistant } from "../WindowBusinessAssistant";
 
 export function AIChatPage() {
   return (
-    <div className="h-full flex flex-col p-4 lg:p-6">
-      <SalesManagerChat />
-    </div>
+    <WindowBusinessAssistant />
   );
 }

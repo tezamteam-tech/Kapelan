@@ -1,22 +1,20 @@
-// ─── PROCUREMENT MODULE ───────────────────────────────────────────────────────
-// Supplier catalog, order batching, mock-API dispatch, status tracking
-import * as kv from "./kv_store.tsx";
+// Procurement module (Postgres-backed).
+// Suppliers + batching purchase requests into supplier purchase orders.
+
+import { createClient } from "npm:@supabase/supabase-js";
 import { getAllWarehouseItems } from "./warehouse.tsx";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
 export interface Supplier {
   id: string;
   name: string;
-  categories: string[];          // which warehouse categories this supplier covers
+  categories: string[];
   contactEmail: string;
   phone: string;
   address?: string;
-  apiEndpoint: string;           // mock URL
-  apiKey: string;                // mock key
   terms: {
-    paymentDays: number;         // net payment days
-    deliveryDays: number;        // estimated delivery
-    minOrderAmount: number;      // UAH
+    paymentDays: number;
+    deliveryDays: number;
+    minOrderAmount: number;
     currency: string;
   };
   isActive: boolean;
@@ -26,7 +24,7 @@ export interface Supplier {
 }
 
 export interface ProcurementOrderLine {
-  purchaseOrderId: string;       // link to existing PO
+  purchaseOrderId: string; // legacy: purchase_request_line id
   itemId: string;
   itemName: string;
   sku: string;
@@ -37,617 +35,900 @@ export interface ProcurementOrderLine {
   category: string;
 }
 
-export interface MockApiResponse {
-  success: boolean;
-  confirmationNumber: string;
-  supplierOrderId: string;
-  estimatedDeliveryDate: string;
-  totalAmount: number;
-  currency: string;
-  message: string;
-  requestedAt: string;
-  respondedAt: string;
-  httpStatus: number;
-  payload: any;                  // echoed request body for debugging
-}
-
 export interface ProcurementOrder {
   id: string;
   supplierId: string;
   supplierName: string;
   supplierEmail: string;
-  categories: string[];          // categories included in this batch
+  categories: string[];
   lines: ProcurementOrderLine[];
   totalCost: number;
-  status: 'draft' | 'sent' | 'confirmed' | 'cancelled' | 'failed';
+  status: "draft" | "sent" | "confirmed" | "cancelled" | "failed";
   sendAttempts: number;
   lastSentAt?: string;
-  mockApiResponse?: MockApiResponse;
   note?: string;
   createdAt: string;
   updatedAt: string;
 }
 
-// ─── Default supplier catalog ─────────────────────────────────────────────────
-//   3 main groups as requested: Расходники | Провода (Электрика) | Трубы (Трубопровод + Дренаж)
-//   + extra suppliers for Крепёж and Кондиционеры
-
-const DEFAULT_SUPPLIERS: Supplier[] = [
-  {
-    id: 'sup_tubes',
-    name: 'МедьОпт',
-    categories: ['Трубопровод', 'Дренаж'],
-    contactEmail: 'orders@medopt.ua',
-    phone: '+380 44 111-22-33',
-    address: 'г. Киев, ул. Промышленная 14',
-    apiEndpoint: 'https://api.medopt.ua/v1/orders',
-    apiKey: 'mock-key-medopt-001',
-    terms: { paymentDays: 30, deliveryDays: 3, minOrderAmount: 2000, currency: 'UAH' },
-    isActive: true,
-    notes: 'Медные трубы и теплоизоляция. Скидка 5% от 10 000 ₴.',
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'sup_cables',
-    name: 'КабельМаркет',
-    categories: ['Электрика'],
-    contactEmail: 'supply@cablemarket.ua',
-    phone: '+380 44 222-33-44',
-    address: 'г. Харьков, ул. Кабельная 5',
-    apiEndpoint: 'https://api.cablemarket.ua/orders/new',
-    apiKey: 'mock-key-cables-002',
-    terms: { paymentDays: 14, deliveryDays: 2, minOrderAmount: 1000, currency: 'UAH' },
-    isActive: true,
-    notes: 'Кабели, кабель-каналы. Доставка на следующий день от 5 000 ₴.',
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'sup_consumables',
-    name: 'ГазСнаб',
-    categories: ['Расходники'],
-    contactEmail: 'orders@gazsnab.ua',
-    phone: '+380 44 333-44-55',
-    address: 'г. Днепр, ул. Химическая 8',
-    apiEndpoint: 'https://api.gazsnab.ua/procurement',
-    apiKey: 'mock-key-gassnab-003',
-    terms: { paymentDays: 7, deliveryDays: 5, minOrderAmount: 500, currency: 'UAH' },
-    isActive: true,
-    notes: 'Фреон R32, R410. Сертифицированный поставщик. Требуется лицензия.',
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'sup_hardware',
-    name: 'МонтажПро',
-    categories: ['Крепёж'],
-    contactEmail: 'zakaz@montajpro.ua',
-    phone: '+380 44 444-55-66',
-    address: 'г. Киев, ул. Строительная 22',
-    apiEndpoint: 'https://api.montajpro.ua/api/orders',
-    apiKey: 'mock-key-hardware-004',
-    terms: { paymentDays: 14, deliveryDays: 2, minOrderAmount: 300, currency: 'UAH' },
-    isActive: true,
-    notes: 'Дюбели, хомуты, кронштейны. Оптом дешевле.',
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-  },
-  {
-    id: 'sup_ac',
-    name: 'КлиматТех',
-    categories: ['Кондиционеры', 'Дренаж'],
-    contactEmail: 'b2b@klimattech.ua',
-    phone: '+380 44 555-66-77',
-    address: 'м. Одеса, вул. Морська 3',
-    apiEndpoint: 'https://api.klimattech.ua/orders',
-    apiKey: 'mock-key-ac-005',
-    terms: { paymentDays: 45, deliveryDays: 7, minOrderAmount: 10000, currency: 'UAH' },
-    isActive: true,
-    notes: 'Кондиционеры, дренажные насосы. Официальный дистрибьютор Mitsubishi, LG.',
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-  },
-];
-
-// ─── KV helpers ───────────────────────────────────────────────────────────────
-async function getAllSuppliers(): Promise<Supplier[]> {
-  try {
-    const all = await kv.getByPrefix('supplier:');
-    if (all.length > 0) {
-      return (all as string[]).map(r => JSON.parse(r)).filter(Boolean)
-        .sort((a: Supplier, b: Supplier) => a.name.localeCompare(b.name, 'ru'));
-    }
-    // Seed defaults on first boot
-    for (const s of DEFAULT_SUPPLIERS) {
-      await kv.set(`supplier:${s.id}`, JSON.stringify(s));
-    }
-    return DEFAULT_SUPPLIERS;
-  } catch (e) { console.error('getAllSuppliers:', e); return []; }
+export interface SupplierItem {
+  id: string;
+  supplierId: string;
+  supplierName?: string;
+  name: string;
+  sku: string;
+  unit: string;
+  category: string;
+  buyPrice: number;
+  sellPrice: number;
+  availability: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
-async function getSupplier(id: string): Promise<Supplier | null> {
-  const r = await kv.get(`supplier:${id}`);
-  return r ? JSON.parse(r) : null;
+export interface CatalogLink {
+  id: string;
+  warehouseItemId?: string | null;
+  supplierItemId: string;
+  isPrimary: boolean;
+  priority: number;
+  createdAt: string;
 }
 
-async function saveSupplier(s: Supplier): Promise<void> {
-  s.updatedAt = new Date().toISOString();
-  await kv.set(`supplier:${s.id}`, JSON.stringify(s));
+type Db = ReturnType<typeof createClient>;
+
+function db(): Db {
+  return createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+  );
 }
 
-async function getProcOrder(id: string): Promise<ProcurementOrder | null> {
-  const r = await kv.get(`proc_order:${id}`);
-  return r ? JSON.parse(r) : null;
+function toSupplier(row: any): Supplier {
+  const terms = row.terms ?? {};
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    categories: (row.categories ?? []) as string[],
+    contactEmail: String(row.contact_email ?? ""),
+    phone: String(row.phone ?? ""),
+    address: row.address ?? undefined,
+    terms: {
+      paymentDays: Number(terms.paymentDays ?? terms.payment_days ?? 0),
+      deliveryDays: Number(terms.deliveryDays ?? terms.delivery_days ?? 0),
+      minOrderAmount: Number(terms.minOrderAmount ?? terms.min_order_amount ?? 0),
+      currency: String(terms.currency ?? "BYN"),
+    },
+    isActive: row.is_active !== false,
+    notes: row.notes ?? undefined,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
 }
 
-async function saveProcOrder(o: ProcurementOrder): Promise<void> {
-  o.updatedAt = new Date().toISOString();
-  await kv.set(`proc_order:${o.id}`, JSON.stringify(o));
-}
-
-async function getAllProcOrders(): Promise<ProcurementOrder[]> {
-  const idxRaw = await kv.get('proc_order_index');
-  if (!idxRaw) return [];
-  const ids: string[] = JSON.parse(idxRaw);
-  const orders = (await Promise.all(ids.map((id: string) => kv.get(`proc_order:${id}`))))
-    .filter(Boolean).map((r: any) => JSON.parse(r))
-    .sort((a: ProcurementOrder, b: ProcurementOrder) =>
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  return orders;
-}
-
-async function indexProcOrder(id: string): Promise<void> {
-  const raw = await kv.get('proc_order_index');
-  const list: string[] = raw ? JSON.parse(raw) : [];
-  if (!list.includes(id)) list.unshift(id);
-  await kv.set('proc_order_index', JSON.stringify(list));
-}
-
-// ─── Supplier resolution logic ────────────────────────────────────────────────
 function resolveSupplierForCategory(category: string, suppliers: Supplier[]): Supplier | null {
-  const active = suppliers.filter(s => s.isActive);
-  // Normalize category variants
-  const cat = category.trim();
-  // Priority match: exact category in supplier.categories[]
-  const exact = active.find(s => s.categories.some(c =>
-    c.toLowerCase() === cat.toLowerCase()
-  ));
+  const active = suppliers.filter((s) => s.isActive);
+  const cat = category.trim().toLowerCase();
+  const exact = active.find((s) => s.categories.some((c) => c.toLowerCase() === cat));
   if (exact) return exact;
-  // Fuzzy: partial match
-  const fuzzy = active.find(s => s.categories.some(c =>
-    cat.toLowerCase().includes(c.toLowerCase()) || c.toLowerCase().includes(cat.toLowerCase())
-  ));
+  const fuzzy = active.find((s) => s.categories.some((c) => cat.includes(c.toLowerCase()) || c.toLowerCase().includes(cat)));
   return fuzzy ?? null;
 }
 
-// ─── Mock API Dispatcher ──────────────────────────────────────────────────────
-async function sendToSupplierMockApi(
-  supplier: Supplier,
-  order: ProcurementOrder,
-): Promise<MockApiResponse> {
-  const requestedAt = new Date().toISOString();
-  const payload = {
-    orderId: order.id,
-    buyerName: 'ТОВ "КЛІМАТ СЕРВІС"',
-    buyerEmail: 'procurement@klimatsvc.ua',
-    supplierApiKey: supplier.apiKey,
-    currency: supplier.terms.currency,
-    requestedDeliveryDays: supplier.terms.deliveryDays,
-    items: order.lines.map(l => ({
-      sku: l.sku,
-      name: l.itemName,
-      qty: l.qty,
-      unit: l.unit,
-      pricePerUnit: l.pricePerUnit,
-      totalCost: l.totalCost,
-    })),
-    totalAmount: order.totalCost,
-    notes: order.note || '',
-    timestamp: requestedAt,
-  };
-
-  // Simulate network delay 300–800ms
-  await new Promise(res => setTimeout(res, 300 + Math.random() * 500));
-
-  // Actually attempt mock HTTP call (will fail, but we catch it gracefully)
-  let httpStatus = 200;
-  try {
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 3000);
-    const res = await fetch(supplier.apiEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': supplier.apiKey,
-        'X-Order-Id': order.id,
-      },
-      body: JSON.stringify(payload),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timeout);
-    httpStatus = res.status;
-  } catch (_e) {
-    // Expected — external URL not reachable in sandbox; proceed with mock
-    httpStatus = 200;
-    console.log(`Mock API: ${supplier.apiEndpoint} simulated (offline in sandbox)`);
-  }
-
-  // Generate realistic mock response
-  const deliveryDate = new Date();
-  deliveryDate.setDate(deliveryDate.getDate() + supplier.terms.deliveryDays);
-  const confirmNum = `${supplier.id.toUpperCase().replace('SUP_', '')}-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 90000) + 10000)}`;
-  const supplierOid = `SO-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
-
+function toSupplierItem(row: any): SupplierItem {
   return {
-    success: true,
-    confirmationNumber: confirmNum,
-    supplierOrderId: supplierOid,
-    estimatedDeliveryDate: deliveryDate.toISOString().split('T')[0],
-    totalAmount: order.totalCost,
-    currency: supplier.terms.currency,
-    message: `Заказ ${confirmNum} принят. Ожидайте доставку ${deliveryDate.toLocaleDateString('ru-RU')} от ${supplier.name}.`,
-    requestedAt,
-    respondedAt: new Date().toISOString(),
-    httpStatus,
-    payload,
+    id: String(row.id),
+    supplierId: String(row.supplier_id),
+    supplierName: row.suppliers?.name ? String(row.suppliers.name) : undefined,
+    name: String(row.name ?? ""),
+    sku: String(row.sku ?? ""),
+    unit: String(row.unit ?? "шт"),
+    category: String(row.category ?? "Прочее"),
+    buyPrice: Number(row.buy_price ?? 0),
+    sellPrice: Number(row.sell_price ?? 0),
+    availability: String(row.availability ?? "order_only"),
+    isActive: row.is_active !== false,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   };
 }
 
-// ─── Build procurement order from pending POs ─────────────────────────────────
-async function buildProcurementOrder(
+function toCatalogLink(row: any): CatalogLink {
+  return {
+    id: String(row.id),
+    warehouseItemId: row.warehouse_item_id ? String(row.warehouse_item_id) : null,
+    supplierItemId: String(row.supplier_item_id),
+    isPrimary: !!row.is_primary,
+    priority: Number(row.priority ?? 100),
+    createdAt: String(row.created_at),
+  };
+}
+
+async function getAllSuppliers(): Promise<Supplier[]> {
+  const supabase = db();
+  const { data, error } = await supabase
+    .from("suppliers")
+    .select("id,name,categories,contact_email,phone,address,terms,is_active,notes,created_at,updated_at")
+    .order("name", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map(toSupplier);
+}
+
+async function getSupplier(id: string): Promise<Supplier | null> {
+  const supabase = db();
+  const { data, error } = await supabase
+    .from("suppliers")
+    .select("id,name,categories,contact_email,phone,address,terms,is_active,notes,created_at,updated_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? toSupplier(data) : null;
+}
+
+async function listProcurementOrders(): Promise<ProcurementOrder[]> {
+  const supabase = db();
+  const { data, error } = await supabase
+    .from("purchase_orders")
+    .select(`
+      id,supplier_id,status,total_cost,note,created_at,updated_at,
+      suppliers(name,contact_email),
+      purchase_order_lines(id,warehouse_item_id,name,sku,unit,qty_ordered,buy_price,total_cost,category)
+    `)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (error) throw new Error(error.message);
+
+  return (data ?? []).map((o: any) => {
+    const lines: ProcurementOrderLine[] = (o.purchase_order_lines ?? []).map((l: any) => ({
+      purchaseOrderId: String(l.id),
+      itemId: String(l.warehouse_item_id ?? ""),
+      itemName: String(l.name ?? "—"),
+      sku: String(l.sku ?? ""),
+      unit: String(l.unit ?? "шт"),
+      qty: Number(l.qty_ordered ?? 0),
+      pricePerUnit: Number(l.buy_price ?? 0),
+      totalCost: Number(l.total_cost ?? 0),
+      category: String(l.category ?? ""),
+    }));
+    const cats = [...new Set(lines.map((l) => l.category).filter(Boolean))];
+    return {
+      id: String(o.id),
+      supplierId: String(o.supplier_id),
+      supplierName: String(o.suppliers?.name ?? "—"),
+      supplierEmail: String(o.suppliers?.contact_email ?? ""),
+      categories: cats,
+      lines,
+      totalCost: Number(o.total_cost ?? 0),
+      status: (o.status ?? "draft"),
+      sendAttempts: 0,
+      lastSentAt: undefined,
+      note: o.note ?? undefined,
+      createdAt: String(o.created_at),
+      updatedAt: String(o.updated_at),
+    } satisfies ProcurementOrder;
+  });
+}
+
+async function buildProcOrderFromRequestLines(
   supplier: Supplier,
-  pendingPOs: any[],
-  warehouseItems: any[],
-): Promise<ProcurementOrder | null> {
-  const lines: ProcurementOrderLine[] = [];
-  const categories = new Set<string>();
+  requestLineIds: string[],
+  note?: string,
+): Promise<ProcurementOrder> {
+  const supabase = db();
 
-  for (const po of pendingPOs) {
-    const item = warehouseItems.find((i: any) => i.id === po.itemId);
-    const sup = resolveSupplierForCategory(po.itemName, [supplier]);
-    // Only include POs whose category matches this supplier
-    const poCategory = item?.category ?? '';
-    const supplierCoversCategory = supplier.categories.some(c =>
-      c.toLowerCase() === poCategory.toLowerCase() ||
-      poCategory.toLowerCase().includes(c.toLowerCase())
-    );
-    if (!supplierCoversCategory) continue;
+  const { data: lines, error: linesErr } = await supabase
+    .from("purchase_request_lines")
+    .select(`
+      id,qty,unit,buy_price,
+      purchase_requests(id,status),
+      warehouse_items(id,name,sku,category,unit)
+    `)
+    .in("id", requestLineIds);
+  if (linesErr) throw new Error(linesErr.message);
+  const rawLines = (lines ?? [])
+    .filter((l: any) => (l.purchase_requests?.status ?? "pending") === "pending")
+    .map((l: any) => ({
+      id: String(l.id),
+      qty: Number(l.qty ?? 0),
+      unit: String(l.warehouse_items?.unit ?? l.unit ?? "шт"),
+      buy: Number(l.buy_price ?? 0),
+      itemId: String(l.warehouse_items?.id ?? ""),
+      name: String(l.warehouse_items?.name ?? "—"),
+      sku: String(l.warehouse_items?.sku ?? ""),
+      category: String(l.warehouse_items?.category ?? ""),
+      prId: String(l.purchase_requests?.id ?? ""),
+    }))
+    .filter((l: any) => l.qty > 0 && l.itemId);
 
-    categories.add(poCategory);
-    lines.push({
-      purchaseOrderId: po.id,
-      itemId: po.itemId,
-      itemName: po.itemName,
-      sku: item?.sku ?? po.itemId,
-      unit: po.itemUnit,
-      qty: po.qtyOrdered - po.qtyReceived,
-      pricePerUnit: po.pricePerUnit,
-      totalCost: (po.qtyOrdered - po.qtyReceived) * po.pricePerUnit,
-      category: poCategory,
-    });
+  if (rawLines.length === 0) throw new Error("No pending lines");
+
+  // Restrict to supplier categories
+  const filtered = rawLines.filter((l: any) =>
+    supplier.categories.some((c) => c.toLowerCase() === l.category.toLowerCase() || l.category.toLowerCase().includes(c.toLowerCase())),
+  );
+  if (filtered.length === 0) throw new Error("No lines matched supplier categories");
+
+  const totalCost = filtered.reduce((s: number, l: any) => s + l.qty * l.buy, 0);
+
+  // Create purchase order + lines
+  const { data: po, error: poErr } = await supabase
+    .from("purchase_orders")
+    .insert({
+      supplier_id: supplier.id,
+      status: "draft",
+      total_cost: totalCost,
+      note: note || "",
+    })
+    .select("id,created_at,updated_at")
+    .single();
+  if (poErr) throw new Error(poErr.message);
+
+  const insertLines = filtered.map((l: any) => ({
+    purchase_order_id: po.id,
+    warehouse_item_id: l.itemId,
+    name: l.name,
+    sku: l.sku || null,
+    unit: l.unit,
+    qty_ordered: l.qty,
+    buy_price: l.buy,
+    total_cost: l.qty * l.buy,
+    category: l.category || null,
+  }));
+
+  const { error: polErr } = await supabase.from("purchase_order_lines").insert(insertLines);
+  if (polErr) throw new Error(polErr.message);
+
+  // Mark related purchase requests as ordered (so they disappear from pending)
+  const prIds = [...new Set(filtered.map((l: any) => l.prId).filter(Boolean))];
+  if (prIds.length > 0) {
+    const { error: updErr } = await supabase.from("purchase_requests").update({ status: "ordered" }).in("id", prIds);
+    if (updErr) throw new Error(updErr.message);
   }
 
-  if (lines.length === 0) return null;
-  const totalCost = lines.reduce((s, l) => s + l.totalCost, 0);
+  const outLines: ProcurementOrderLine[] = filtered.map((l: any) => ({
+    purchaseOrderId: l.id,
+    itemId: l.itemId,
+    itemName: l.name,
+    sku: l.sku,
+    unit: l.unit,
+    qty: l.qty,
+    pricePerUnit: l.buy,
+    totalCost: l.qty * l.buy,
+    category: l.category,
+  }));
+  const cats = [...new Set(outLines.map((l) => l.category).filter(Boolean))];
 
-  const id = `proc_${Date.now()}_${Math.random().toString(36).substr(2, 7)}`;
   return {
-    id,
+    id: String(po.id),
     supplierId: supplier.id,
     supplierName: supplier.name,
     supplierEmail: supplier.contactEmail,
-    categories: Array.from(categories),
-    lines,
+    categories: cats,
+    lines: outLines,
     totalCost,
-    status: 'draft',
+    status: "draft",
     sendAttempts: 0,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    lastSentAt: undefined,
+    note: note || "",
+    createdAt: String(po.created_at),
+    updatedAt: String(po.updated_at),
   };
 }
 
-// ─── Route registration ───────────────────────────────────────────────────────
 export function registerProcurementRoutes(app: any): void {
-  const P = '/make-server-1df47c03';
+  const P = "/make-server-1df47c03";
 
-  // ── GET all suppliers ────────────────────────────────────────────────────────
+  // Suppliers
   app.get(`${P}/suppliers`, async (c: any) => {
     try {
       const suppliers = await getAllSuppliers();
       return c.json({ suppliers });
-    } catch (error: any) {
-      return c.json({ error: `Failed to fetch suppliers: ${error.message}` }, 500);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  // ── POST create supplier ─────────────────────────────────────────────────────
   app.post(`${P}/suppliers`, async (c: any) => {
     try {
       const body = await c.req.json();
-      const id = `sup_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-      const supplier: Supplier = {
-        id,
-        name: body.name || 'Новый поставщик',
-        categories: body.categories || [],
-        contactEmail: body.contactEmail || '',
-        phone: body.phone || '',
-        address: body.address || '',
-        apiEndpoint: body.apiEndpoint || `https://api.supplier-${id}.ua/orders`,
-        apiKey: body.apiKey || `key-${id}`,
-        terms: {
-          paymentDays: Number(body.terms?.paymentDays ?? 14),
-          deliveryDays: Number(body.terms?.deliveryDays ?? 5),
-          minOrderAmount: Number(body.terms?.minOrderAmount ?? 0),
-          currency: body.terms?.currency ?? 'UAH',
-        },
-        isActive: body.isActive !== false,
-        notes: body.notes || '',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      await saveSupplier(supplier);
-      return c.json({ supplier });
-    } catch (error: any) {
-      return c.json({ error: `Failed to create supplier: ${error.message}` }, 500);
+      const supabase = db();
+      const { data, error } = await supabase
+        .from("suppliers")
+        .insert({
+          name: body.name,
+          categories: body.categories ?? [],
+          contact_email: body.contactEmail ?? "",
+          phone: body.phone ?? "",
+          address: body.address ?? null,
+          terms: body.terms ?? {},
+          is_active: body.isActive !== false,
+          notes: body.notes ?? "",
+        })
+        .select("id,name,categories,contact_email,phone,address,terms,is_active,notes,created_at,updated_at")
+        .single();
+      if (error) throw new Error(error.message);
+      return c.json({ supplier: toSupplier(data) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  // ── PATCH update supplier ────────────────────────────────────────────────────
   app.patch(`${P}/suppliers/:id`, async (c: any) => {
     try {
-      const supplier = await getSupplier(c.req.param('id'));
-      if (!supplier) return c.json({ error: 'Supplier not found' }, 404);
       const body = await c.req.json();
-      const allowed = ['name', 'categories', 'contactEmail', 'phone', 'address',
-        'apiEndpoint', 'apiKey', 'terms', 'isActive', 'notes'];
-      for (const key of allowed) {
-        if (body[key] !== undefined) (supplier as any)[key] = body[key];
-      }
-      await saveSupplier(supplier);
-      return c.json({ supplier });
-    } catch (error: any) {
-      return c.json({ error: `Failed to update supplier: ${error.message}` }, 500);
+      const patch: any = {};
+      if (body.name !== undefined) patch.name = body.name;
+      if (body.categories !== undefined) patch.categories = body.categories;
+      if (body.contactEmail !== undefined) patch.contact_email = body.contactEmail;
+      if (body.phone !== undefined) patch.phone = body.phone;
+      if (body.address !== undefined) patch.address = body.address || null;
+      if (body.terms !== undefined) patch.terms = body.terms;
+      if (body.isActive !== undefined) patch.is_active = body.isActive;
+      if (body.notes !== undefined) patch.notes = body.notes;
+
+      const supabase = db();
+      const { data, error } = await supabase
+        .from("suppliers")
+        .update(patch)
+        .eq("id", c.req.param("id"))
+        .select("id,name,categories,contact_email,phone,address,terms,is_active,notes,created_at,updated_at")
+        .single();
+      if (error) throw new Error(error.message);
+      return c.json({ supplier: toSupplier(data) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  // ── DELETE supplier ──────────────────────────────────────────────────────────
   app.delete(`${P}/suppliers/:id`, async (c: any) => {
     try {
-      await kv.del(`supplier:${c.req.param('id')}`);
+      const supabase = db();
+      const { error } = await supabase.from("suppliers").delete().eq("id", c.req.param("id"));
+      if (error) throw new Error(error.message);
       return c.json({ success: true });
-    } catch (error: any) {
-      return c.json({ error: `Failed to delete: ${error.message}` }, 500);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  // ── GET resolve supplier for a category ─────────────────────────────────────
-  app.get(`${P}/suppliers/resolve/:category`, async (c: any) => {
+  // ── Supplier items (catalog) ────────────────────────────────────────────────
+  app.get(`${P}/supplier-items`, async (c: any) => {
     try {
-      const category = decodeURIComponent(c.req.param('category'));
-      const suppliers = await getAllSuppliers();
-      const supplier = resolveSupplierForCategory(category, suppliers);
-      return c.json({ supplier, category });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
+      const supplierId = c.req.query("supplierId");
+      const q = (c.req.query("q") ?? "").toLowerCase();
+      const supabase = db();
+      let query = supabase
+        .from("supplier_items")
+        .select("id,supplier_id,name,sku,unit,category,buy_price,sell_price,availability,is_active,created_at,updated_at,suppliers(name)")
+        .order("updated_at", { ascending: false });
+      if (supplierId) query = query.eq("supplier_id", supplierId);
+      if (q) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%,category.ilike.%${q}%`);
+      const { data, error } = await query.limit(500);
+      if (error) throw new Error(error.message);
+      return c.json({ items: (data ?? []).map(toSupplierItem) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  // ── GET all procurement orders ───────────────────────────────────────────────
+  app.post(`${P}/supplier-items`, async (c: any) => {
+    try {
+      const body = await c.req.json();
+      if (!body.supplierId) return c.json({ error: "supplierId required" }, 400);
+      const supabase = db();
+      const { data, error } = await supabase
+        .from("supplier_items")
+        .upsert({
+          supplier_id: body.supplierId,
+          name: body.name ?? "Новая позиция",
+          sku: body.sku || null,
+          unit: body.unit ?? "шт",
+          category: body.category ?? "Прочее",
+          buy_price: Number(body.buyPrice ?? 0),
+          sell_price: Number(body.sellPrice ?? 0),
+          availability: body.availability ?? "order_only",
+          is_active: body.isActive !== false,
+        }, { onConflict: "supplier_id,sku" })
+        .select("id,supplier_id,name,sku,unit,category,buy_price,sell_price,availability,is_active,created_at,updated_at,suppliers(name)")
+        .single();
+      if (error) throw new Error(error.message);
+      return c.json({ item: toSupplierItem(data) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  app.patch(`${P}/supplier-items/:id`, async (c: any) => {
+    try {
+      const body = await c.req.json();
+      const patch: any = {};
+      if (body.name !== undefined) patch.name = body.name;
+      if (body.sku !== undefined) patch.sku = body.sku || null;
+      if (body.unit !== undefined) patch.unit = body.unit;
+      if (body.category !== undefined) patch.category = body.category;
+      if (body.buyPrice !== undefined) patch.buy_price = Number(body.buyPrice ?? 0);
+      if (body.sellPrice !== undefined) patch.sell_price = Number(body.sellPrice ?? 0);
+      if (body.availability !== undefined) patch.availability = body.availability;
+      if (body.isActive !== undefined) patch.is_active = body.isActive;
+
+      const supabase = db();
+      const { data, error } = await supabase
+        .from("supplier_items")
+        .update(patch)
+        .eq("id", c.req.param("id"))
+        .select("id,supplier_id,name,sku,unit,category,buy_price,sell_price,availability,is_active,created_at,updated_at,suppliers(name)")
+        .single();
+      if (error) throw new Error(error.message);
+      return c.json({ item: toSupplierItem(data) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  // Bulk upsert price list + optional cleanup/linking
+  // body: { supplierId, items: [{name,sku,category,unit,buyPrice,sellPrice,availability,isActive?}], options?: { autoLink?: boolean; deactivateMissing?: boolean } }
+  app.post(`${P}/supplier-items/bulk-upsert`, async (c: any) => {
+    try {
+      const body = await c.req.json();
+      const supplierId = body?.supplierId;
+      const itemsIn = Array.isArray(body?.items) ? body.items : [];
+      const options = body?.options ?? {};
+      const autoLink = options?.autoLink !== false;
+      const deactivateMissing = options?.deactivateMissing === true;
+
+      if (!supplierId) return c.json({ error: "supplierId required" }, 400);
+      if (itemsIn.length === 0) return c.json({ ok: true, upserted: 0, linked: 0, deactivated: 0 });
+
+      const supabase = db();
+
+      // Normalize
+      const norm = itemsIn
+        .map((r: any) => ({
+          name: String(r.name ?? "").trim(),
+          sku: String(r.sku ?? "").trim(),
+          category: String(r.category ?? "Прочее").trim() || "Прочее",
+          unit: String(r.unit ?? "шт").trim() || "шт",
+          buyPrice: Number(r.buyPrice ?? 0),
+          sellPrice: Number(r.sellPrice ?? 0),
+          availability: r.availability === "in_stock_supplier" ? "in_stock_supplier" : "order_only",
+          isActive: r.isActive !== false,
+        }))
+        .filter((r: any) => r.name);
+
+      // Split: with SKU (upsertable via unique supplier_id+sku) and without SKU (match by exact name)
+      const withSku = norm.filter((r: any) => r.sku);
+      const withoutSku = norm.filter((r: any) => !r.sku);
+
+      let upserted = 0;
+      const touchedSupplierItemIds: string[] = [];
+
+      if (withSku.length) {
+        const payload = withSku.map((r: any) => ({
+          supplier_id: supplierId,
+          name: r.name,
+          sku: r.sku,
+          unit: r.unit,
+          category: r.category,
+          buy_price: Math.max(0, r.buyPrice || 0),
+          sell_price: Math.max(0, r.sellPrice || 0),
+          availability: r.availability,
+          is_active: r.isActive,
+        }));
+        const { data, error } = await supabase
+          .from("supplier_items")
+          .upsert(payload, { onConflict: "supplier_id,sku" })
+          .select("id");
+        if (error) throw new Error(error.message);
+        upserted += (data ?? []).length;
+        (data ?? []).forEach((d: any) => touchedSupplierItemIds.push(String(d.id)));
+      }
+
+      if (withoutSku.length) {
+        // Find existing by exact name for supplier, update them; otherwise insert
+        const names = [...new Set(withoutSku.map((r: any) => r.name))];
+        const { data: existing, error: exErr } = await supabase
+          .from("supplier_items")
+          .select("id,name")
+          .eq("supplier_id", supplierId)
+          .in("name", names);
+        if (exErr) throw new Error(exErr.message);
+        const byName = new Map<string, any>((existing ?? []).map((e: any) => [String(e.name), e]));
+
+        const toUpdate: any[] = [];
+        const toInsert: any[] = [];
+        for (const r of withoutSku) {
+          const ex = byName.get(r.name);
+          if (ex) {
+            toUpdate.push({
+              id: ex.id,
+              supplier_id: supplierId,
+              name: r.name,
+              sku: null,
+              unit: r.unit,
+              category: r.category,
+              buy_price: Math.max(0, r.buyPrice || 0),
+              sell_price: Math.max(0, r.sellPrice || 0),
+              availability: r.availability,
+              is_active: r.isActive,
+            });
+          } else {
+            toInsert.push({
+              supplier_id: supplierId,
+              name: r.name,
+              sku: null,
+              unit: r.unit,
+              category: r.category,
+              buy_price: Math.max(0, r.buyPrice || 0),
+              sell_price: Math.max(0, r.sellPrice || 0),
+              availability: r.availability,
+              is_active: r.isActive,
+            });
+          }
+        }
+
+        if (toUpdate.length) {
+          for (const u of toUpdate) {
+            const { data, error } = await supabase.from("supplier_items").update(u).eq("id", u.id).select("id").single();
+            if (error) throw new Error(error.message);
+            touchedSupplierItemIds.push(String(data.id));
+            upserted += 1;
+          }
+        }
+        if (toInsert.length) {
+          const { data, error } = await supabase.from("supplier_items").insert(toInsert).select("id");
+          if (error) throw new Error(error.message);
+          upserted += (data ?? []).length;
+          (data ?? []).forEach((d: any) => touchedSupplierItemIds.push(String(d.id)));
+        }
+      }
+
+      // Deactivate items not present in this import
+      let deactivated = 0;
+      if (deactivateMissing) {
+        // Build "present keys": prefer sku else name
+        const presentSku = [...new Set(withSku.map((r: any) => r.sku))];
+        const presentNamesNoSku = [...new Set(withoutSku.map((r: any) => r.name))];
+
+        // Deactivate SKUs not present (only for rows with non-null sku)
+        if (presentSku.length > 0) {
+          const { data: toDeact, error: tdErr } = await supabase
+            .from("supplier_items")
+            .select("id")
+            .eq("supplier_id", supplierId)
+            .not("sku", "is", null)
+            .not("sku", "in", `(${presentSku.map((s: string) => `"${s.replaceAll('"', '\\"')}"`).join(",")})`);
+          if (!tdErr && (toDeact?.length ?? 0) > 0) {
+            const ids = toDeact!.map((r: any) => r.id);
+            const { error } = await supabase.from("supplier_items").update({ is_active: false }).in("id", ids);
+            if (!error) deactivated += ids.length;
+          }
+        }
+
+        // Deactivate non-sku items not present by exact name
+        if (presentNamesNoSku.length > 0) {
+          const { data: toDeact2, error: tdErr2 } = await supabase
+            .from("supplier_items")
+            .select("id")
+            .eq("supplier_id", supplierId)
+            .is("sku", null)
+            .not("name", "in", `(${presentNamesNoSku.map((s: string) => `"${s.replaceAll('"', '\\"')}"`).join(",")})`);
+          if (!tdErr2 && (toDeact2?.length ?? 0) > 0) {
+            const ids = toDeact2!.map((r: any) => r.id);
+            const { error } = await supabase.from("supplier_items").update({ is_active: false }).in("id", ids);
+            if (!error) deactivated += ids.length;
+          }
+        }
+      }
+
+      // Auto-link to warehouse items (SKU exact, fallback name ilike) and set primary if none exists yet
+      let linked = 0;
+      if (autoLink && touchedSupplierItemIds.length > 0) {
+        // Load touched supplier items
+        const { data: supItems, error: sErr } = await supabase
+          .from("supplier_items")
+          .select("id,name,sku,category,unit,buy_price,sell_price")
+          .in("id", touchedSupplierItemIds);
+        if (sErr) throw new Error(sErr.message);
+
+        // Warehouse index
+        const skus = [...new Set((supItems ?? []).map((i: any) => String(i.sku ?? "").trim()).filter(Boolean))];
+        let whBySku = new Map<string, any>();
+        if (skus.length > 0) {
+          const { data: whRows, error: whErr } = await supabase
+            .from("warehouse_items")
+            .select("id,sku,name")
+            .in("sku", skus);
+          if (!whErr) whBySku = new Map((whRows ?? []).map((w: any) => [String(w.sku), w]));
+        }
+
+        // Existing primary links for warehouse items to avoid overriding
+        const candidateWhIds: string[] = [];
+        const matches: { supplierItemId: string; warehouseItemId: string }[] = [];
+        for (const si of (supItems ?? []) as any[]) {
+          const sku = String(si.sku ?? "").trim();
+          if (sku && whBySku.get(sku)) {
+            const wh = whBySku.get(sku);
+            matches.push({ supplierItemId: String(si.id), warehouseItemId: String(wh.id) });
+            candidateWhIds.push(String(wh.id));
+            continue;
+          }
+          // Fallback: name ilike first hit
+          const nm = String(si.name ?? "").trim();
+          if (!nm) continue;
+          const { data: wh2 } = await supabase
+            .from("warehouse_items")
+            .select("id")
+            .ilike("name", `%${nm.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`)
+            .limit(1);
+          if (wh2?.[0]?.id) {
+            matches.push({ supplierItemId: String(si.id), warehouseItemId: String(wh2[0].id) });
+            candidateWhIds.push(String(wh2[0].id));
+          }
+        }
+
+        const uniqWh = [...new Set(candidateWhIds)];
+        const primaryExists = new Set<string>();
+        if (uniqWh.length > 0) {
+          const { data: prim } = await supabase
+            .from("catalog_links")
+            .select("warehouse_item_id")
+            .eq("is_primary", true)
+            .in("warehouse_item_id", uniqWh);
+          (prim ?? []).forEach((r: any) => primaryExists.add(String(r.warehouse_item_id)));
+        }
+
+        for (const m of matches) {
+          const shouldPrimary = !primaryExists.has(m.warehouseItemId);
+          const { data: linkRow, error: lErr } = await supabase
+            .from("catalog_links")
+            .upsert({
+              supplier_item_id: m.supplierItemId,
+              warehouse_item_id: m.warehouseItemId,
+              is_primary: shouldPrimary,
+              priority: 10,
+            }, { onConflict: "supplier_item_id" })
+            .select("id,is_primary,warehouse_item_id")
+            .single();
+          if (lErr) continue;
+          linked += 1;
+          if (linkRow?.is_primary && linkRow?.warehouse_item_id) primaryExists.add(String(linkRow.warehouse_item_id));
+        }
+      }
+
+      return c.json({ ok: true, upserted, linked, deactivated });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  // ── Catalog links (supplier_item ↔ warehouse_item) ──────────────────────────
+  app.get(`${P}/catalog-links`, async (c: any) => {
+    try {
+      const supplierItemId = c.req.query("supplierItemId");
+      const supplierId = c.req.query("supplierId");
+      const warehouseItemId = c.req.query("warehouseItemId");
+      const supabase = db();
+      let query = supabase
+        .from("catalog_links")
+        .select("id,warehouse_item_id,supplier_item_id,is_primary,priority,created_at,supplier_items!inner(supplier_id)")
+        .order("is_primary", { ascending: false })
+        .order("priority", { ascending: true })
+        .limit(500);
+      if (supplierItemId) query = query.eq("supplier_item_id", supplierItemId);
+      if (supplierId) query = query.eq("supplier_items.supplier_id", supplierId);
+      if (warehouseItemId) query = query.eq("warehouse_item_id", warehouseItemId);
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      return c.json({ links: (data ?? []).map(toCatalogLink) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  app.post(`${P}/catalog-links`, async (c: any) => {
+    try {
+      const body = await c.req.json();
+      if (!body.supplierItemId) return c.json({ error: "supplierItemId required" }, 400);
+      const supabase = db();
+      const isPrimary = !!body.isPrimary;
+      const whId = body.warehouseItemId ?? null;
+      const priority = Number(body.priority ?? 100);
+
+      const { data, error } = await supabase
+        .from("catalog_links")
+        .insert({
+          supplier_item_id: body.supplierItemId,
+          warehouse_item_id: whId,
+          is_primary: isPrimary,
+          priority,
+        })
+        .select("id,warehouse_item_id,supplier_item_id,is_primary,priority,created_at")
+        .single();
+      if (error) throw new Error(error.message);
+
+      // enforce single primary per warehouse_item_id
+      if (isPrimary && whId) {
+        await supabase
+          .from("catalog_links")
+          .update({ is_primary: false })
+          .eq("warehouse_item_id", whId)
+          .neq("id", data.id);
+      }
+
+      return c.json({ link: toCatalogLink(data) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  app.patch(`${P}/catalog-links/:id`, async (c: any) => {
+    try {
+      const body = await c.req.json();
+      const patch: any = {};
+      if (body.warehouseItemId !== undefined) patch.warehouse_item_id = body.warehouseItemId || null;
+      if (body.supplierItemId !== undefined) patch.supplier_item_id = body.supplierItemId;
+      if (body.isPrimary !== undefined) patch.is_primary = !!body.isPrimary;
+      if (body.priority !== undefined) patch.priority = Number(body.priority ?? 100);
+
+      const supabase = db();
+      const { data, error } = await supabase
+        .from("catalog_links")
+        .update(patch)
+        .eq("id", c.req.param("id"))
+        .select("id,warehouse_item_id,supplier_item_id,is_primary,priority,created_at")
+        .single();
+      if (error) throw new Error(error.message);
+
+      if (data.is_primary && data.warehouse_item_id) {
+        await supabase
+          .from("catalog_links")
+          .update({ is_primary: false })
+          .eq("warehouse_item_id", data.warehouse_item_id)
+          .neq("id", data.id);
+      }
+
+      return c.json({ link: toCatalogLink(data) });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  app.delete(`${P}/catalog-links/:id`, async (c: any) => {
+    try {
+      const supabase = db();
+      const { error } = await supabase.from("catalog_links").delete().eq("id", c.req.param("id"));
+      if (error) throw new Error(error.message);
+      return c.json({ success: true });
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
+    }
+  });
+
+  // Procurement orders (purchase_orders)
   app.get(`${P}/procurement/orders`, async (c: any) => {
     try {
-      const orders = await getAllProcOrders();
+      const orders = await listProcurementOrders();
       return c.json({ orders });
-    } catch (error: any) {
-      return c.json({ error: `Failed to fetch procurement orders: ${error.message}` }, 500);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
     }
   });
 
-  // ── POST create procurement order (batch from pending POs) ───────────────────
-  // body: { supplierId, purchaseOrderIds?: string[] }
-  // If purchaseOrderIds omitted — auto-pick all pending POs for supplier's categories
+  // Create procurement order from pending purchase request lines
   app.post(`${P}/procurement/orders`, async (c: any) => {
     try {
       const body = await c.req.json();
       const { supplierId, purchaseOrderIds, note } = body;
-      if (!supplierId) return c.json({ error: 'supplierId required' }, 400);
+      if (!supplierId) return c.json({ error: "supplierId required" }, 400);
 
       const supplier = await getSupplier(supplierId);
-      if (!supplier) return c.json({ error: 'Supplier not found' }, 404);
+      if (!supplier) return c.json({ error: "Supplier not found" }, 404);
 
-      // Load pending POs
-      const poIdxRaw = await kv.get('wh_po_index');
-      if (!poIdxRaw) return c.json({ error: 'No purchase orders found' }, 404);
-      const allPoIds: string[] = JSON.parse(poIdxRaw);
-      const allPOs = (await Promise.all(allPoIds.map((id: string) => kv.get(`wh_po:${id}`))))
-        .filter(Boolean).map((r: any) => JSON.parse(r));
+      let ids: string[] = Array.isArray(purchaseOrderIds) ? purchaseOrderIds : [];
+      if (ids.length === 0) {
+        // Auto-pick pending purchase requests matching supplier categories
+        const supabase = db();
+        const { data, error } = await supabase
+          .from("purchase_request_lines")
+          .select("id,purchase_requests(status),warehouse_items(category)")
+          .limit(1000);
+        if (error) throw new Error(error.message);
+        ids = (data ?? [])
+          .filter((l: any) => (l.purchase_requests?.status ?? "pending") === "pending")
+          .filter((l: any) => {
+            const cat = String(l.warehouse_items?.category ?? "");
+            return supplier.categories.some((c) => c.toLowerCase() === cat.toLowerCase() || cat.toLowerCase().includes(c.toLowerCase()));
+          })
+          .map((l: any) => String(l.id));
+      }
+      if (ids.length === 0) return c.json({ error: "No matching pending purchase orders" }, 400);
 
-      // Filter: pending + matching IDs (if specified)
-      const targetPOs = allPOs.filter((po: any) => {
-        const statusOk = po.status === 'pending' || po.status === 'ordered';
-        const idOk = !purchaseOrderIds || purchaseOrderIds.includes(po.id);
-        return statusOk && idOk;
-      });
-
-      if (targetPOs.length === 0) return c.json({ error: 'No matching pending purchase orders' }, 400);
-
-      const warehouseItems = await getAllWarehouseItems();
-      const order = await buildProcurementOrder(supplier, targetPOs, warehouseItems);
-      if (!order) return c.json({ error: 'No lines matched supplier categories' }, 400);
-
-      order.note = note || '';
-      await saveProcOrder(order);
-      await indexProcOrder(order.id);
-
-      console.log(`Procurement order created: ${order.id} → ${supplier.name} (${order.lines.length} lines)`);
+      const order = await buildProcOrderFromRequestLines(supplier, ids, note);
       return c.json({ order });
-    } catch (error: any) {
-      console.error('Create procurement order error:', error);
-      return c.json({ error: `Failed to create procurement order: ${error.message}` }, 500);
+    } catch (e: any) {
+      return c.json({ error: `Failed to create procurement order: ${e.message}` }, 500);
     }
   });
 
-  // ── POST send procurement order to supplier (mock API) ───────────────────────
+  // Send procurement order (no mock; just status transition)
   app.post(`${P}/procurement/orders/:id/send`, async (c: any) => {
     try {
-      const order = await getProcOrder(c.req.param('id'));
-      if (!order) return c.json({ error: 'Procurement order not found' }, 404);
-      if (order.status === 'cancelled') return c.json({ error: 'Order is cancelled' }, 400);
+      const supabase = db();
+      const id = c.req.param("id");
+      const { data: po, error: poErr } = await supabase
+        .from("purchase_orders")
+        .select("id,status,total_cost,supplier_id")
+        .eq("id", id)
+        .single();
+      if (poErr) throw new Error(poErr.message);
+      if (po.status === "cancelled") return c.json({ error: "Order is cancelled" }, 400);
 
-      const supplier = await getSupplier(order.supplierId);
-      if (!supplier) return c.json({ error: 'Supplier not found' }, 404);
-
-      // Check min order
-      if (order.totalCost < supplier.terms.minOrderAmount) {
+      // Validate min order
+      const supplier = await getSupplier(String(po.supplier_id));
+      if (!supplier) return c.json({ error: "Supplier not found" }, 404);
+      if (Number(po.total_cost ?? 0) < supplier.terms.minOrderAmount) {
         return c.json({
-          error: `Минимальная сумма заказа у ${supplier.name}: ${supplier.terms.minOrderAmount} ₴. Текущая: ${order.totalCost.toFixed(0)} ₴`,
+          error: `Минимальная сумма заказа у ${supplier.name}: ${supplier.terms.minOrderAmount}. Текущая: ${Number(po.total_cost ?? 0).toFixed(0)}`,
         }, 400);
       }
 
-      console.log(`Sending to mock API: ${supplier.apiEndpoint} for order ${order.id}`);
-      order.sendAttempts = (order.sendAttempts || 0) + 1;
-      order.lastSentAt = new Date().toISOString();
+      const { error: updErr } = await supabase
+        .from("purchase_orders")
+        .update({ status: "confirmed" })
+        .eq("id", id);
+      if (updErr) throw new Error(updErr.message);
 
-      const mockResp = await sendToSupplierMockApi(supplier, order);
-      order.mockApiResponse = mockResp;
-      order.status = mockResp.success ? 'confirmed' : 'failed';
-
-      await saveProcOrder(order);
-
-      // Update all linked purchase orders → status "ordered"
-      if (mockResp.success) {
-        for (const line of order.lines) {
-          const poRaw = await kv.get(`wh_po:${line.purchaseOrderId}`);
-          if (!poRaw) continue;
-          const po = JSON.parse(poRaw);
-          po.status = 'ordered';
-          po.updatedAt = new Date().toISOString();
-          po.note = (po.note ? po.note + ' | ' : '') + `Отправлено: ${mockResp.confirmationNumber}`;
-          await kv.set(`wh_po:${line.purchaseOrderId}`, JSON.stringify(po));
-        }
-      }
-
-      console.log(`Mock API response: ${mockResp.confirmationNumber} (${order.status})`);
-      return c.json({ order, mockApiResponse: mockResp });
-    } catch (error: any) {
-      console.error('Send procurement order error:', error);
-      return c.json({ error: `Failed to send order: ${error.message}` }, 500);
+      const orders = await listProcurementOrders();
+      const updated = orders.find((o) => o.id === id);
+      return c.json({ order: updated ?? null });
+    } catch (e: any) {
+      return c.json({ error: `Failed to send order: ${e.message}` }, 500);
     }
   });
 
-  // ── POST cancel procurement order ────────────────────────────────────────────
+  // Cancel/update
   app.patch(`${P}/procurement/orders/:id`, async (c: any) => {
     try {
-      const order = await getProcOrder(c.req.param('id'));
-      if (!order) return c.json({ error: 'Order not found' }, 404);
       const body = await c.req.json();
-      if (body.status) order.status = body.status;
-      if (body.note !== undefined) order.note = body.note;
-      await saveProcOrder(order);
-      return c.json({ order });
-    } catch (error: any) {
-      return c.json({ error: `Failed to update order: ${error.message}` }, 500);
+      const patch: any = {};
+      if (body.status) patch.status = body.status;
+      if (body.note !== undefined) patch.note = body.note;
+      const supabase = db();
+      const { error } = await supabase.from("purchase_orders").update(patch).eq("id", c.req.param("id"));
+      if (error) throw new Error(error.message);
+      const orders = await listProcurementOrders();
+      const updated = orders.find((o) => o.id === c.req.param("id"));
+      return c.json({ order: updated ?? null });
+    } catch (e: any) {
+      return c.json({ error: `Failed to update order: ${e.message}` }, 500);
     }
   });
 
-  // ── POST auto-batch: group ALL pending POs by category→supplier, send ────────
+  // Auto-batch: disabled on prod initially (avoid unintended sends)
   app.post(`${P}/procurement/auto-batch`, async (c: any) => {
-    try {
-      const suppliers = await getAllSuppliers();
-      const warehouseItems = await getAllWarehouseItems();
-
-      // Load all pending POs
-      const poIdxRaw = await kv.get('wh_po_index');
-      if (!poIdxRaw) return c.json({ results: [], message: 'No purchase orders' });
-      const allPoIds: string[] = JSON.parse(poIdxRaw);
-      const allPOs = (await Promise.all(allPoIds.map((id: string) => kv.get(`wh_po:${id}`))))
-        .filter(Boolean).map((r: any) => JSON.parse(r))
-        .filter((po: any) => po.status === 'pending');
-
-      if (allPOs.length === 0) return c.json({ results: [], message: 'No pending purchase orders' });
-
-      const results: { supplier: string; order: ProcurementOrder; sent: boolean; response?: MockApiResponse; error?: string }[] = [];
-      const processedPOIds = new Set<string>();
-
-      for (const supplier of suppliers.filter((s: Supplier) => s.isActive)) {
-        // Filter POs not yet processed + matching supplier categories
-        const supplierPOs = allPOs.filter((po: any) => {
-          if (processedPOIds.has(po.id)) return false;
-          const item = warehouseItems.find((i: any) => i.id === po.itemId);
-          const cat = item?.category ?? '';
-          return supplier.categories.some(c =>
-            c.toLowerCase() === cat.toLowerCase() ||
-            cat.toLowerCase().includes(c.toLowerCase())
-          );
-        });
-
-        if (supplierPOs.length === 0) continue;
-
-        const order = await buildProcurementOrder(supplier, supplierPOs, warehouseItems);
-        if (!order) continue;
-
-        await saveProcOrder(order);
-        await indexProcOrder(order.id);
-        supplierPOs.forEach((po: any) => processedPOIds.add(po.id));
-
-        // Auto-send if above min order
-        let sent = false;
-        let mockResp: MockApiResponse | undefined;
-        let errMsg: string | undefined;
-
-        if (order.totalCost >= supplier.terms.minOrderAmount) {
-          try {
-            order.sendAttempts = 1;
-            order.lastSentAt = new Date().toISOString();
-            mockResp = await sendToSupplierMockApi(supplier, order);
-            order.mockApiResponse = mockResp;
-            order.status = mockResp.success ? 'confirmed' : 'failed';
-            await saveProcOrder(order);
-            if (mockResp.success) {
-              for (const line of order.lines) {
-                const poRaw = await kv.get(`wh_po:${line.purchaseOrderId}`);
-                if (!poRaw) continue;
-                const po = JSON.parse(poRaw);
-                po.status = 'ordered';
-                po.updatedAt = new Date().toISOString();
-                po.note = (po.note ? po.note + ' | ' : '') + `Подтверждено: ${mockResp.confirmationNumber}`;
-                await kv.set(`wh_po:${line.purchaseOrderId}`, JSON.stringify(po));
-              }
-            }
-            sent = true;
-          } catch (e: any) {
-            errMsg = e.message;
-            order.status = 'failed';
-            await saveProcOrder(order);
-          }
-        } else {
-          errMsg = `Сумма мала: ${order.totalCost} ₴ < мин. ${supplier.terms.minOrderAmount} ₴`;
-        }
-
-        results.push({ supplier: supplier.name, order, sent, response: mockResp, error: errMsg });
-      }
-
-      console.log(`Auto-batch: ${results.length} suppliers processed, ${results.filter(r => r.sent).length} sent`);
-      return c.json({ results, totalProcessed: allPOs.length, totalBatches: results.length });
-    } catch (error: any) {
-      console.error('Auto-batch error:', error);
-      return c.json({ error: `Auto-batch failed: ${error.message}` }, 500);
-    }
+    return c.json({ error: "auto-batch disabled on prod" }, 410);
   });
 
-  // ── GET procurement stats ────────────────────────────────────────────────────
+  // Stats
   app.get(`${P}/procurement/stats`, async (c: any) => {
     try {
-      const [orders, suppliers] = await Promise.all([getAllProcOrders(), getAllSuppliers()]);
+      const orders = await listProcurementOrders();
+      const suppliers = await getAllSuppliers();
       const stats = {
         total: orders.length,
-        draft: orders.filter(o => o.status === 'draft').length,
-        sent: orders.filter(o => o.status === 'sent').length,
-        confirmed: orders.filter(o => o.status === 'confirmed').length,
-        failed: orders.filter(o => o.status === 'failed').length,
-        cancelled: orders.filter(o => o.status === 'cancelled').length,
-        totalSpend: orders.filter(o => o.status === 'confirmed')
-          .reduce((s, o) => s + o.totalCost, 0),
-        activeSuppliers: suppliers.filter(s => s.isActive).length,
+        draft: orders.filter((o) => o.status === "draft").length,
+        sent: orders.filter((o) => o.status === "sent").length,
+        confirmed: orders.filter((o) => o.status === "confirmed").length,
+        failed: orders.filter((o) => o.status === "failed").length,
+        cancelled: orders.filter((o) => o.status === "cancelled").length,
+        totalSpend: orders.filter((o) => o.status === "confirmed").reduce((s, o) => s + Number(o.totalCost ?? 0), 0),
+        activeSuppliers: suppliers.filter((s) => s.isActive).length,
       };
       return c.json({ stats });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
+    } catch (e: any) {
+      return c.json({ error: e.message }, 500);
     }
   });
 }
+

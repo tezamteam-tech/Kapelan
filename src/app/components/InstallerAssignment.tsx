@@ -41,7 +41,7 @@ interface Assignment {
   createdAt: string;
 }
 
-// ─── Installer Assignment Modal (used from AdminView lead detail) ─────────────
+// Installer assignment modal.
 interface AssignInstallerProps {
   leadId: string;
   clientName: string;
@@ -475,10 +475,10 @@ export function InstallersManager() {
               <select value={form.specialization} onChange={e => setForm(f => ({ ...f, specialization: e.target.value }))}
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">
                 <option value="general">Общая</option>
-                <option value="split">Сплит-системы</option>
-                <option value="multi">Мульти-сплит</option>
-                <option value="ventilation">Вентиляция</option>
-                <option value="industrial">Промышленное</option>
+                <option value="windows">Окна</option>
+                <option value="doors">Двери</option>
+                <option value="balcony_glazing">Остекление балконов</option>
+                <option value="balcony_finish">Отделка балконов</option>
               </select>
             </div>
           </div>

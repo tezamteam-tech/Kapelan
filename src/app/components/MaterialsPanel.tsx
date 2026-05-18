@@ -211,7 +211,7 @@ function CategoryBlock({ icon, title, items, fmt }: {
 }
 
 
-// ─── Template Editor (for AdminView) ─────────────────────────────────────────
+// Template editor.
 export interface TemplateItem {
   id: string;
   name: string;

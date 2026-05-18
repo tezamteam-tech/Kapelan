@@ -19,6 +19,18 @@ import { ImageUpload } from "./ui/ImageUpload";
 import { RightSideCard } from "./ui/RightSideCard";
 import { API_BASE, AH, JH, getJson, invalidateUrlPrefix } from "../lib/apiClient";
 import { useCurrency } from "./CurrencyContext";
+import {
+  GLASS_UNITS,
+  HARDWARE_TYPES,
+  PROFILE_SYSTEMS,
+  calculateWindowOfferLines,
+  defaultWindowConstruct,
+  describeWindowConstruct,
+  normalizeWindowConstruct,
+  renderWindowSvg,
+  windowAreaM2,
+  type WindowConstruct,
+} from "../domain/windows";
 
 const API = API_BASE;
 
@@ -38,7 +50,7 @@ type OrderStatus =
   | "closed"
   | "cancelled";
 
-type OrderType = "installation" | "service" | "repair" | "maintenance" | "sale";
+type OrderType = "installation" | "service" | "repair" | "maintenance" | "sale" | "windows" | "doors" | "balcony_glazing" | "balcony_finish";
 
 interface Order {
   id: string;
@@ -55,6 +67,7 @@ interface Order {
   client_email?: string;
   equipment_warehouse_id?: string;
   trace_length_m?: number;
+  window_constructs?: WindowConstruct[];
   created_at: string;
   updated_at: string;
   offer?: {
@@ -572,12 +585,14 @@ export function OrdersView() {
   }, [filtered]);
 
   async function createOrder(payload: {
+    type?: OrderType;
     client_id?: string;
     client_name: string;
     client_phone: string;
     object_address: string;
     equipment_warehouse_id?: string;
     trace_length_m?: number;
+    window_constructs?: WindowConstruct[];
     client_legal_name?: string;
     client_tax_id?: string;
     client_email?: string;
@@ -591,7 +606,7 @@ export function OrdersView() {
       const res = await fetch(`${API}/orders`, {
         method: "POST",
         headers: { ...JH, "Idempotency-Key": idemKey },
-        body: JSON.stringify({ type: "installation", ...payload }),
+        body: JSON.stringify({ type: "windows", ...payload }),
       });
       const raw = await res.text();
       let data: any = {};
@@ -616,9 +631,13 @@ export function OrdersView() {
 
   async function createOfferDraftFromEquipment() {
     if (!selected) return;
+    if (selected.window_constructs?.length) {
+      await saveWindowConstructs(selected.window_constructs, { rebuildOffer: true });
+      return;
+    }
     const eqId = selected.equipment_warehouse_id;
     if (!eqId) {
-      showToast("Выберите устройство (equipment) в ордере, чтобы собрать КП", false);
+      showToast("Добавьте оконные конструкции, чтобы собрать КП", false);
       return;
     }
     const eq = warehouseMap[eqId];
@@ -768,6 +787,39 @@ export function OrdersView() {
       showToast("КП сохранено");
     } catch (e: any) {
       showToast(e?.message || "Ошибка сохранения КП", false);
+    }
+  }
+
+  async function saveWindowConstructs(nextConstructs: WindowConstruct[], opts?: { rebuildOffer?: boolean }) {
+    if (!selected) return;
+    try {
+      const normalized = nextConstructs.map((w, idx) => normalizeWindowConstruct(w, idx + 1));
+      const patch: any = { type: "windows", window_constructs: normalized };
+      if (opts?.rebuildOffer) {
+        const generated = calculateWindowOfferLines(normalized);
+        const prevOffer = selected.offer ?? { version: 1, status: "draft", currency: currency.name, lines: [] as any[] };
+        const manualLines = (prevOffer.lines ?? []).filter((l: any) => !String(l?.window_construct_id ?? "").trim());
+        patch.offer = {
+          ...prevOffer,
+          status: prevOffer.status ?? "draft",
+          currency: prevOffer.currency ?? currency.name,
+          lines: [...manualLines, ...generated],
+        };
+        patch.status = selected.status === "offer_approved" ? selected.status : "offer_prepared";
+      }
+      const res = await fetch(`${API}/orders/${selected.id}`, {
+        method: "PATCH",
+        headers: JH,
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setSelected(data.order);
+      setOrders((prev) => prev.map((o) => (o.id === data.order.id ? data.order : o)));
+      invalidateUrlPrefix(`${API}/orders/${selected.id}`);
+      showToast(opts?.rebuildOffer ? "Конструкции и КП обновлены" : "Конструкции сохранены");
+    } catch (e: any) {
+      showToast(e?.message || "Не удалось сохранить конструкции", false);
     }
   }
 
@@ -1116,7 +1168,8 @@ export function OrdersView() {
     const acts: Array<{ key: string; title: string; hint?: string; enabled?: boolean; onClick?: () => void }> = [];
     const offerStatus = selected.offer?.status;
     const hasTrace = typeof selected.trace_length_m === "number" && selected.trace_length_m > 0;
-    const hasEquipment = Boolean(selected.equipment_warehouse_id) || Boolean((selected.offer?.lines ?? []).some((l) => l.line_type === "equipment"));
+    const hasWindowConstructs = Boolean(selected.window_constructs?.length);
+    const hasEquipment = hasWindowConstructs || Boolean(selected.equipment_warehouse_id) || Boolean((selected.offer?.lines ?? []).some((l) => l.line_type === "equipment" || l.line_type === "assembly"));
 
     if (!selected.offer) {
       acts.push({
@@ -1151,7 +1204,7 @@ export function OrdersView() {
         hint: !hasTrace
           ? "Нужно указать длину трассы (после замера)"
           : !hasEquipment
-            ? "Нужно выбрать оборудование в ордере или добавить строку оборудования в КП"
+            ? "Нужно добавить оконные конструкции или строки изделий в КП"
             : "Сформирует материалы, резерв и заявки поставщикам",
         enabled: hasTrace && hasEquipment,
         onClick: confirmOrder,
@@ -1563,6 +1616,13 @@ export function OrdersView() {
               </div>
 
               {(role === "admin" || role === "manager") && (
+                <WindowConstructsPanel
+                  constructs={selected.window_constructs ?? []}
+                  onSave={(next, rebuildOffer) => saveWindowConstructs(next, { rebuildOffer })}
+                />
+              )}
+
+              {(role === "admin" || role === "manager") && (
                 <div className="mt-4 border border-slate-200 rounded-2xl overflow-hidden">
                   <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
                     <div className="min-w-0">
@@ -1882,7 +1942,11 @@ export function OrdersView() {
             )}
 
             {activeStep === "offer" && adminMode !== "warehouse" && role !== "installer" && (
-              <div>
+              <div className="space-y-4">
+                <WindowConstructsPanel
+                  constructs={selected.window_constructs ?? []}
+                  onSave={(next, rebuildOffer) => saveWindowConstructs(next, { rebuildOffer })}
+                />
                 <OfferEditor
                   offer={selected.offer}
                   warehouseMap={warehouseMap}
@@ -2292,6 +2356,224 @@ export function OrdersView() {
   );
 }
 
+function WindowConstructsPanel({
+  constructs,
+  onSave,
+}: {
+  constructs: WindowConstruct[];
+  onSave: (next: WindowConstruct[], rebuildOffer: boolean) => void;
+}) {
+  const [drafts, setDrafts] = useState<WindowConstruct[]>(() =>
+    constructs.length ? constructs.map((w, idx) => normalizeWindowConstruct(w, idx + 1)) : [defaultWindowConstruct(1)],
+  );
+
+  useEffect(() => {
+    setDrafts(constructs.length ? constructs.map((w, idx) => normalizeWindowConstruct(w, idx + 1)) : [defaultWindowConstruct(1)]);
+  }, [constructs]);
+
+  const update = (idx: number, patch: Partial<WindowConstruct>) => {
+    setDrafts((prev) => prev.map((w, i) => (i === idx ? normalizeWindowConstruct({ ...w, ...patch }, i + 1) : w)));
+  };
+
+  const updateSegmentCount = (idx: number, count: number) => {
+    const qty = Math.max(1, Math.min(6, Math.ceil(Number(count) || 1)));
+    setDrafts((prev) => prev.map((w, i) => {
+      if (i !== idx) return w;
+      const existing = w.segments.slice(0, qty);
+      while (existing.length < qty) {
+        existing.push({
+          id: `s${existing.length + 1}`,
+          kind: existing.length === 0 ? "fixed" : "sash",
+          opening: existing.length === 0 ? "fixed" : "tilt_turn",
+          widthRatio: 1,
+          handleSide: "right",
+        });
+      }
+      return normalizeWindowConstruct({ ...w, segments: existing }, i + 1);
+    }));
+  };
+
+  const updateSegment = (idx: number, segIdx: number, patch: Partial<WindowConstruct["segments"][number]>) => {
+    setDrafts((prev) => prev.map((w, i) => {
+      if (i !== idx) return w;
+      const segments = w.segments.map((s, j) => (j === segIdx ? { ...s, ...patch } : s));
+      return normalizeWindowConstruct({ ...w, segments }, i + 1);
+    }));
+  };
+
+  const total = calculateWindowOfferLines(drafts).reduce((s, l) => s + l.qty * l.price, 0);
+
+  return (
+    <div className="mt-4 bg-white border border-slate-200 rounded-2xl overflow-hidden">
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Оконные конструкции</p>
+          <p className="text-sm font-black text-slate-900 mt-0.5 truncate">
+            {drafts.length} шт. в расчете · ориентир {Math.round(total * 100) / 100} BYN
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setDrafts((p) => [...p, defaultWindowConstruct(p.length + 1)])}
+          className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          + Конструкция
+        </button>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {drafts.map((w, idx) => (
+          <div key={w.id} className="border border-slate-200 rounded-2xl p-3 bg-white">
+            <div className="flex flex-col lg:flex-row gap-4">
+              <div className="lg:w-[390px] flex-shrink-0 bg-slate-50 border border-slate-200 rounded-2xl p-3">
+                <div className="overflow-x-auto" dangerouslySetInnerHTML={{ __html: renderWindowSvg(w) }} />
+                <p className="text-[11px] text-slate-500 mt-2">{describeWindowConstruct(w)}</p>
+              </div>
+
+              <div className="flex-1 min-w-0 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 flex-1">
+                    <Field label="Название">
+                      <input value={w.title} onChange={(e) => update(idx, { title: e.target.value })} className={inputCls} />
+                    </Field>
+                    <Field label="Помещение">
+                      <input value={w.roomName ?? ""} onChange={(e) => update(idx, { roomName: e.target.value })} className={inputCls} placeholder="Кухня, спальня, лоджия" />
+                    </Field>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDrafts((p) => p.length > 1 ? p.filter((_, i) => i !== idx) : p)}
+                    className="px-3 py-2 rounded-xl border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 text-xs font-bold"
+                  >
+                    Удалить
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <Field label="Ширина, мм">
+                    <input type="number" min={100} value={w.widthMm} onChange={(e) => update(idx, { widthMm: Number(e.target.value) })} className={inputCls} />
+                  </Field>
+                  <Field label="Высота, мм">
+                    <input type="number" min={100} value={w.heightMm} onChange={(e) => update(idx, { heightMm: Number(e.target.value) })} className={inputCls} />
+                  </Field>
+                  <Field label="Кол-во">
+                    <input type="number" min={1} value={w.quantity} onChange={(e) => update(idx, { quantity: Number(e.target.value) })} className={inputCls} />
+                  </Field>
+                  <Field label="Площадь">
+                    <div className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold text-slate-700">
+                      {windowAreaM2(w)} м2
+                    </div>
+                  </Field>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  <Field label="Тип">
+                    <select value={w.constructionType} onChange={(e) => update(idx, { constructionType: e.target.value as any })} className={inputCls}>
+                      <option value="window">Окно</option>
+                      <option value="balcony_block">Балконный блок</option>
+                      <option value="balcony_glazing">Остекление балкона</option>
+                      <option value="door">Дверь</option>
+                      <option value="mosquito_net">Москитная сетка</option>
+                      <option value="balcony_finish">Отделка балкона</option>
+                    </select>
+                  </Field>
+                  <Field label="Профиль">
+                    <select value={w.profileSystem} onChange={(e) => update(idx, { profileSystem: e.target.value })} className={inputCls}>
+                      {PROFILE_SYSTEMS.map((p) => <option key={p.id} value={p.label}>{p.label}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Стеклопакет">
+                    <select value={w.glassUnit} onChange={(e) => update(idx, { glassUnit: e.target.value })} className={inputCls}>
+                      {GLASS_UNITS.map((g) => <option key={g} value={g}>{g}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Фурнитура">
+                    <select value={w.hardwareType} onChange={(e) => update(idx, { hardwareType: e.target.value })} className={inputCls}>
+                      {HARDWARE_TYPES.map((h) => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </Field>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  <Field label="Ламинация">
+                    <select value={w.lamination} onChange={(e) => update(idx, { lamination: e.target.value as any })} className={inputCls}>
+                      <option value="none">Нет</option>
+                      <option value="inside">Внутри</option>
+                      <option value="outside">Снаружи</option>
+                      <option value="both">Две стороны</option>
+                    </select>
+                  </Field>
+                  <Field label="Подоконник, мм">
+                    <input type="number" min={0} value={w.sillDepthMm ?? 0} onChange={(e) => update(idx, { sillDepthMm: Number(e.target.value) || undefined })} className={inputCls} />
+                  </Field>
+                  <Field label="Отлив, мм">
+                    <input type="number" min={0} value={w.dripCapDepthMm ?? 0} onChange={(e) => update(idx, { dripCapDepthMm: Number(e.target.value) || undefined })} className={inputCls} />
+                  </Field>
+                  <Field label="Откосы">
+                    <select value={w.slopes ?? "none"} onChange={(e) => update(idx, { slopes: e.target.value as any })} className={inputCls}>
+                      <option value="none">Нет</option>
+                      <option value="pvc">ПВХ</option>
+                      <option value="sandwich">Сэндвич</option>
+                      <option value="plaster">Штукатурка</option>
+                    </select>
+                  </Field>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
+                    <input type="checkbox" checked={Boolean(w.mosquitoNet)} onChange={(e) => update(idx, { mosquitoNet: e.target.checked })} className="w-4 h-4 rounded border-slate-300" />
+                    Москитная сетка
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-500">Створок</span>
+                    <input type="number" min={1} max={6} value={w.segments.length} onChange={(e) => updateSegmentCount(idx, Number(e.target.value))} className="w-20 border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {w.segments.map((seg, segIdx) => (
+                    <div key={seg.id} className="border border-slate-200 rounded-xl p-2 bg-slate-50">
+                      <p className="text-[11px] font-bold text-slate-500 mb-2">Створка {segIdx + 1}</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <select value={seg.opening} onChange={(e) => updateSegment(idx, segIdx, { opening: e.target.value as any, kind: e.target.value === "fixed" ? "fixed" : e.target.value === "door" ? "door" : "sash" })} className={inputCls}>
+                          <option value="fixed">Глухая</option>
+                          <option value="turn">Поворотная</option>
+                          <option value="tilt_turn">Поворотно-откидная</option>
+                          <option value="tilt">Откидная</option>
+                          <option value="door">Дверь</option>
+                          <option value="sliding">Раздвижная</option>
+                        </select>
+                        <select value={seg.handleSide ?? "right"} onChange={(e) => updateSegment(idx, segIdx, { handleSide: e.target.value as any })} className={inputCls}>
+                          <option value="right">Ручка справа</option>
+                          <option value="left">Ручка слева</option>
+                        </select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pt-1">
+          <p className="text-[11px] text-slate-500">
+            Кнопка с КП пересобирает строки по конструкциям: изделие, подоконник, отлив, сетка, откосы и монтаж.
+          </p>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => onSave(drafts, false)} className="px-4 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50">
+              Сохранить замер
+            </button>
+            <button type="button" onClick={() => onSave(drafts, true)} className="px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700">
+              Сформировать КП
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CreateOrderModal({
   warehouseEq,
   prefill,
@@ -2312,6 +2594,7 @@ function CreateOrderModal({
   } | null;
   onClose: () => void;
   onCreate: (payload: {
+    type?: OrderType;
     client_id?: string;
     client_name: string;
     client_phone: string;
@@ -2322,6 +2605,7 @@ function CreateOrderModal({
     client_doc_basis?: string;
     equipment_warehouse_id?: string;
     trace_length_m?: number;
+    window_constructs?: WindowConstruct[];
     offer?: any;
   }) => void;
   creating?: boolean;
@@ -2465,7 +2749,7 @@ function CreateOrderModal({
     >
       <div className="w-full h-full bg-white flex flex-col overflow-hidden">
         <div className="px-4 sm:px-5 py-4 border-b border-slate-100 flex items-center justify-between sticky top-0 bg-white z-10">
-          <p className="text-base font-black text-slate-800">Новый Order (услуга)</p>
+          <p className="text-base font-black text-slate-800">Новый заказ окон / балконов</p>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 px-2 py-1 rounded-lg hover:bg-slate-100">
             ✕
           </button>
@@ -2627,7 +2911,7 @@ function CreateOrderModal({
               </Field>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <Field label="Оборудование (кондиционеры) — можно несколько">
+                <Field label="Изделия из старого каталога — опционально">
                   <div className="space-y-2">
                     {eqLines.map((ln, idx) => (
                       <div key={idx} className="grid grid-cols-12 gap-2">
@@ -2671,14 +2955,15 @@ function CreateOrderModal({
                     </button>
                     {(catalogLoading || catalogEq.length > 0) ? (
                       <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
-                        Выбор идет из <b>каталога оборудования</b> (раздел «Оборудование»){catalogLoading ? " — загружаю…" : ""}.
+                        Для окон основной расчет делается после создания заказа в блоке <b>Оконные конструкции</b>.
+                        Старый каталог оставлен как совместимость{catalogLoading ? " — загружаю…" : ""}.
                         Если у модели нет связи со складом — при создании ордера я автоматически создам складскую позицию «Оборудование» (остаток 0),
                         чтобы дальше КП/обеспечение работали корректно.
                       </div>
                     ) : null}
                   </div>
                 </Field>
-                <Field label="Длина трассы (м)">
+                <Field label="Служебная длина для старых заказов">
                   <input type="number" min={1} value={traceLen} onChange={(e) => setTraceLen(Number(e.target.value))} className={inputCls} />
                 </Field>
               </div>
@@ -2769,6 +3054,7 @@ function CreateOrderModal({
                   }
 
                   onCreate({
+                    type: "windows",
                     client_id: selClient?.id,
                     client_name: selClient?.name ?? "",
                     client_phone: selClient?.phone ?? "",
@@ -2779,6 +3065,7 @@ function CreateOrderModal({
                     client_doc_basis: selClient?.doc_basis ? String(selClient.doc_basis) : undefined,
                     equipment_warehouse_id: resolved.find((x) => x.warehouseId)?.warehouseId || undefined,
                     trace_length_m: traceLen,
+                    window_constructs: [],
                     offer: (() => {
                       const lines = resolved
                         .filter((x) => x.warehouseId)
@@ -2813,7 +3100,7 @@ function CreateOrderModal({
             )}
           </div>
           <p className="mt-3 text-[11px] text-slate-400">
-            После создания: добавим КП и кнопку “Подтвердить ордер” для формирования обеспечения (склад/поставщики).
+            После создания откройте блок «Оконные конструкции»: там вводятся размеры, створки, профиль и формируется КП со схемами.
           </p>
         </div>
       </div>
@@ -4495,4 +4782,3 @@ function PartialReceiptModal({
     </RightSideCard>
   );
 }
-

@@ -567,7 +567,7 @@ function PriceLine({ label, value, isDiscount }: { label: string; value: number;
 }
 
 
-// ─── Offers List (for AdminView КП tab) ───────────────────────────────────────
+// Offers list.
 interface OffersListProps {
   leads: { id: string; clientId: string; status: string; requirements_json: any; createdAt: string }[];
   clients: Record<string, Client>;
